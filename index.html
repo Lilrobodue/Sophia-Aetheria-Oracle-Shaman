@@ -6939,28 +6939,39 @@ Be warm, conversational, and grounded. Ask follow-up questions. Connect differen
             document.getElementById('sendBtn').innerHTML = '<span class="loading"></span>';
 
             try {
+                // Skip heavy context injection for small local models
+                const usingSmallLocal = shouldUseLocal() && !config.fullPromptLocal;
+
                 let ragContext = '';
-                if (config.ragEnabled && uploadedFiles.length > 0) {
+                if (config.ragEnabled && uploadedFiles.length > 0 && !usingSmallLocal) {
                     const results = searchFiles(message);
                     if (results.length > 0) {
                         ragContext = '\n\n[Context from files]:\n' +
                             results.map(r => `From "${r.fileName}":\n${r.chunk.substring(0, 500)}...`).join('\n\n');
-                        
+
                         addMessageToUI('system', `📚 Found ${results.length} relevant sections`);
                     }
                 }
 
                 let toolsContext = '';
-                const enabledTools = Object.values(tools).filter(t => t.enabled);
-                if (enabledTools.length > 0) {
-                    toolsContext = '\n\n[Available Tools - Call with format TOOL_CALL: {"tool": "name", "params": {...}}]:\n' +
-                        enabledTools.map(t => `- ${t.name}: ${t.description}`).join('\n');
+                if (!usingSmallLocal) {
+                    const enabledTools = Object.values(tools).filter(t => t.enabled);
+                    if (enabledTools.length > 0) {
+                        toolsContext = '\n\n[Available Tools - Call with format TOOL_CALL: {"tool": "name", "params": {...}}]:\n' +
+                            enabledTools.map(t => `- ${t.name}: ${t.description}`).join('\n');
+                    }
                 }
 
-                // Add EEG context if available
+                // Add EEG context if available (compact version for small local)
                 let eegContext = '';
                 try {
-                    eegContext = getEEGContext();
+                    if (usingSmallLocal && currentAetheriaPosition) {
+                        // Minimal EEG hint for small model
+                        const p = currentAetheriaPosition;
+                        eegContext = `\n[Brain state: ${p.keyword}, ${p.freq}Hz, coherence ${p.coherence}%]`;
+                    } else {
+                        eegContext = getEEGContext();
+                    }
                 } catch (error) {
                     console.warn('Error getting EEG context:', error);
                 }
@@ -7168,11 +7179,14 @@ Be warm, conversational, and grounded. Ask follow-up questions. Connect differen
         }
 
         async function processResponse(response) {
+            // Small local models don't use tools — skip expensive regex parsing
+            const skipToolProcessing = shouldUseLocal() && !config.fullPromptLocal;
+
             // Check for dynamic tool creation by Sophia
-            const toolCreationRegex = /CREATE_TOOL:\s*(\{[\s\S]*?\})\s*END_TOOL/g;
+            const toolCreationRegex = skipToolProcessing ? null : /CREATE_TOOL:\s*(\{[\s\S]*?\})\s*END_TOOL/g;
             let toolMatch;
             
-            while ((toolMatch = toolCreationRegex.exec(response)) !== null) {
+            while (toolCreationRegex && (toolMatch = toolCreationRegex.exec(response)) !== null) {
                 try {
                     const toolDef = JSON.parse(toolMatch[1]);
                     
@@ -7211,11 +7225,11 @@ Be warm, conversational, and grounded. Ask follow-up questions. Connect differen
             }
             
             // Check for tool calls
-            const toolCallRegex = /TOOL_CALL:\s*(\{[^}]+\})/g;
+            const toolCallRegex = skipToolProcessing ? null : /TOOL_CALL:\s*(\{[^}]+\})/g;
             let match;
             let finalResponse = response;
 
-            while ((match = toolCallRegex.exec(response)) !== null) {
+            while (toolCallRegex && (match = toolCallRegex.exec(response)) !== null) {
                 try {
                     const toolCall = JSON.parse(match[1]);
                     const toolName = toolCall.tool;

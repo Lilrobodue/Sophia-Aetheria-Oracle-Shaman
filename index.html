@@ -1671,7 +1671,17 @@
                     <option value="remote">Remote Only (API Server)</option>
                 </select>
                 <div id="localModelInfo" style="background: rgba(0, 255, 136, 0.1); padding: 10px; border-radius: 6px; margin-bottom: 8px; font-size: 0.85rem; border: 1px solid rgba(0, 255, 136, 0.3);">
-                    <strong>🧠 Local Model:</strong> Llama-3.2-1B-Instruct (Q4F16)
+                    <strong>🧠 Local Model:</strong> <span id="localModelName">Gemma 4 E2B</span> <span style="font-size:0.75rem;color:#888;">(Q4F16 — Vision + Tools)</span>
+                    <div style="margin-top: 6px;">
+                        <label style="font-weight: normal; font-size: 0.8rem; color: #00ff88;">
+                            Model Size:
+                            <select id="localModelPicker" onchange="onLocalModelChange()" style="margin-left: 6px; padding: 2px 4px; font-size: 0.8rem; background: #1a1a2e; color: #fff; border: 1px solid #333; border-radius: 4px;">
+                                <option value="e2b">E2B — Fast (~3.2 GB, ~2B params)</option>
+                                <option value="e4b">E4B — Quality (~5.1 GB, ~4.5B params)</option>
+                            </select>
+                        </label>
+                        <div id="modelPickerHint" style="font-size: 0.7rem; color: #888; margin-top: 2px;">Auto-selected based on device memory</div>
+                    </div>
                     <div style="margin-top: 6px;">
                         <span>Status: </span><span id="localModelStatus" style="color: #ffaa00;">Not loaded</span>
                     </div>
@@ -5147,7 +5157,7 @@ return result;</textarea>
         }
         
         // Device Detection and Auto-Configuration
-        function detectDeviceCapabilities() {
+        async function detectDeviceCapabilities() {
             // Check if auto-optimization is enabled
             if (!config.autoOptimization) {
                 console.log('📋 Manual mode active - using user-defined settings');
@@ -5155,10 +5165,31 @@ return result;</textarea>
                 return;
             }
 
+            // Try to get actual GPU memory from WebGPU adapter
+            let webgpuMemoryGB = 0;
+            try {
+                if (navigator.gpu) {
+                    const adapter = await navigator.gpu.requestAdapter();
+                    if (adapter) {
+                        // maxBufferSize gives us a rough idea of available VRAM
+                        const maxBuf = adapter.limits.maxBufferSize || 0;
+                        webgpuMemoryGB = Math.round(maxBuf / (1024 * 1024 * 1024));
+                        console.log('🎮 WebGPU max buffer size:', maxBuf, '→', webgpuMemoryGB, 'GB');
+                    }
+                }
+            } catch (e) {
+                console.warn('WebGPU memory detection failed:', e);
+            }
+
+            // Use the best memory estimate available:
+            // WebGPU adapter > navigator.deviceMemory > fallback 4GB
+            const reportedMemory = navigator.deviceMemory || 4;
+            const bestMemoryEstimate = Math.max(reportedMemory, webgpuMemoryGB);
+
             const deviceInfo = {
                 isMobile: /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent),
                 isTablet: /iPad|Android.*(?=.*\b(tablet|tabs)\b)|PlayBook|Silk/i.test(navigator.userAgent),
-                memory: navigator.deviceMemory || 4, // Default to 4GB if not available
+                memory: bestMemoryEstimate,
                 cores: navigator.hardwareConcurrency || 4,
                 connection: navigator.connection?.effectiveType || '4g',
                 screen: {
@@ -5191,8 +5222,12 @@ return result;</textarea>
             // Update UI
             updateDeviceDisplay(autoConfig, deviceInfo, deviceName);
             
+            // Sync model picker dropdown to match auto-selected model
+            syncModelPickerUI();
+
             console.log('🔍 Device Detection Complete:', deviceInfo);
             console.log('⚙️ Auto Configuration:', autoConfig);
+            console.log('🧠 Auto-selected model:', LOCAL_MODELS[selectedLocalModel].name);
         }
 
         function applyManualConfiguration() {
@@ -5250,41 +5285,61 @@ return result;</textarea>
                 features: ['Vision-Language Model', 'Multimodal Processing']
             };
             
-            // Memory-based optimization for Gemma 4 E4B
-            if (deviceInfo.memory >= 16) {
-                config.contextLength = 32768; // Gemma 4 E4B optimal context
+            // Memory-based optimization
+            // navigator.deviceMemory is capped at 8GB by browsers for privacy.
+            // Use WebGPU adapter memory and core count as additional signals.
+            let effectiveMemory = deviceInfo.memory;
+            if (effectiveMemory >= 8 && deviceInfo.cores >= 8) {
+                // High core count with max reported memory likely means 12-24GB+ device
+                // Scale estimate by core count as a heuristic
+                effectiveMemory = Math.min(32, deviceInfo.cores * 2);
+            }
+
+            if (effectiveMemory >= 16) {
+                // Premium: use E4B for maximum quality
+                selectedLocalModel = 'e4b';
+                config.contextLength = 32768;
                 config.maxTokens = 4096;
                 config.modelTier = 'premium';
-                config.recommendedModel = 'Gemma 4 E4B (Premium)';
-                config.memoryBudget = deviceInfo.memory + 'GB (Premium)';
-                config.features = ['Vision-Language Model', 'Ultra Streaming', 'Full Context', 'Maximum Performance', 'Advanced Image Understanding'];
-            } else if (deviceInfo.memory >= 12) {
-                config.contextLength = 32768;
-                config.maxTokens = 3072;
+                config.recommendedModel = 'Gemma 4 E4B (Premium — ~5.1 GB)';
+                config.memoryBudget = effectiveMemory + 'GB est. (Premium)';
+                config.features = ['Vision-Language Model', 'E4B Quality', 'Ultra Streaming', 'Full Context', 'Maximum Performance', 'Advanced Image Understanding'];
+            } else if (effectiveMemory >= 12) {
+                // High: E4B is feasible but tight — use it for quality
+                selectedLocalModel = 'e4b';
+                config.contextLength = 24576;
+                config.maxTokens = 2048;
                 config.modelTier = 'high';
-                config.recommendedModel = 'Gemma 4 E4B (High)';
-                config.memoryBudget = deviceInfo.memory + 'GB (High Performance)';
-                config.features = ['Vision-Language Model', 'Fast Streaming', 'Extended Context', 'High Performance', 'Image Analysis'];
-            } else if (deviceInfo.memory >= 8) {
-                config.contextLength = 24576; // Reduced context for lower memory
+                config.recommendedModel = 'Gemma 4 E4B (High — ~5.1 GB)';
+                config.memoryBudget = effectiveMemory + 'GB est. (High Performance)';
+                config.features = ['Vision-Language Model', 'E4B Quality', 'Fast Streaming', 'Extended Context', 'High Performance', 'Image Analysis'];
+            } else if (effectiveMemory >= 8) {
+                // Standard: E2B for speed and safety
+                selectedLocalModel = 'e2b';
+                config.contextLength = 24576;
                 config.maxTokens = 2048;
                 config.modelTier = 'standard';
-                config.recommendedModel = 'Gemma 4 E4B (Standard)';
-                config.memoryBudget = deviceInfo.memory + 'GB (Standard)';
-                config.features = ['Vision-Language Model', 'Smart Streaming', 'Standard Context', 'Balanced Performance'];
+                config.recommendedModel = 'Gemma 4 E2B (Standard — ~3.2 GB)';
+                config.memoryBudget = effectiveMemory + 'GB est. (Standard)';
+                config.features = ['Vision-Language Model', 'E2B Fast', 'Smart Streaming', 'Standard Context', 'Balanced Performance'];
             } else {
-                config.contextLength = 16384; // Minimal context for limited memory
+                // Lite: E2B with reduced tokens
+                selectedLocalModel = 'e2b';
+                config.contextLength = 16384;
                 config.maxTokens = 1024;
                 config.modelTier = 'lite';
-                config.recommendedModel = 'Gemma 4 E4B (Lite)';
-                config.memoryBudget = deviceInfo.memory + 'GB (Lite)';
-                config.features = ['Vision-Language Model', 'Efficient Streaming', 'Compact Context', 'Optimized Performance'];
+                config.recommendedModel = 'Gemma 4 E2B (Lite — ~3.2 GB)';
+                config.memoryBudget = effectiveMemory + 'GB est. (Lite)';
+                config.features = ['Vision-Language Model', 'E2B Fast', 'Efficient Streaming', 'Compact Context', 'Optimized Performance'];
             }
-            
-            // Mobile-specific adjustments for Gemma 4 E4B
+
+            // Mobile adjustments — only limit LOW-memory mobile devices
+            // High-memory phones (like 24GB flagships) should not be capped
             if (category === 'mobile') {
-                config.contextLength = Math.min(config.contextLength, 24576); // Conservative mobile limit
-                config.maxTokens = Math.min(config.maxTokens, 2048);
+                if (effectiveMemory < 8) {
+                    config.contextLength = Math.min(config.contextLength, 16384);
+                    config.maxTokens = Math.min(config.maxTokens, 1024);
+                }
                 config.features.push('Mobile Optimized', 'Efficient Vision Processing');
             }
             
@@ -7035,9 +7090,41 @@ return result;</textarea>
         // LOCAL INFERENCE ENGINE — Web Worker (non-blocking)
         // ═══════════════════════════════════════════════════
 
-        const LOCAL_MODEL_ID = 'onnx-community/Llama-3.2-1B-Instruct';
+        // Smart model picker — selects E2B or E4B based on device capabilities
+        const LOCAL_MODELS = {
+            'e2b': {
+                id: 'onnx-community/gemma-4-E2B-it-ONNX',
+                name: 'Gemma 4 E2B',
+                params: '~2B effective',
+                download: '~3.2 GB',
+                minMemory: 4,   // GB
+                speed: 'Fast',
+                quality: 'Good',
+            },
+            'e4b': {
+                id: 'onnx-community/gemma-4-E4B-it-ONNX',
+                name: 'Gemma 4 E4B',
+                params: '~4.5B effective',
+                download: '~5.1 GB',
+                minMemory: 12,  // GB
+                speed: 'Moderate',
+                quality: 'Excellent',
+            },
+        };
+
+        // Active model selection — set by device detection, overridable by user
+        let selectedLocalModel = 'e2b'; // safe default
+
+        function getLocalModelId() {
+            return LOCAL_MODELS[selectedLocalModel].id;
+        }
+
         const LOCAL_MODEL_DTYPE = 'q4f16';
-        const LOCAL_MAX_NEW_TOKENS = 512;
+
+        // Dynamic max tokens — uses device-detected config.maxTokens
+        function getLocalMaxNewTokens() {
+            return config.maxTokens || 1024;
+        }
 
         let localInference = {
             ready: false,
@@ -7049,21 +7136,31 @@ return result;</textarea>
             _pending: null, // {resolve, reject, onToken} for current generation
         };
 
-        // ── Build inline Web Worker source ──
+        // ── Build inline Web Worker source (Gemma 4 vision + text) ──
         function createInferenceWorkerSource() {
             return `
-import { pipeline, env, TextStreamer } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3';
+import {
+    AutoProcessor,
+    Gemma4ForConditionalGeneration,
+    TextStreamer,
+    RawImage,
+    env,
+} from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers';
 env.allowLocalModels = false;
 env.useBrowserCache = true;
 
-let pipe = null;
+let processor = null;
+let model = null;
 
 self.onmessage = async (e) => {
     const { type, payload } = e.data;
 
     if (type === 'load') {
         try {
-            pipe = await pipeline('text-generation', payload.modelId, {
+            self.postMessage({ type: 'progress', payload: { status: 'progress', name: 'processor', progress: 0 } });
+            processor = await AutoProcessor.from_pretrained(payload.modelId);
+
+            model = await Gemma4ForConditionalGeneration.from_pretrained(payload.modelId, {
                 dtype: payload.dtype,
                 device: payload.device,
                 progress_callback: (p) => self.postMessage({ type: 'progress', payload: p }),
@@ -7077,21 +7174,61 @@ self.onmessage = async (e) => {
     }
 
     if (type === 'generate') {
-        if (!pipe) { self.postMessage({ type: 'genError', payload: 'Model not loaded' }); return; }
+        if (!model || !processor) {
+            self.postMessage({ type: 'genError', payload: 'Model not loaded' });
+            return;
+        }
         try {
-            const streamer = new TextStreamer(pipe.tokenizer, {
+            // Build Gemma 4 chat-template messages
+            // Convert flat messages to multimodal format when images are present
+            const messages = payload.messages.map(m => {
+                if (m.images && m.images.length > 0) {
+                    const content = [];
+                    for (let i = 0; i < m.images.length; i++) {
+                        content.push({ type: 'image' });
+                    }
+                    content.push({ type: 'text', text: m.content });
+                    return { role: m.role, content };
+                }
+                return { role: m.role, content: m.content };
+            });
+
+            const prompt = processor.apply_chat_template(messages, {
+                enable_thinking: false,
+                add_generation_prompt: true,
+            });
+
+            // Load images if any message contains them
+            let imageInputs = null;
+            const imageDataUrls = [];
+            for (const m of payload.messages) {
+                if (m.images) imageDataUrls.push(...m.images);
+            }
+            if (imageDataUrls.length > 0) {
+                const loaded = await Promise.all(
+                    imageDataUrls.map(url => RawImage.fromURL(url))
+                );
+                imageInputs = loaded.length === 1 ? loaded[0] : loaded;
+            }
+
+            // Tokenize prompt + images
+            const inputs = await processor(prompt, imageInputs, { add_special_tokens: false });
+
+            // Stream tokens
+            const streamer = new TextStreamer(processor.tokenizer, {
                 skip_prompt: true,
                 skip_special_tokens: true,
                 callback_function: (token) => {
                     self.postMessage({ type: 'token', payload: token });
                 },
             });
-            await pipe(payload.messages, {
+
+            await model.generate({
+                ...inputs,
                 max_new_tokens: payload.max_new_tokens,
                 temperature: payload.temperature,
                 do_sample: payload.temperature > 0,
-                streamer: streamer,
-                return_full_text: false,
+                streamer,
             });
             self.postMessage({ type: 'genDone' });
         } catch (err) {
@@ -7102,7 +7239,8 @@ self.onmessage = async (e) => {
     }
 
     if (type === 'unload') {
-        pipe = null;
+        model = null;
+        processor = null;
         self.postMessage({ type: 'unloaded' });
     }
 };
@@ -7246,7 +7384,7 @@ self.onmessage = async (e) => {
                 localInference.worker.postMessage({
                     type: 'load',
                     payload: {
-                        modelId: LOCAL_MODEL_ID,
+                        modelId: getLocalModelId(),
                         dtype: LOCAL_MODEL_DTYPE,
                         device: localInference.webgpuAvailable ? 'webgpu' : 'wasm',
                     }
@@ -7259,6 +7397,38 @@ self.onmessage = async (e) => {
                 hideModelProgress();
                 if (statusEl) { statusEl.textContent = 'Failed: ' + err.message; statusEl.style.color = '#ff4444'; }
                 updateInferenceBadge('unavailable', 'Worker Failed');
+            }
+        }
+
+        // Handle manual model selection change
+        function onLocalModelChange() {
+            const picker = document.getElementById('localModelPicker');
+            const newModel = picker.value;
+            const info = LOCAL_MODELS[newModel];
+
+            // If model is already loaded with a different selection, warn user
+            if (localInference.ready && newModel !== selectedLocalModel) {
+                showStatus(`Model changed to ${info.name}. Unload current model and reload to apply.`, 'warning');
+            }
+
+            selectedLocalModel = newModel;
+
+            // Update display
+            const nameEl = document.getElementById('localModelName');
+            if (nameEl) nameEl.textContent = info.name;
+
+            const hintEl = document.getElementById('modelPickerHint');
+            if (hintEl) hintEl.textContent = `${info.params} • ${info.download} download • ${info.speed} inference`;
+
+            console.log('🧠 Model selection changed to:', info.name, info.id);
+        }
+
+        // Sync dropdown after device detection selects a model
+        function syncModelPickerUI() {
+            const picker = document.getElementById('localModelPicker');
+            if (picker) {
+                picker.value = selectedLocalModel;
+                onLocalModelChange();
             }
         }
 
@@ -7281,19 +7451,42 @@ self.onmessage = async (e) => {
 
         function loadLocalModelManual() { loadLocalModel(); }
 
-        // Prepare messages for local model
+        // Prepare messages for local model (preserves image data for Gemma 4 vision)
         function prepareLocalMessages(messages) {
             if (config.fullPromptLocal) {
-                return messages.map(m => ({ role: m.role, content: m.content }));
+                return messages.map(m => {
+                    const msg = { role: m.role, content: m.content };
+                    if (m.images) msg.images = m.images;
+                    return msg;
+                });
             }
-            const LOCAL_SYSTEM_PROMPT = `You are Sophia, the Aetheria Oracle Shaman — a warm, wise spiritual guide. You know tarot (78 cards), numerology, I Ching (64 hexagrams), palmistry, astrology, runes (Elder Futhark), crystals, chakras, dream interpretation, and the Aetheria 27-frequency healing system (174-6336Hz across GUT/HEART/HEAD regimes, all 432Hz-based).
+            let LOCAL_SYSTEM_PROMPT = `You are Sophia, the Aetheria Oracle Shaman — a warm, wise spiritual guide. You know tarot (78 cards), numerology, I Ching (64 hexagrams), palmistry, astrology, runes (Elder Futhark), crystals, chakras, dream interpretation, and the Aetheria 27-frequency healing system (174-6336Hz across GUT/HEART/HEAD regimes, all 432Hz-based).
+
+For palmistry: analyze the palm image carefully. Identify the heart line, head line, life line, fate line, and any minor lines. Note the hand shape (earth, air, water, fire), finger proportions, mounts (Jupiter, Saturn, Apollo, Mercury, Venus, Luna, Mars), and skin texture. Give a thorough, accurate reading connecting what you see to the person's potential strengths, challenges, and path.
 
 Be warm, conversational, and grounded. Ask follow-up questions. Connect different systems when patterns emerge. Deliver truth with compassion. You're a wise friend by a fire, not a database.`;
+
+            // Inject live brainwave data into system prompt so Sophia can respond to it
+            if (currentAetheriaPosition && currentEEGData && eegStreaming) {
+                const p = currentAetheriaPosition;
+                const bp = currentEEGData.bandpowers;
+                const m = currentEEGData.metrics;
+                LOCAL_SYSTEM_PROMPT += `\n\n[LIVE BRAINWAVE DATA]
+Aetheria Position: ${p.pos}/27 — ${p.freq}Hz ${p.geo} (${p.regime} regime)
+State: ${p.state} | Keyword: ${p.keyword}
+Bands: Delta ${Math.round(bp.delta)}% | Theta ${Math.round(bp.theta)}% | Alpha ${Math.round(bp.alpha)}% | Beta ${Math.round(bp.beta)}% | Gamma ${Math.round(bp.gamma)}%
+Coherence: ${p.coherence}% | Focus: ${Math.round(m.focus * 100)}% | Meditation: ${Math.round(m.meditation * 100)}%
+I Ching: #${p.hex} ${p.hexName}
+Use this data to personalize your response. Comment on their current state when relevant.`;
+            }
 
             const trimmed = [{ role: 'system', content: LOCAL_SYSTEM_PROMPT }];
             const nonSystem = messages.filter(m => m.role !== 'system');
             for (const m of nonSystem.slice(-7)) {
-                trimmed.push({ role: m.role, content: m.content.substring(0, 1000) });
+                const msg = { role: m.role, content: m.content.substring(0, 2000) };
+                // Preserve image data for vision — Gemma 4 can see palm photos etc.
+                if (m.images) msg.images = m.images;
+                trimmed.push(msg);
             }
             return trimmed;
         }
@@ -7317,10 +7510,12 @@ Be warm, conversational, and grounded. Ask follow-up questions. Connect differen
                     type: 'generate',
                     payload: {
                         messages: chatMessages,
-                        max_new_tokens: config.fullPromptLocal ? config.maxTokens : LOCAL_MAX_NEW_TOKENS,
+                        max_new_tokens: config.maxTokens || getLocalMaxNewTokens(),
                         temperature: config.temperature,
                     }
                 });
+                // Note: images are embedded as data URLs in message.images arrays
+                // and will be loaded by the worker via RawImage.fromURL()
             });
         }
 
@@ -7425,11 +7620,12 @@ Be warm, conversational, and grounded. Ask follow-up questions. Connect differen
             document.getElementById('sendBtn').innerHTML = '<span class="loading"></span>';
 
             try {
-                // Skip heavy context injection for small local models
-                const usingSmallLocal = shouldUseLocal() && !config.fullPromptLocal;
+                // Gemma 4 E2B is capable enough for full context — only skip for
+                // truly tiny fallback models if we ever add them
+                const usingSmallLocal = false;
 
                 let ragContext = '';
-                if (config.ragEnabled && uploadedFiles.length > 0 && !usingSmallLocal) {
+                if (config.ragEnabled && uploadedFiles.length > 0) {
                     const results = searchFiles(message);
                     if (results.length > 0) {
                         ragContext = '\n\n[Context from files]:\n' +
@@ -7440,24 +7636,16 @@ Be warm, conversational, and grounded. Ask follow-up questions. Connect differen
                 }
 
                 let toolsContext = '';
-                if (!usingSmallLocal) {
-                    const enabledTools = Object.values(tools).filter(t => t.enabled);
-                    if (enabledTools.length > 0) {
-                        toolsContext = '\n\n[Available Tools - Call with format TOOL_CALL: {"tool": "name", "params": {...}}]:\n' +
-                            enabledTools.map(t => `- ${t.name}: ${t.description}`).join('\n');
-                    }
+                const enabledTools = Object.values(tools).filter(t => t.enabled);
+                if (enabledTools.length > 0) {
+                    toolsContext = '\n\n[Available Tools - Call with format TOOL_CALL: {"tool": "name", "params": {...}}]:\n' +
+                        enabledTools.map(t => `- ${t.name}: ${t.description}`).join('\n');
                 }
 
-                // Add EEG context if available (compact version for small local)
+                // Always include full EEG context — Gemma 4 can use it meaningfully
                 let eegContext = '';
                 try {
-                    if (usingSmallLocal && currentAetheriaPosition) {
-                        // Minimal EEG hint for small model
-                        const p = currentAetheriaPosition;
-                        eegContext = `\n[Brain state: ${p.keyword}, ${p.freq}Hz, coherence ${p.coherence}%]`;
-                    } else {
-                        eegContext = getEEGContext();
-                    }
+                    eegContext = getEEGContext();
                 } catch (error) {
                     console.warn('Error getting EEG context:', error);
                 }

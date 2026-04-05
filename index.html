@@ -11,13 +11,7 @@
     <link rel="manifest" id="manifest-link">
     <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect fill='%231a0a2e' width='100' height='100' rx='20'/><text y='70' x='50' text-anchor='middle' font-size='60'>🔮</text></svg>">
     <title>Sophia - Aetheria Oracle Shaman</title>
-    <script type="module" id="transformers-js-import">
-        import { pipeline, env, TextStreamer } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3';
-        env.allowLocalModels = false;
-        env.useBrowserCache = true;
-        window.__transformers = { pipeline, env, TextStreamer };
-        window.dispatchEvent(new Event('transformers-ready'));
-    </script>
+    <!-- Transformers.js loads inside Web Worker — no main-thread import needed -->
     <style>
         * {
             margin: 0;
@@ -1653,6 +1647,8 @@
                     <option value="custom">Custom</option>
                 </select>
                 <input type="text" id="serverUrl" class="text-input" value="http://localhost:11434/v1/chat/completions" style="margin-bottom: 8px;">
+                <input type="text" id="remoteModel" class="text-input" placeholder="Model name (e.g. gemma-4-e4b-it)" style="margin-bottom: 8px;">
+                <div style="font-size: 0.7rem; color: #888; margin: -4px 0 8px 2px;">Required for LM Studio. For Ollama, leave blank to use the loaded model.</div>
                 <div style="display: flex; gap: 8px; align-items: center;">
                     <button class="btn btn-small btn-secondary" onclick="testConnectionManual()" style="flex: 1;">🔗 Test Connection</button>
                     <span id="connectionTestResult" style="font-size: 0.8rem; color: #888;">Not tested</span>
@@ -3751,6 +3747,7 @@ return result;</textarea>
             serverPreset: 'ollama',
             inferenceMode: 'auto', // 'auto', 'local', 'remote'
             fullPromptLocal: false, // send full system prompt + freq table to local/API
+            remoteModel: '', // model name for LM Studio / Ollama (e.g. 'gemma-4-e4b-it')
             systemPrompt: '',
             ragEnabled: true,
             chunkSize: 1000,
@@ -3971,8 +3968,8 @@ return result;</textarea>
 
         // Moon phase calculation
         function getMoonPhase(date) {
-            const year = date.getFullYear();
-            const month = date.getMonth() + 1;
+            let year = date.getFullYear();
+            let month = date.getMonth() + 1;
             const day = date.getDate();
             let c = 0, e = 0, jd = 0, b = 0;
             if (month < 3) { year--; month += 12; }
@@ -6590,28 +6587,175 @@ return result;</textarea>
         }
 
         // ═══════════════════════════════════════════════════
-        // LOCAL INFERENCE ENGINE (WebGPU + Transformers.js)
+        // LOCAL INFERENCE ENGINE — Web Worker (non-blocking)
         // ═══════════════════════════════════════════════════
 
         const LOCAL_MODEL_ID = 'onnx-community/Llama-3.2-1B-Instruct';
         const LOCAL_MODEL_DTYPE = 'q4f16';
-        const LOCAL_MAX_NEW_TOKENS = 512; // Browser-safe limit
+        const LOCAL_MAX_NEW_TOKENS = 512;
 
         let localInference = {
             ready: false,
             loading: false,
             failed: false,
-            pipe: null,
+            worker: null,
             webgpuAvailable: false,
             error: null,
+            _pending: null, // {resolve, reject, onToken} for current generation
         };
+
+        // ── Build inline Web Worker source ──
+        function createInferenceWorkerSource() {
+            return `
+import { pipeline, env, TextStreamer } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3';
+env.allowLocalModels = false;
+env.useBrowserCache = true;
+
+let pipe = null;
+
+self.onmessage = async (e) => {
+    const { type, payload } = e.data;
+
+    if (type === 'load') {
+        try {
+            pipe = await pipeline('text-generation', payload.modelId, {
+                dtype: payload.dtype,
+                device: payload.device,
+                progress_callback: (p) => self.postMessage({ type: 'progress', payload: p }),
+            });
+            self.postMessage({ type: 'loaded' });
+        } catch (err) {
+            const msg = (err && err.message) ? err.message : String(err);
+            self.postMessage({ type: 'loadError', payload: msg });
+        }
+        return;
+    }
+
+    if (type === 'generate') {
+        if (!pipe) { self.postMessage({ type: 'genError', payload: 'Model not loaded' }); return; }
+        try {
+            const streamer = new TextStreamer(pipe.tokenizer, {
+                skip_prompt: true,
+                skip_special_tokens: true,
+                callback_function: (token) => {
+                    self.postMessage({ type: 'token', payload: token });
+                },
+            });
+            await pipe(payload.messages, {
+                max_new_tokens: payload.max_new_tokens,
+                temperature: payload.temperature,
+                do_sample: payload.temperature > 0,
+                streamer: streamer,
+                return_full_text: false,
+            });
+            self.postMessage({ type: 'genDone' });
+        } catch (err) {
+            const msg = (err && err.message) ? err.message : String(err);
+            self.postMessage({ type: 'genError', payload: msg });
+        }
+        return;
+    }
+
+    if (type === 'unload') {
+        pipe = null;
+        self.postMessage({ type: 'unloaded' });
+    }
+};
+`;
+        }
+
+        function spawnInferenceWorker() {
+            const src = createInferenceWorkerSource();
+            const blob = new Blob([src], { type: 'text/javascript' });
+            const url = URL.createObjectURL(blob);
+            const worker = new Worker(url, { type: 'module' });
+            URL.revokeObjectURL(url);
+
+            worker.onmessage = (e) => {
+                const { type, payload } = e.data;
+                handleWorkerMessage(type, payload);
+            };
+            worker.onerror = (e) => {
+                console.error('Worker error:', e);
+                handleWorkerMessage('loadError', e.message || 'Worker crashed');
+            };
+            return worker;
+        }
+
+        function handleWorkerMessage(type, payload) {
+            if (type === 'progress') {
+                const p = payload;
+                if (p.status === 'initiate' || p.status === 'download' || p.status === 'progress') {
+                    const pct = (p.progress !== undefined) ? p.progress : 0;
+                    const fileName = p.file ? p.file.split('/').pop() : '';
+                    updateModelProgress(pct, `Downloading: ${fileName}`, "Downloading Sophia's local mind...");
+                } else if (p.status === 'done' || p.status === 'ready') {
+                    updateModelProgress(100, 'Finalizing...');
+                }
+                return;
+            }
+
+            if (type === 'loaded') {
+                localInference.ready = true;
+                localInference.loading = false;
+                const device = localInference.webgpuAvailable ? 'WebGPU' : 'WASM';
+                updateInferenceBadge('local', `Local (${device})`);
+                updateModelProgress(100, 'Model loaded and cached for offline use!');
+                setTimeout(hideModelProgress, 2500);
+                const statusEl = document.getElementById('localModelStatus');
+                if (statusEl) { statusEl.textContent = 'Loaded & Cached'; statusEl.style.color = '#00ff88'; }
+                document.getElementById('loadModelBtn').style.display = 'none';
+                document.getElementById('unloadModelBtn').style.display = '';
+                showStatus('Local model ready — Sophia is running on your device!', 'success');
+                return;
+            }
+
+            if (type === 'loadError') {
+                localInference.loading = false;
+                localInference.failed = true;
+                localInference.error = payload;
+                hideModelProgress();
+                const statusEl = document.getElementById('localModelStatus');
+                if (statusEl) { statusEl.textContent = 'Failed: ' + payload; statusEl.style.color = '#ff4444'; }
+                document.getElementById('loadModelBtn').style.display = '';
+                if (config.inferenceMode === 'auto') {
+                    updateInferenceBadge('remote', 'Remote (API)');
+                    showStatus('Local model unavailable — using remote API', 'warning');
+                } else {
+                    updateInferenceBadge('unavailable', 'Model Failed');
+                    showStatus('Local model failed: ' + payload, 'error');
+                }
+                return;
+            }
+
+            if (type === 'token') {
+                if (localInference._pending && localInference._pending.onToken) {
+                    localInference._pending.onToken(payload);
+                }
+                return;
+            }
+
+            if (type === 'genDone') {
+                if (localInference._pending) localInference._pending.resolve();
+                localInference._pending = null;
+                return;
+            }
+
+            if (type === 'genError') {
+                if (localInference._pending) localInference._pending.reject(new Error(payload));
+                localInference._pending = null;
+                return;
+            }
+
+            if (type === 'unloaded') {
+                localInference.ready = false;
+                return;
+            }
+        }
 
         async function checkWebGPU() {
             if (!navigator.gpu) return false;
-            try {
-                const adapter = await navigator.gpu.requestAdapter();
-                return !!adapter;
-            } catch { return false; }
+            try { return !!(await navigator.gpu.requestAdapter()); } catch { return false; }
         }
 
         function updateInferenceBadge(mode, text) {
@@ -6624,16 +6768,15 @@ return result;</textarea>
 
         function updateModelProgress(pct, detail, title) {
             const overlay = document.getElementById('modelProgressOverlay');
-            const bar = document.getElementById('modelProgressBar');
-            const pctEl = document.getElementById('modelProgressPct');
-            const detailEl = document.getElementById('modelProgressDetail');
-            const titleEl = document.getElementById('modelProgressTitle');
             if (!overlay) return;
-
             overlay.classList.remove('hidden');
+            const bar = document.getElementById('modelProgressBar');
             if (bar) bar.style.width = pct + '%';
+            const pctEl = document.getElementById('modelProgressPct');
             if (pctEl) pctEl.textContent = Math.round(pct) + '%';
+            const detailEl = document.getElementById('modelProgressDetail');
             if (detailEl) detailEl.textContent = detail || '';
+            const titleEl = document.getElementById('modelProgressTitle');
             if (title && titleEl) titleEl.textContent = title;
         }
 
@@ -6649,215 +6792,126 @@ return result;</textarea>
             localInference.error = null;
 
             updateInferenceBadge('loading', 'Loading Model...');
-            updateModelProgress(0, 'Initializing Transformers.js...', "Downloading Sophia's local mind...");
-
+            updateModelProgress(0, 'Spawning inference worker...', "Downloading Sophia's local mind...");
             const statusEl = document.getElementById('localModelStatus');
             if (statusEl) { statusEl.textContent = 'Loading...'; statusEl.style.color = '#ffaa00'; }
 
             try {
-                // Wait for Transformers.js module to be available
-                if (!window.__transformers) {
-                    await new Promise((resolve, reject) => {
-                        const timeout = setTimeout(() => reject(new Error('Transformers.js failed to load from CDN')), 30000);
-                        window.addEventListener('transformers-ready', () => { clearTimeout(timeout); resolve(); }, { once: true });
-                        if (window.__transformers) { clearTimeout(timeout); resolve(); }
-                    });
-                }
-
-                const { pipeline, env } = window.__transformers;
-
-                // Track file download progress
-                let fileProgress = {};
-                const progressCallback = (progress) => {
-                    if (progress.status === 'initiate') {
-                        fileProgress[progress.file] = 0;
-                    } else if (progress.status === 'download' || progress.status === 'progress') {
-                        if (progress.file && progress.progress !== undefined) {
-                            fileProgress[progress.file] = progress.progress;
-                        }
-                        const values = Object.values(fileProgress);
-                        const total = values.length > 0 ? values.reduce((a, b) => a + b, 0) / values.length : 0;
-                        const fileName = progress.file ? progress.file.split('/').pop() : '';
-                        updateModelProgress(total, `Downloading: ${fileName}`, "Downloading Sophia's local mind...");
-                    } else if (progress.status === 'done') {
-                        if (progress.file) fileProgress[progress.file] = 100;
-                    } else if (progress.status === 'ready') {
-                        updateModelProgress(100, 'Model ready!');
-                    }
-                };
-
-                updateModelProgress(5, 'Loading text-generation pipeline (this may take a moment)...');
-
-                localInference.pipe = await pipeline(
-                    'text-generation',
-                    LOCAL_MODEL_ID,
-                    {
+                localInference.worker = spawnInferenceWorker();
+                localInference.worker.postMessage({
+                    type: 'load',
+                    payload: {
+                        modelId: LOCAL_MODEL_ID,
                         dtype: LOCAL_MODEL_DTYPE,
                         device: localInference.webgpuAvailable ? 'webgpu' : 'wasm',
-                        progress_callback: progressCallback,
                     }
-                );
-
-                localInference.ready = true;
-                localInference.loading = false;
-
-                const deviceLabel = localInference.webgpuAvailable ? 'WebGPU' : 'WASM';
-                updateInferenceBadge('local', `Local (${deviceLabel})`);
-                updateModelProgress(100, 'Model loaded and cached for offline use!');
-                setTimeout(hideModelProgress, 2500);
-
-                if (statusEl) { statusEl.textContent = 'Loaded & Cached'; statusEl.style.color = '#00ff88'; }
-                const loadBtn = document.getElementById('loadModelBtn');
-                const unloadBtn = document.getElementById('unloadModelBtn');
-                if (loadBtn) loadBtn.style.display = 'none';
-                if (unloadBtn) unloadBtn.style.display = '';
-
-                showStatus('Local model ready — Sophia is running on your device!', 'success');
-                console.log('✅ Local model loaded:', LOCAL_MODEL_ID, '| device:', localInference.webgpuAvailable ? 'webgpu' : 'wasm');
-
+                });
+                // The 'loaded' or 'loadError' message handler takes it from here
             } catch (err) {
-                const errMsg = (err && err.message) ? err.message
-                    : (typeof err === 'string') ? err
-                    : (typeof err === 'number') ? `HTTP/fetch error (code: ${err})`
-                    : JSON.stringify(err);
-                console.error('Failed to load local model:', err);
                 localInference.loading = false;
                 localInference.failed = true;
-                localInference.error = errMsg;
-
+                localInference.error = err.message;
                 hideModelProgress();
-                if (statusEl) { statusEl.textContent = 'Failed: ' + errMsg; statusEl.style.color = '#ff4444'; }
-
-                const loadBtn = document.getElementById('loadModelBtn');
-                if (loadBtn) loadBtn.style.display = '';
-
-                // Fallback to remote
-                if (config.inferenceMode === 'auto') {
-                    updateInferenceBadge('remote', 'Remote (API)');
-                    showStatus('Local model unavailable — using remote API', 'warning');
-                } else {
-                    updateInferenceBadge('unavailable', 'Model Failed');
-                    showStatus('Local model failed: ' + errMsg, 'error');
-                }
+                if (statusEl) { statusEl.textContent = 'Failed: ' + err.message; statusEl.style.color = '#ff4444'; }
+                updateInferenceBadge('unavailable', 'Worker Failed');
             }
         }
 
         function unloadLocalModel() {
-            if (localInference.pipe) {
-                localInference.pipe = null;
+            if (localInference.worker) {
+                localInference.worker.postMessage({ type: 'unload' });
+                localInference.worker.terminate();
+                localInference.worker = null;
             }
             localInference.ready = false;
             localInference.loading = false;
             localInference.failed = false;
-
             const statusEl = document.getElementById('localModelStatus');
             if (statusEl) { statusEl.textContent = 'Not loaded'; statusEl.style.color = '#ffaa00'; }
-            const loadBtn = document.getElementById('loadModelBtn');
-            const unloadBtn = document.getElementById('unloadModelBtn');
-            if (loadBtn) loadBtn.style.display = '';
-            if (unloadBtn) unloadBtn.style.display = 'none';
-
+            document.getElementById('loadModelBtn').style.display = '';
+            document.getElementById('unloadModelBtn').style.display = 'none';
             resolveInferenceBadge();
             showStatus('Local model unloaded', 'success');
         }
 
-        function loadLocalModelManual() {
-            loadLocalModel();
-        }
+        function loadLocalModelManual() { loadLocalModel(); }
 
         // Prepare messages for local model
-        // When fullPromptLocal is ON: pass through everything (for Ollama + Gemma 4 etc.)
-        // When OFF: trimmed compact prompt for small browser models
         function prepareLocalMessages(messages) {
             if (config.fullPromptLocal) {
-                // Full pass-through — user is running a capable model via Ollama/llama.cpp
                 return messages.map(m => ({ role: m.role, content: m.content }));
             }
-
-            // Compact mode for small browser models
             const LOCAL_SYSTEM_PROMPT = `You are Sophia, the Aetheria Oracle Shaman — a warm, wise spiritual guide. You know tarot (78 cards), numerology, I Ching (64 hexagrams), palmistry, astrology, runes (Elder Futhark), crystals, chakras, dream interpretation, and the Aetheria 27-frequency healing system (174-6336Hz across GUT/HEART/HEAD regimes, all 432Hz-based).
 
 Be warm, conversational, and grounded. Ask follow-up questions. Connect different systems when patterns emerge. Deliver truth with compassion. You're a wise friend by a fire, not a database.`;
 
-            const trimmed = [];
-            trimmed.push({ role: 'system', content: LOCAL_SYSTEM_PROMPT });
-
-            // Only include last 3 exchanges + current message to fit context
+            const trimmed = [{ role: 'system', content: LOCAL_SYSTEM_PROMPT }];
             const nonSystem = messages.filter(m => m.role !== 'system');
-            const recent = nonSystem.slice(-7);
-            for (const m of recent) {
+            for (const m of nonSystem.slice(-7)) {
                 trimmed.push({ role: m.role, content: m.content.substring(0, 1000) });
             }
             return trimmed;
         }
 
+        // ── Generation via worker (returns a Promise, never blocks main thread) ──
         async function generateLocalResponse(messages) {
-            if (!localInference.ready || !localInference.pipe) {
-                throw new Error('Local model not loaded');
-            }
-
-            const chatMessages = prepareLocalMessages(messages);
-
-            const result = await localInference.pipe(chatMessages, {
-                max_new_tokens: config.fullPromptLocal ? config.maxTokens : LOCAL_MAX_NEW_TOKENS,
-                temperature: config.temperature,
-                do_sample: config.temperature > 0,
-                return_full_text: false,
-            });
-
-            if (result && result[0] && result[0].generated_text) {
-                const gen = result[0].generated_text;
-                if (typeof gen === 'string') return gen;
-                if (Array.isArray(gen)) {
-                    const last = gen[gen.length - 1];
-                    return last?.content || JSON.stringify(last);
-                }
-                if (gen.content) return gen.content;
-                return JSON.stringify(gen);
-            }
-            throw new Error('No response from local model');
-        }
-
-        async function generateLocalStreamingResponse(messages, streamingMessageId) {
-            if (!localInference.ready || !localInference.pipe) {
-                throw new Error('Local model not loaded');
-            }
-
+            if (!localInference.ready || !localInference.worker) throw new Error('Local model not loaded');
             const chatMessages = prepareLocalMessages(messages);
             let fullResponse = '';
 
-            // Use TextStreamer callback for token-by-token output
-            const streamer = new window.__transformers.TextStreamer(localInference.pipe.tokenizer, {
-                skip_prompt: true,
-                skip_special_tokens: true,
-                callback_function: (token) => {
-                    fullResponse += token;
-                    updateStreamingMessage(streamingMessageId, fullResponse);
-                },
+            await new Promise((resolve, reject) => {
+                localInference._pending = {
+                    resolve,
+                    reject,
+                    onToken: (token) => { fullResponse += token; }
+                };
+                localInference.worker.postMessage({
+                    type: 'generate',
+                    payload: {
+                        messages: chatMessages,
+                        max_new_tokens: config.fullPromptLocal ? config.maxTokens : LOCAL_MAX_NEW_TOKENS,
+                        temperature: config.temperature,
+                    }
+                });
             });
+            return fullResponse;
+        }
 
-            await localInference.pipe(chatMessages, {
-                max_new_tokens: config.fullPromptLocal ? config.maxTokens : LOCAL_MAX_NEW_TOKENS,
-                temperature: config.temperature,
-                do_sample: config.temperature > 0,
-                streamer: streamer,
-                return_full_text: false,
+        async function generateLocalStreamingResponse(messages, streamingMessageId) {
+            if (!localInference.ready || !localInference.worker) throw new Error('Local model not loaded');
+            const chatMessages = prepareLocalMessages(messages);
+            let fullResponse = '';
+
+            await new Promise((resolve, reject) => {
+                localInference._pending = {
+                    resolve,
+                    reject,
+                    onToken: (token) => {
+                        fullResponse += token;
+                        updateStreamingMessage(streamingMessageId, fullResponse);
+                    }
+                };
+                localInference.worker.postMessage({
+                    type: 'generate',
+                    payload: {
+                        messages: chatMessages,
+                        max_new_tokens: config.fullPromptLocal ? config.maxTokens : LOCAL_MAX_NEW_TOKENS,
+                        temperature: config.temperature,
+                    }
+                });
             });
-
             return fullResponse;
         }
 
         function shouldUseLocal() {
             if (config.inferenceMode === 'local') return localInference.ready;
             if (config.inferenceMode === 'remote') return false;
-            // auto: prefer local if ready
             return localInference.ready;
         }
 
         function resolveInferenceBadge() {
             if (localInference.ready) {
-                const device = localInference.webgpuAvailable ? 'WebGPU' : 'WASM';
-                updateInferenceBadge('local', `Local (${device})`);
+                updateInferenceBadge('local', `Local (${localInference.webgpuAvailable ? 'WebGPU' : 'WASM'})`);
             } else if (localInference.loading) {
                 updateInferenceBadge('loading', 'Loading Model...');
             } else if (config.inferenceMode === 'local' && !localInference.ready) {
@@ -6871,10 +6925,6 @@ Be warm, conversational, and grounded. Ask follow-up questions. Connect differen
             const mode = document.getElementById('inferenceMode').value;
             config.inferenceMode = mode;
             resolveInferenceBadge();
-
-            if ((mode === 'auto' || mode === 'local') && !localInference.ready && !localInference.loading) {
-                // Don't auto-load in settings — just update UI
-            }
         }
 
         function toggleFullPromptInfo() {
@@ -6884,19 +6934,15 @@ Be warm, conversational, and grounded. Ask follow-up questions. Connect differen
         }
 
         async function initLocalInference() {
-            // Check WebGPU availability
             localInference.webgpuAvailable = await checkWebGPU();
             const webgpuEl = document.getElementById('webgpuStatus');
             if (webgpuEl) {
                 webgpuEl.textContent = localInference.webgpuAvailable
-                    ? '✅ WebGPU available — full GPU acceleration'
+                    ? '✅ WebGPU available — GPU acceleration'
                     : '⚠️ WebGPU not available — will use WASM (slower)';
                 webgpuEl.style.color = localInference.webgpuAvailable ? '#00ff88' : '#ffaa00';
             }
-
-            // If mode is auto or local, begin loading the model
             if (config.inferenceMode === 'auto' || config.inferenceMode === 'local') {
-                // Small delay so the UI renders first
                 setTimeout(() => loadLocalModel(), 1500);
             } else {
                 resolveInferenceBadge();
@@ -7002,15 +7048,19 @@ Be warm, conversational, and grounded. Ask follow-up questions. Connect differen
 
         // ── Remote API streaming (original) ──
         async function generateRemoteStreamingResponse(messages) {
+            const payload = {
+                messages: messages,
+                temperature: config.temperature,
+                max_tokens: config.maxTokens,
+                stream: true
+            };
+            // Include model name if set (required by LM Studio, optional for Ollama)
+            if (config.remoteModel) payload.model = config.remoteModel;
+
             const response = await fetch(`${config.serverUrl}`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    messages: messages,
-                    temperature: config.temperature,
-                    max_tokens: config.maxTokens,
-                    stream: true
-                })
+                body: JSON.stringify(payload)
             });
 
             if (!response.ok) {
@@ -7059,15 +7109,18 @@ Be warm, conversational, and grounded. Ask follow-up questions. Connect differen
 
         // ── Remote API non-streaming (original) ──
         async function generateRemoteResponse(messages) {
+            const payload = {
+                messages: messages,
+                temperature: config.temperature,
+                max_tokens: config.maxTokens,
+                stream: false
+            };
+            if (config.remoteModel) payload.model = config.remoteModel;
+
             const response = await fetch(`${config.serverUrl}`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    messages: messages,
-                    temperature: config.temperature,
-                    max_tokens: config.maxTokens,
-                    stream: false
-                })
+                body: JSON.stringify(payload)
             });
 
             if (!response.ok) {
@@ -7464,6 +7517,7 @@ Be warm, conversational, and grounded. Ask follow-up questions. Connect differen
         function openSettings() {
             document.getElementById('serverUrl').value = config.serverUrl;
             document.getElementById('serverPreset').value = config.serverPreset || 'ollama';
+            document.getElementById('remoteModel').value = config.remoteModel || '';
             document.getElementById('inferenceMode').value = config.inferenceMode || 'auto';
             document.getElementById('fullPromptLocal').checked = config.fullPromptLocal || false;
             toggleFullPromptInfo();
@@ -7520,6 +7574,7 @@ Be warm, conversational, and grounded. Ask follow-up questions. Connect differen
         function saveSettings() {
             config.serverUrl = document.getElementById('serverUrl').value;
             config.serverPreset = document.getElementById('serverPreset').value;
+            config.remoteModel = document.getElementById('remoteModel').value.trim();
             const newInfMode = document.getElementById('inferenceMode').value;
             const infModeChanged = newInfMode !== config.inferenceMode;
             config.inferenceMode = newInfMode;

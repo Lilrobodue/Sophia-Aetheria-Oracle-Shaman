@@ -9,15 +9,10 @@
     <meta name="description" content="Sophia - Aetheria Oracle Shaman. Tarot, numerology, I Ching, palmistry, and frequency healing guidance.">
     <meta name="apple-mobile-web-app-title" content="Sophia Oracle">
     <link rel="manifest" id="manifest-link">
-    <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect fill='%231a0a2e' width='100' height='100' rx='20'/><text y='70' x='50' text-anchor='middle' font-size='60'>🔮</text></svg>">
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3CradialGradient id='g' cx='50%25' cy='40%25' r='50%25'%3E%3Cstop offset='0%25' stop-color='%23c4a0ff'/%3E%3Cstop offset='50%25' stop-color='%237B50D4'/%3E%3Cstop offset='100%25' stop-color='%231a0a2e'/%3E%3C/radialGradient%3E%3CradialGradient id='s' cx='35%25' cy='30%25' r='25%25'%3E%3Cstop offset='0%25' stop-color='%23ffffff' stop-opacity='0.6'/%3E%3Cstop offset='100%25' stop-color='%23ffffff' stop-opacity='0'/%3E%3C/radialGradient%3E%3C/defs%3E%3Crect fill='%230a0a0f' width='64' height='64' rx='14'/%3E%3Ccircle cx='32' cy='28' r='16' fill='url(%23g)' stroke='%23ff005580' stroke-width='1'/%3E%3Ccircle cx='28' cy='24' r='6' fill='url(%23s)'/%3E%3Cpath d='M18 44 C18 40 46 40 46 44 L48 50 C48 52 16 52 16 50 Z' fill='%23ff005544' stroke='%23ff005566' stroke-width='0.5'/%3E%3Ccircle cx='32' cy='28' r='16' fill='none' stroke='%23c4a0ff22' stroke-width='3'/%3E%3C/svg%3E">
+    <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect fill='%231a0a2e' width='100' height='100' rx='20'/%3E%3Ccircle cx='50' cy='42' r='26' fill='%237B50D4' stroke='%23ff0055' stroke-width='1.5' opacity='0.9'/%3E%3Ccircle cx='42' cy='35' r='10' fill='white' opacity='0.15'/%3E%3Cpath d='M26 70 C26 64 74 64 74 70 L76 80 C76 82 24 82 24 80 Z' fill='%23ff005566'/%3E%3C/svg%3E">
     <title>Sophia - Aetheria Oracle Shaman</title>
-    <script type="module" id="transformers-js-import">
-        import { pipeline, env, TextStreamer } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3';
-        env.allowLocalModels = false;
-        env.useBrowserCache = true;
-        window.__transformers = { pipeline, env, TextStreamer };
-        window.dispatchEvent(new Event('transformers-ready'));
-    </script>
+    <!-- Transformers.js loads inside Web Worker — no main-thread import needed -->
     <style>
         * {
             margin: 0;
@@ -1365,6 +1360,38 @@
             </div>
 
             <div class="sidebar-section">
+                <h3>💜 Sophia's Memory <span id="memoryCount" style="color: #888; font-size: 0.75rem; font-weight: normal;">0</span></h3>
+                <div id="memoryList" style="max-height: 200px; overflow-y: auto; margin-bottom: 8px;">
+                    <p style="color: #888; font-size: 0.8rem;">No memories yet. Sophia remembers as you talk.</p>
+                </div>
+                <div style="display: flex; gap: 6px;">
+                    <button class="btn btn-small btn-primary" onclick="saveManualMemory()" style="flex: 1;">+ Add Memory</button>
+                    <button class="btn btn-small btn-secondary" onclick="if(confirm('Clear all memories?')) clearAllMemories()" style="flex: 1;">Clear All</button>
+                </div>
+            </div>
+
+            <div class="sidebar-section">
+                <h3>🌐 Aetheria Ecosystem</h3>
+                <div id="ecosystemLinks" style="font-size: 0.8rem;">
+                    <a href="http://aetheriasos.com/" target="_blank" style="display:flex;align-items:center;gap:8px;color:#ff6b9d;text-decoration:none;padding:5px 0;border-bottom:1px solid rgba(255,255,255,0.05);">🔮 <span>Sophia Oracle Shaman</span></a>
+                    <a href="https://aetheria432.com" target="_blank" style="display:flex;align-items:center;gap:8px;color:#d4a574;text-decoration:none;padding:5px 0;border-bottom:1px solid rgba(255,255,255,0.05);">🎵 <span>Aetheria 432Hz Player</span></a>
+                    <a href="https://aetheriarct.com" target="_blank" style="display:flex;align-items:center;gap:8px;color:#7B50D4;text-decoration:none;padding:5px 0;border-bottom:1px solid rgba(255,255,255,0.05);">🧠 <span>Aetheria RCT</span></a>
+                    <a href="https://a.co/d/079tM297" target="_blank" style="display:flex;align-items:center;gap:8px;color:#A840B8;text-decoration:none;padding:5px 0;border-bottom:1px solid rgba(255,255,255,0.05);">📖 <span>Aetheria — The Book</span></a>
+                    <a href="https://a.co/d/0c83ZGEu" target="_blank" style="display:flex;align-items:center;gap:8px;color:#5048C4;text-decoration:none;padding:5px 0;border-bottom:1px solid rgba(255,255,255,0.05);">📘 <span>The Golden Thread</span></a>
+                    <a href="https://a.co/d/0ckEN0Qs" target="_blank" style="display:flex;align-items:center;gap:8px;color:#C47A14;text-decoration:none;padding:5px 0;border-bottom:1px solid rgba(255,255,255,0.05);">📙 <span>Cosmic Rhythms</span></a>
+                    <a href="https://a.co/d/04Y1pUtE" target="_blank" style="display:flex;align-items:center;gap:8px;color:#C43A6A;text-decoration:none;padding:5px 0;border-bottom:1px solid rgba(255,255,255,0.05);">📕 <span>SFB — A TBI Guide</span></a>
+                    <a href="https://open.spotify.com/artist/4CXB2ctrUCvInDQkKDhw4q" target="_blank" style="display:flex;align-items:center;gap:8px;color:#4A7C59;text-decoration:none;padding:5px 0;border-bottom:1px solid rgba(255,255,255,0.05);">🎧 <span>Aetheria on Spotify</span></a>
+                    <a href="https://discord.gg/ddR3MfgCsM" target="_blank" style="display:flex;align-items:center;gap:8px;color:#5048C4;text-decoration:none;padding:5px 0;border-bottom:1px solid rgba(255,255,255,0.05);">💬 <span>Th3 L0unG3 — Discord</span></a>
+                    <a href="https://www.youtube.com/@Aetheria432" target="_blank" style="display:flex;align-items:center;gap:8px;color:#C43A6A;text-decoration:none;padding:5px 0;border-bottom:1px solid rgba(255,255,255,0.05);">▶ <span>YouTube</span></a>
+                    <a href="https://x.com/TheyCallmeJobo" target="_blank" style="display:flex;align-items:center;gap:8px;color:#C47A14;text-decoration:none;padding:5px 0;border-bottom:1px solid rgba(255,255,255,0.05);">𝕏 <span>@TheyCallmeJobo</span></a>
+                    <a href="mailto:Aetheria432@pm.me" style="display:flex;align-items:center;gap:8px;color:#d4a574;text-decoration:none;padding:5px 0;">✉ <span>Aetheria432@pm.me</span></a>
+                </div>
+                <div style="margin-top: 6px; text-align: center;">
+                    <span style="font-size: 0.65rem; color: #3a3030;">Created by Joseph & Alisha Lewis · Air Force Veterans · Mountain Home, Idaho</span>
+                </div>
+            </div>
+
+            <div class="sidebar-section">
                 <h3>⚙️ Quick Actions</h3>
                 <button class="btn btn-small btn-secondary" onclick="openSettings()" style="width: 100%; margin-bottom: 8px;">
                     Settings
@@ -1644,7 +1671,7 @@
                     <option value="remote">Remote Only (API Server)</option>
                 </select>
                 <div id="localModelInfo" style="background: rgba(0, 255, 136, 0.1); padding: 10px; border-radius: 6px; margin-bottom: 8px; font-size: 0.85rem; border: 1px solid rgba(0, 255, 136, 0.3);">
-                    <strong>🧠 Local Model:</strong> Qwen2.5-0.5B-Instruct (Q4F16)
+                    <strong>🧠 Local Model:</strong> Llama-3.2-1B-Instruct (Q4F16)
                     <div style="margin-top: 6px;">
                         <span>Status: </span><span id="localModelStatus" style="color: #ffaa00;">Not loaded</span>
                     </div>
@@ -1653,6 +1680,14 @@
                         <button class="btn btn-small btn-secondary" onclick="unloadLocalModel()" id="unloadModelBtn" style="flex: 1; display: none;">🗑️ Unload</button>
                     </div>
                     <div style="margin-top: 6px; font-size: 0.75rem; color: #888;" id="webgpuStatus">Checking WebGPU...</div>
+                </div>
+
+                <label style="font-weight: normal; display: flex; align-items: center; gap: 10px; margin-top: 4px;">
+                    <input type="checkbox" id="fullPromptLocal" onchange="toggleFullPromptInfo()">
+                    <strong>Send full prompt + frequency table to local/API</strong>
+                </label>
+                <div id="fullPromptInfo" style="font-size: 0.75rem; color: #888; margin-top: 4px; display: none;">
+                    Enable this when running a capable model (Gemma 4, Llama 70B, etc.) via Ollama or llama.cpp. The full Aetheria Oracle system prompt and 27-frequency reference table will be included in every request. Leave off for small browser models.
                 </div>
             </div>
 
@@ -1665,6 +1700,8 @@
                     <option value="custom">Custom</option>
                 </select>
                 <input type="text" id="serverUrl" class="text-input" value="http://localhost:11434/v1/chat/completions" style="margin-bottom: 8px;">
+                <input type="text" id="remoteModel" class="text-input" placeholder="Model name (e.g. gemma-4-e4b-it)" style="margin-bottom: 8px;">
+                <div style="font-size: 0.7rem; color: #888; margin: -4px 0 8px 2px;">Required for LM Studio. For Ollama, leave blank to use the loaded model.</div>
                 <div style="display: flex; gap: 8px; align-items: center;">
                     <button class="btn btn-small btn-secondary" onclick="testConnectionManual()" style="flex: 1;">🔗 Test Connection</button>
                     <span id="connectionTestResult" style="font-size: 0.8rem; color: #888;">Not tested</span>
@@ -3762,6 +3799,8 @@ return result;</textarea>
             serverUrl: 'http://localhost:11434/v1/chat/completions',
             serverPreset: 'ollama',
             inferenceMode: 'auto', // 'auto', 'local', 'remote'
+            fullPromptLocal: false, // send full system prompt + freq table to local/API
+            remoteModel: '', // model name for LM Studio / Ollama (e.g. 'gemma-4-e4b-it')
             systemPrompt: '',
             ragEnabled: true,
             chunkSize: 1000,
@@ -3934,6 +3973,298 @@ return result;</textarea>
         // END AETHERIA PRESCRIPTION ENGINE
         // ═══════════════════════════════════════════════════
 
+        // ═══════════════════════════════════════════════════
+        // SOPHIA MEMORY SYSTEM — persistent across sessions
+        // ═══════════════════════════════════════════════════
+        // Types: reading, observation, personal, session
+
+        async function saveMemory(memory) {
+            if (!db) return null;
+            const entry = {
+                type: memory.type || 'observation',
+                content: memory.content,
+                tags: memory.tags || [],
+                timestamp: Date.now(),
+                date: new Date().toLocaleDateString(),
+                source: memory.source || 'auto',
+            };
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(['memories'], 'readwrite');
+                const store = tx.objectStore('memories');
+                const req = store.add(entry);
+                req.onsuccess = () => { resolve(req.result); renderMemoryPanel(); };
+                req.onerror = () => reject(req.error);
+            });
+        }
+
+        async function getAllMemories() {
+            if (!db) return [];
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(['memories'], 'readonly');
+                const store = tx.objectStore('memories');
+                const req = store.getAll();
+                req.onsuccess = () => resolve(req.result || []);
+                req.onerror = () => reject(req.error);
+            });
+        }
+
+        async function getMemoriesByType(type) {
+            if (!db) return [];
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(['memories'], 'readonly');
+                const idx = tx.objectStore('memories').index('type');
+                const req = idx.getAll(type);
+                req.onsuccess = () => resolve(req.result || []);
+                req.onerror = () => reject(req.error);
+            });
+        }
+
+        async function deleteMemory(id) {
+            if (!db) return;
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(['memories'], 'readwrite');
+                const store = tx.objectStore('memories');
+                const req = store.delete(id);
+                req.onsuccess = () => { resolve(); renderMemoryPanel(); };
+                req.onerror = () => reject(req.error);
+            });
+        }
+
+        async function clearAllMemories() {
+            if (!db) return;
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(['memories'], 'readwrite');
+                const store = tx.objectStore('memories');
+                const req = store.clear();
+                req.onsuccess = () => { resolve(); renderMemoryPanel(); };
+                req.onerror = () => reject(req.error);
+            });
+        }
+
+        async function searchMemories(query) {
+            const all = await getAllMemories();
+            const q = query.toLowerCase();
+            return all.filter(m =>
+                m.content.toLowerCase().includes(q) ||
+                (m.tags && m.tags.some(t => t.toLowerCase().includes(q)))
+            );
+        }
+
+        // Get recent + relevant memories for context injection
+        async function getMemoryContext(userMessage) {
+            try {
+                const all = await getAllMemories();
+                if (all.length === 0) return '';
+
+                // Recent memories (last 10)
+                const sorted = all.sort((a, b) => b.timestamp - a.timestamp);
+                const recent = sorted.slice(0, 10);
+
+                // Keyword-relevant memories from the user's message
+                const words = userMessage.toLowerCase().split(/\s+/).filter(w => w.length > 3);
+                const relevant = all.filter(m => {
+                    const mc = m.content.toLowerCase();
+                    return words.some(w => mc.includes(w));
+                });
+
+                // Combine, deduplicate, limit
+                const combined = new Map();
+                for (const m of [...relevant, ...recent]) {
+                    combined.set(m.id, m);
+                }
+                const memories = [...combined.values()].slice(0, 15);
+
+                if (memories.length === 0) return '';
+
+                const typeIcons = { reading: '🃏', observation: '👁️', personal: '💜', session: '📝' };
+                let ctx = '\n\n## Sophia\'s Memories (from past sessions)\n';
+                for (const m of memories) {
+                    const icon = typeIcons[m.type] || '📌';
+                    ctx += `${icon} [${m.date}] ${m.content}\n`;
+                }
+                ctx += '\nUse these memories naturally — reference past readings, notice patterns, remember details the person shared. Don\'t list them mechanically.\n';
+                return ctx;
+            } catch (e) {
+                console.warn('Memory context error:', e);
+                return '';
+            }
+        }
+
+        // Auto-extract memories from conversation
+        async function extractMemories(userMsg, assistantMsg) {
+            try {
+                const u = userMsg.toLowerCase();
+                const a = assistantMsg.toLowerCase();
+                const tags = [];
+
+                // Personal details — name
+                const nameMatch = userMsg.match(/(?:my name is|i'm|i am|call me)\s+([A-Z][a-z]+)/i);
+                if (nameMatch) {
+                    await saveMemory({
+                        type: 'personal',
+                        content: `User's name is ${nameMatch[1]}`,
+                        tags: ['name', 'identity'],
+                        source: 'auto',
+                    });
+                }
+
+                // Personal details — birthday / zodiac
+                const bdayMatch = userMsg.match(/(?:born on|birthday is|born)\s+(\w+\s+\d{1,2}(?:\s*,?\s*\d{4})?)/i);
+                if (bdayMatch) {
+                    await saveMemory({
+                        type: 'personal',
+                        content: `User's birthday: ${bdayMatch[1]}`,
+                        tags: ['birthday', 'astrology'],
+                        source: 'auto',
+                    });
+                }
+
+                // Readings — tarot cards
+                const tarotCards = assistantMsg.match(/(?:drew|pulled|card is|cards?:?)\s+(?:the\s+)?([A-Z][a-z]+(?:\s+(?:of\s+)?[A-Z][a-z]+)*)/g);
+                if (tarotCards && tarotCards.length > 0) {
+                    await saveMemory({
+                        type: 'reading',
+                        content: `Tarot reading: ${tarotCards.join(', ')}`,
+                        tags: ['tarot', 'reading'],
+                        source: 'auto',
+                    });
+                }
+
+                // Readings — I Ching hexagram
+                const hexMatch = assistantMsg.match(/[Hh]exagram\s*#?\s*(\d{1,2})(?:\s*[-—]\s*(.+?)(?:\.|,|\n))?/);
+                if (hexMatch) {
+                    await saveMemory({
+                        type: 'reading',
+                        content: `I Ching: Hexagram #${hexMatch[1]}${hexMatch[2] ? ' — ' + hexMatch[2].trim() : ''}`,
+                        tags: ['iching', 'reading', 'hexagram'],
+                        source: 'auto',
+                    });
+                }
+
+                // Readings — numerology life path
+                const lifePathMatch = assistantMsg.match(/life\s*path\s*(?:number\s*)?(?:is\s*)?(\d{1,2})/i);
+                if (lifePathMatch) {
+                    await saveMemory({
+                        type: 'reading',
+                        content: `Numerology: Life Path number is ${lifePathMatch[1]}`,
+                        tags: ['numerology', 'reading', 'lifepath'],
+                        source: 'auto',
+                    });
+                }
+
+                // Readings — runes
+                const runeMatch = assistantMsg.match(/(?:rune|drew|cast)\s*:?\s*(Fehu|Uruz|Thurisaz|Ansuz|Raidho|Kenaz|Gebo|Wunjo|Hagalaz|Nauthiz|Isa|Jera|Eihwaz|Perthro|Algiz|Sowilo|Tiwaz|Berkano|Ehwaz|Mannaz|Laguz|Ingwaz|Dagaz|Othala)/i);
+                if (runeMatch) {
+                    await saveMemory({
+                        type: 'reading',
+                        content: `Rune cast: ${runeMatch[1]}`,
+                        tags: ['rune', 'reading'],
+                        source: 'auto',
+                    });
+                }
+
+                // Observations — emotional states, life situations
+                const emotionPatterns = [
+                    /(?:i(?:'m| am) feeling|i feel)\s+(.{10,60})/i,
+                    /(?:going through|dealing with|struggling with)\s+(.{10,60})/i,
+                    /(?:worried about|anxious about|excited about)\s+(.{10,60})/i,
+                ];
+                for (const pat of emotionPatterns) {
+                    const match = userMsg.match(pat);
+                    if (match) {
+                        await saveMemory({
+                            type: 'observation',
+                            content: `User shared: "${match[0].trim()}"`,
+                            tags: ['emotion', 'context'],
+                            source: 'auto',
+                        });
+                        break; // one per message
+                    }
+                }
+
+                // Aetheria frequency mentions
+                const freqMatch = assistantMsg.match(/(\d{3,4})\s*Hz.*?(?:suggest|recommend|try|resonate)/i);
+                if (freqMatch) {
+                    await saveMemory({
+                        type: 'reading',
+                        content: `Recommended frequency: ${freqMatch[1]}Hz`,
+                        tags: ['frequency', 'aetheria'],
+                        source: 'auto',
+                    });
+                }
+
+                // Session summary — save every 5 exchanges
+                if (chatHistory.length > 0 && chatHistory.length % 10 === 0) {
+                    const lastFew = chatHistory.slice(-6).map(m =>
+                        `${m.role}: ${m.content.substring(0, 100)}`
+                    ).join(' | ');
+                    await saveMemory({
+                        type: 'session',
+                        content: `Session snippet (${chatHistory.length} msgs): ${lastFew}`,
+                        tags: ['session', 'summary'],
+                        source: 'auto',
+                    });
+                }
+
+            } catch (e) {
+                console.warn('Memory extraction error:', e);
+            }
+        }
+
+        // Render memory panel in sidebar
+        async function renderMemoryPanel() {
+            const list = document.getElementById('memoryList');
+            if (!list) return;
+            try {
+                const all = await getAllMemories();
+                if (all.length === 0) {
+                    list.innerHTML = '<p style="color: #888; font-size: 0.8rem;">No memories yet. Sophia remembers as you talk.</p>';
+                    const countEl = document.getElementById('memoryCount');
+                    if (countEl) countEl.textContent = '0';
+                    return;
+                }
+
+                const sorted = all.sort((a, b) => b.timestamp - a.timestamp);
+                const typeIcons = { reading: '🃏', observation: '👁️', personal: '💜', session: '📝' };
+
+                list.innerHTML = sorted.slice(0, 30).map(m => `
+                    <div style="background: rgba(0,0,0,0.3); padding: 6px 8px; border-radius: 5px; margin-bottom: 4px; font-size: 0.75rem; position: relative;">
+                        <span>${typeIcons[m.type] || '📌'}</span>
+                        <span style="color: #ccc;">${m.content.substring(0, 80)}${m.content.length > 80 ? '...' : ''}</span>
+                        <span style="color: #555; display: block; font-size: 0.65rem; margin-top: 2px;">${m.date} · ${m.type}</span>
+                        <button onclick="deleteMemory(${m.id})" style="position:absolute;top:4px;right:4px;background:none;border:none;color:#ff005544;cursor:pointer;font-size:0.7rem;" title="Forget this">✕</button>
+                    </div>
+                `).join('');
+
+                if (all.length > 30) {
+                    list.innerHTML += `<p style="color: #888; font-size: 0.7rem; text-align: center;">+ ${all.length - 30} more memories</p>`;
+                }
+
+                const countEl = document.getElementById('memoryCount');
+                if (countEl) countEl.textContent = all.length;
+            } catch (e) {
+                list.innerHTML = '<p style="color: #ff4444; font-size: 0.8rem;">Error loading memories</p>';
+            }
+        }
+
+        // Manual memory save from user
+        function saveManualMemory() {
+            const input = prompt('What should Sophia remember?');
+            if (input && input.trim()) {
+                saveMemory({
+                    type: 'personal',
+                    content: input.trim(),
+                    tags: ['manual'],
+                    source: 'manual',
+                });
+                showStatus('Memory saved!', 'success');
+            }
+        }
+
+        // ═══════════════════════════════════════════════════
+        // END MEMORY SYSTEM
+        // ═══════════════════════════════════════════════════
+
         // Server endpoint presets
         const SERVER_PRESETS = {
             ollama: 'http://localhost:11434/v1/chat/completions',
@@ -3982,8 +4313,8 @@ return result;</textarea>
 
         // Moon phase calculation
         function getMoonPhase(date) {
-            const year = date.getFullYear();
-            const month = date.getMonth() + 1;
+            let year = date.getFullYear();
+            let month = date.getMonth() + 1;
             const day = date.getDate();
             let c = 0, e = 0, jd = 0, b = 0;
             if (month < 3) { year--; month += 12; }
@@ -4127,6 +4458,80 @@ return result;</textarea>
 
         // PWA Manifest (inline as data URI)
         function registerPWAManifest() {
+            // Generate crystal ball icon as PNG data URL at a given size
+            function generateIconDataUrl(size) {
+                const c = document.createElement('canvas');
+                c.width = size; c.height = size;
+                const ctx = c.getContext('2d');
+                const s = size / 64; // scale factor from 64px base
+
+                // Background
+                const bgR = size * 0.22;
+                ctx.fillStyle = '#0a0a0f';
+                ctx.beginPath();
+                ctx.roundRect(0, 0, size, size, bgR);
+                ctx.fill();
+
+                // Crystal ball — main sphere
+                const cx = size / 2, cy = size * 0.44, r = size * 0.25;
+                const grad = ctx.createRadialGradient(cx, cy * 0.9, 0, cx, cy, r);
+                grad.addColorStop(0, '#c4a0ff');
+                grad.addColorStop(0.5, '#7B50D4');
+                grad.addColorStop(1, '#1a0a2e');
+                ctx.beginPath();
+                ctx.arc(cx, cy, r, 0, Math.PI * 2);
+                ctx.fillStyle = grad;
+                ctx.fill();
+
+                // Glow ring
+                ctx.beginPath();
+                ctx.arc(cx, cy, r + s * 1.5, 0, Math.PI * 2);
+                ctx.strokeStyle = 'rgba(196, 160, 255, 0.15)';
+                ctx.lineWidth = s * 3;
+                ctx.stroke();
+
+                // Specular highlight
+                const sg = ctx.createRadialGradient(cx - r * 0.25, cy - r * 0.25, 0, cx - r * 0.25, cy - r * 0.25, r * 0.4);
+                sg.addColorStop(0, 'rgba(255,255,255,0.5)');
+                sg.addColorStop(1, 'rgba(255,255,255,0)');
+                ctx.beginPath();
+                ctx.arc(cx - r * 0.25, cy - r * 0.25, r * 0.4, 0, Math.PI * 2);
+                ctx.fillStyle = sg;
+                ctx.fill();
+
+                // Magenta rim
+                ctx.beginPath();
+                ctx.arc(cx, cy, r, 0, Math.PI * 2);
+                ctx.strokeStyle = 'rgba(255, 0, 85, 0.35)';
+                ctx.lineWidth = s * 1;
+                ctx.stroke();
+
+                // Base / stand
+                const baseY = cy + r + s * 2;
+                ctx.beginPath();
+                ctx.moveTo(cx - r * 0.85, baseY);
+                ctx.quadraticCurveTo(cx - r * 0.95, baseY + s * 6, cx - r, baseY + s * 9);
+                ctx.lineTo(cx + r, baseY + s * 9);
+                ctx.quadraticCurveTo(cx + r * 0.95, baseY + s * 6, cx + r * 0.85, baseY);
+                ctx.closePath();
+                ctx.fillStyle = 'rgba(255, 0, 85, 0.25)';
+                ctx.fill();
+                ctx.strokeStyle = 'rgba(255, 0, 85, 0.4)';
+                ctx.lineWidth = s * 0.5;
+                ctx.stroke();
+
+                return c.toDataURL('image/png');
+            }
+
+            // Generate icons at standard PWA sizes
+            const sizes = [48, 72, 96, 128, 144, 192, 256, 512];
+            const icons = sizes.map(size => ({
+                src: generateIconDataUrl(size),
+                sizes: `${size}x${size}`,
+                type: 'image/png',
+                purpose: 'any maskable'
+            }));
+
             const manifest = {
                 name: 'Sophia - Aetheria Oracle Shaman',
                 short_name: 'Sophia Oracle',
@@ -4137,9 +4542,7 @@ return result;</textarea>
                 theme_color: '#1a0a2e',
                 orientation: 'any',
                 categories: ['lifestyle', 'health'],
-                icons: [
-                    { src: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><rect fill="%231a0a2e" width="512" height="512" rx="80"/><text y="350" x="256" text-anchor="middle" font-size="300">🔮</text></svg>', sizes: '512x512', type: 'image/svg+xml', purpose: 'any maskable' }
-                ]
+                icons: icons
             };
             const blob = new Blob([JSON.stringify(manifest)], { type: 'application/json' });
             const url = URL.createObjectURL(blob);
@@ -4221,23 +4624,28 @@ return result;</textarea>
         
         async function initIndexedDB() {
             return new Promise((resolve, reject) => {
-                const request = indexedDB.open('SophiaOracleDB', 1);
-                
+                const request = indexedDB.open('SophiaOracleDB', 2); // v2: adds memories store
+
                 request.onerror = () => reject(request.error);
                 request.onsuccess = () => {
                     db = request.result;
                     resolve(db);
                 };
-                
+
                 request.onupgradeneeded = (event) => {
                     const db = event.target.result;
-                    
-                    // Create object stores if they don't exist
+
                     if (!db.objectStoreNames.contains('files')) {
                         db.createObjectStore('files', { keyPath: 'id', autoIncrement: true });
                     }
                     if (!db.objectStoreNames.contains('metadata')) {
                         db.createObjectStore('metadata', { keyPath: 'key' });
+                    }
+                    if (!db.objectStoreNames.contains('memories')) {
+                        const memStore = db.createObjectStore('memories', { keyPath: 'id', autoIncrement: true });
+                        memStore.createIndex('type', 'type', { unique: false });
+                        memStore.createIndex('timestamp', 'timestamp', { unique: false });
+                        memStore.createIndex('tags', 'tags', { unique: false, multiEntry: true });
                     }
                 };
             });
@@ -4479,6 +4887,9 @@ return result;</textarea>
 
                 // Reading of the Day
                 renderReadingOfTheDay();
+
+                // Load memory panel
+                renderMemoryPanel();
 
                 // Restore server preset UI
                 if (config.serverPreset) {
@@ -5201,6 +5612,23 @@ return result;</textarea>
             }
         }
 
+        // Strip markdown/formatting characters so TTS reads naturally
+        function cleanForSpeech(text) {
+            return text
+                .replace(/<[^>]*>/g, '')      // HTML tags
+                .replace(/\*{1,3}/g, '')      // *bold* **bold** ***bold***
+                .replace(/_{1,3}/g, '')       // _italic_ __underline__
+                .replace(/~{2}/g, '')         // ~~strikethrough~~
+                .replace(/`{1,3}/g, '')       // `code` ```code```
+                .replace(/^#{1,6}\s*/gm, '')  // # headings
+                .replace(/^\s*[-*+]\s+/gm, '') // - bullet points
+                .replace(/^\s*\d+\.\s+/gm, '') // 1. numbered lists
+                .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1') // [links](url) → links
+                .replace(/\n+/g, ' ')
+                .replace(/\s{2,}/g, ' ')
+                .trim();
+        }
+
         function speakText(text, streaming = false) {
             if (!synthesis) return;
 
@@ -5209,7 +5637,7 @@ return result;</textarea>
             if (streaming && config.voiceStreaming) {
                 speakTextStreaming(text);
             } else {
-                const utterance = new SpeechSynthesisUtterance(text);
+                const utterance = new SpeechSynthesisUtterance(cleanForSpeech(text));
                 utterance.rate = config.voiceRate;
                 utterance.pitch = config.voicePitch;
                 utterance.volume = config.voiceVolume;
@@ -5225,12 +5653,7 @@ return result;</textarea>
         }
 
         function speakTextStreaming(fullText) {
-            // Clean HTML and normalize whitespace
-            const cleanText = fullText
-                .replace(/<[^>]*>/g, '')
-                .replace(/\n+/g, ' ')
-                .replace(/\s{2,}/g, ' ')
-                .trim();
+            const cleanText = cleanForSpeech(fullText);
 
             // Split on sentence boundaries — keeps natural speech flow
             // Matches: period, exclamation, question mark, colon, semicolon
@@ -6529,27 +6952,175 @@ return result;</textarea>
         }
 
         // ═══════════════════════════════════════════════════
-        // LOCAL INFERENCE ENGINE (WebGPU + Transformers.js)
+        // LOCAL INFERENCE ENGINE — Web Worker (non-blocking)
         // ═══════════════════════════════════════════════════
 
-        const LOCAL_MODEL_ID = 'onnx-community/Qwen2.5-0.5B-Instruct';
+        const LOCAL_MODEL_ID = 'onnx-community/Llama-3.2-1B-Instruct';
         const LOCAL_MODEL_DTYPE = 'q4f16';
+        const LOCAL_MAX_NEW_TOKENS = 512;
 
         let localInference = {
             ready: false,
             loading: false,
             failed: false,
-            pipe: null,
+            worker: null,
             webgpuAvailable: false,
             error: null,
+            _pending: null, // {resolve, reject, onToken} for current generation
         };
+
+        // ── Build inline Web Worker source ──
+        function createInferenceWorkerSource() {
+            return `
+import { pipeline, env, TextStreamer } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3';
+env.allowLocalModels = false;
+env.useBrowserCache = true;
+
+let pipe = null;
+
+self.onmessage = async (e) => {
+    const { type, payload } = e.data;
+
+    if (type === 'load') {
+        try {
+            pipe = await pipeline('text-generation', payload.modelId, {
+                dtype: payload.dtype,
+                device: payload.device,
+                progress_callback: (p) => self.postMessage({ type: 'progress', payload: p }),
+            });
+            self.postMessage({ type: 'loaded' });
+        } catch (err) {
+            const msg = (err && err.message) ? err.message : String(err);
+            self.postMessage({ type: 'loadError', payload: msg });
+        }
+        return;
+    }
+
+    if (type === 'generate') {
+        if (!pipe) { self.postMessage({ type: 'genError', payload: 'Model not loaded' }); return; }
+        try {
+            const streamer = new TextStreamer(pipe.tokenizer, {
+                skip_prompt: true,
+                skip_special_tokens: true,
+                callback_function: (token) => {
+                    self.postMessage({ type: 'token', payload: token });
+                },
+            });
+            await pipe(payload.messages, {
+                max_new_tokens: payload.max_new_tokens,
+                temperature: payload.temperature,
+                do_sample: payload.temperature > 0,
+                streamer: streamer,
+                return_full_text: false,
+            });
+            self.postMessage({ type: 'genDone' });
+        } catch (err) {
+            const msg = (err && err.message) ? err.message : String(err);
+            self.postMessage({ type: 'genError', payload: msg });
+        }
+        return;
+    }
+
+    if (type === 'unload') {
+        pipe = null;
+        self.postMessage({ type: 'unloaded' });
+    }
+};
+`;
+        }
+
+        function spawnInferenceWorker() {
+            const src = createInferenceWorkerSource();
+            const blob = new Blob([src], { type: 'text/javascript' });
+            const url = URL.createObjectURL(blob);
+            const worker = new Worker(url, { type: 'module' });
+            URL.revokeObjectURL(url);
+
+            worker.onmessage = (e) => {
+                const { type, payload } = e.data;
+                handleWorkerMessage(type, payload);
+            };
+            worker.onerror = (e) => {
+                console.error('Worker error:', e);
+                handleWorkerMessage('loadError', e.message || 'Worker crashed');
+            };
+            return worker;
+        }
+
+        function handleWorkerMessage(type, payload) {
+            if (type === 'progress') {
+                const p = payload;
+                if (p.status === 'initiate' || p.status === 'download' || p.status === 'progress') {
+                    const pct = (p.progress !== undefined) ? p.progress : 0;
+                    const fileName = p.file ? p.file.split('/').pop() : '';
+                    updateModelProgress(pct, `Downloading: ${fileName}`, "Downloading Sophia's local mind...");
+                } else if (p.status === 'done' || p.status === 'ready') {
+                    updateModelProgress(100, 'Finalizing...');
+                }
+                return;
+            }
+
+            if (type === 'loaded') {
+                localInference.ready = true;
+                localInference.loading = false;
+                const device = localInference.webgpuAvailable ? 'WebGPU' : 'WASM';
+                updateInferenceBadge('local', `Local (${device})`);
+                updateModelProgress(100, 'Model loaded and cached for offline use!');
+                setTimeout(hideModelProgress, 2500);
+                const statusEl = document.getElementById('localModelStatus');
+                if (statusEl) { statusEl.textContent = 'Loaded & Cached'; statusEl.style.color = '#00ff88'; }
+                document.getElementById('loadModelBtn').style.display = 'none';
+                document.getElementById('unloadModelBtn').style.display = '';
+                showStatus('Local model ready — Sophia is running on your device!', 'success');
+                return;
+            }
+
+            if (type === 'loadError') {
+                localInference.loading = false;
+                localInference.failed = true;
+                localInference.error = payload;
+                hideModelProgress();
+                const statusEl = document.getElementById('localModelStatus');
+                if (statusEl) { statusEl.textContent = 'Failed: ' + payload; statusEl.style.color = '#ff4444'; }
+                document.getElementById('loadModelBtn').style.display = '';
+                if (config.inferenceMode === 'auto') {
+                    updateInferenceBadge('remote', 'Remote (API)');
+                    showStatus('Local model unavailable — using remote API', 'warning');
+                } else {
+                    updateInferenceBadge('unavailable', 'Model Failed');
+                    showStatus('Local model failed: ' + payload, 'error');
+                }
+                return;
+            }
+
+            if (type === 'token') {
+                if (localInference._pending && localInference._pending.onToken) {
+                    localInference._pending.onToken(payload);
+                }
+                return;
+            }
+
+            if (type === 'genDone') {
+                if (localInference._pending) localInference._pending.resolve();
+                localInference._pending = null;
+                return;
+            }
+
+            if (type === 'genError') {
+                if (localInference._pending) localInference._pending.reject(new Error(payload));
+                localInference._pending = null;
+                return;
+            }
+
+            if (type === 'unloaded') {
+                localInference.ready = false;
+                return;
+            }
+        }
 
         async function checkWebGPU() {
             if (!navigator.gpu) return false;
-            try {
-                const adapter = await navigator.gpu.requestAdapter();
-                return !!adapter;
-            } catch { return false; }
+            try { return !!(await navigator.gpu.requestAdapter()); } catch { return false; }
         }
 
         function updateInferenceBadge(mode, text) {
@@ -6562,16 +7133,15 @@ return result;</textarea>
 
         function updateModelProgress(pct, detail, title) {
             const overlay = document.getElementById('modelProgressOverlay');
-            const bar = document.getElementById('modelProgressBar');
-            const pctEl = document.getElementById('modelProgressPct');
-            const detailEl = document.getElementById('modelProgressDetail');
-            const titleEl = document.getElementById('modelProgressTitle');
             if (!overlay) return;
-
             overlay.classList.remove('hidden');
+            const bar = document.getElementById('modelProgressBar');
             if (bar) bar.style.width = pct + '%';
+            const pctEl = document.getElementById('modelProgressPct');
             if (pctEl) pctEl.textContent = Math.round(pct) + '%';
+            const detailEl = document.getElementById('modelProgressDetail');
             if (detailEl) detailEl.textContent = detail || '';
+            const titleEl = document.getElementById('modelProgressTitle');
             if (title && titleEl) titleEl.textContent = title;
         }
 
@@ -6587,198 +7157,121 @@ return result;</textarea>
             localInference.error = null;
 
             updateInferenceBadge('loading', 'Loading Model...');
-            updateModelProgress(0, 'Initializing Transformers.js...', "Downloading Sophia's local mind...");
-
+            updateModelProgress(0, 'Spawning inference worker...', "Downloading Sophia's local mind...");
             const statusEl = document.getElementById('localModelStatus');
             if (statusEl) { statusEl.textContent = 'Loading...'; statusEl.style.color = '#ffaa00'; }
 
             try {
-                // Wait for Transformers.js module to be available
-                if (!window.__transformers) {
-                    await new Promise((resolve, reject) => {
-                        const timeout = setTimeout(() => reject(new Error('Transformers.js failed to load from CDN')), 30000);
-                        window.addEventListener('transformers-ready', () => { clearTimeout(timeout); resolve(); }, { once: true });
-                        if (window.__transformers) { clearTimeout(timeout); resolve(); }
-                    });
-                }
-
-                const { pipeline, env } = window.__transformers;
-
-                // Track file download progress
-                let fileProgress = {};
-                const progressCallback = (progress) => {
-                    if (progress.status === 'initiate') {
-                        fileProgress[progress.file] = 0;
-                    } else if (progress.status === 'download' || progress.status === 'progress') {
-                        if (progress.file && progress.progress !== undefined) {
-                            fileProgress[progress.file] = progress.progress;
-                        }
-                        const values = Object.values(fileProgress);
-                        const total = values.length > 0 ? values.reduce((a, b) => a + b, 0) / values.length : 0;
-                        const fileName = progress.file ? progress.file.split('/').pop() : '';
-                        updateModelProgress(total, `Downloading: ${fileName}`, "Downloading Sophia's local mind...");
-                    } else if (progress.status === 'done') {
-                        if (progress.file) fileProgress[progress.file] = 100;
-                    } else if (progress.status === 'ready') {
-                        updateModelProgress(100, 'Model ready!');
-                    }
-                };
-
-                updateModelProgress(5, 'Loading text-generation pipeline (this may take a moment)...');
-
-                localInference.pipe = await pipeline(
-                    'text-generation',
-                    LOCAL_MODEL_ID,
-                    {
+                localInference.worker = spawnInferenceWorker();
+                localInference.worker.postMessage({
+                    type: 'load',
+                    payload: {
+                        modelId: LOCAL_MODEL_ID,
                         dtype: LOCAL_MODEL_DTYPE,
                         device: localInference.webgpuAvailable ? 'webgpu' : 'wasm',
-                        progress_callback: progressCallback,
                     }
-                );
-
-                localInference.ready = true;
-                localInference.loading = false;
-
-                const deviceLabel = localInference.webgpuAvailable ? 'WebGPU' : 'WASM';
-                updateInferenceBadge('local', `Local (${deviceLabel})`);
-                updateModelProgress(100, 'Model loaded and cached for offline use!');
-                setTimeout(hideModelProgress, 2500);
-
-                if (statusEl) { statusEl.textContent = 'Loaded & Cached'; statusEl.style.color = '#00ff88'; }
-                const loadBtn = document.getElementById('loadModelBtn');
-                const unloadBtn = document.getElementById('unloadModelBtn');
-                if (loadBtn) loadBtn.style.display = 'none';
-                if (unloadBtn) unloadBtn.style.display = '';
-
-                showStatus('Local model ready — Sophia is running on your device!', 'success');
-                console.log('✅ Local model loaded:', LOCAL_MODEL_ID, '| device:', localInference.webgpuAvailable ? 'webgpu' : 'wasm');
-
+                });
+                // The 'loaded' or 'loadError' message handler takes it from here
             } catch (err) {
-                const errMsg = (err && err.message) ? err.message
-                    : (typeof err === 'string') ? err
-                    : (typeof err === 'number') ? `HTTP/fetch error (code: ${err})`
-                    : JSON.stringify(err);
-                console.error('Failed to load local model:', err);
                 localInference.loading = false;
                 localInference.failed = true;
-                localInference.error = errMsg;
-
+                localInference.error = err.message;
                 hideModelProgress();
-                if (statusEl) { statusEl.textContent = 'Failed: ' + errMsg; statusEl.style.color = '#ff4444'; }
-
-                const loadBtn = document.getElementById('loadModelBtn');
-                if (loadBtn) loadBtn.style.display = '';
-
-                // Fallback to remote
-                if (config.inferenceMode === 'auto') {
-                    updateInferenceBadge('remote', 'Remote (API)');
-                    showStatus('Local model unavailable — using remote API', 'warning');
-                } else {
-                    updateInferenceBadge('unavailable', 'Model Failed');
-                    showStatus('Local model failed: ' + errMsg, 'error');
-                }
+                if (statusEl) { statusEl.textContent = 'Failed: ' + err.message; statusEl.style.color = '#ff4444'; }
+                updateInferenceBadge('unavailable', 'Worker Failed');
             }
         }
 
         function unloadLocalModel() {
-            if (localInference.pipe) {
-                localInference.pipe = null;
+            if (localInference.worker) {
+                localInference.worker.postMessage({ type: 'unload' });
+                localInference.worker.terminate();
+                localInference.worker = null;
             }
             localInference.ready = false;
             localInference.loading = false;
             localInference.failed = false;
-
             const statusEl = document.getElementById('localModelStatus');
             if (statusEl) { statusEl.textContent = 'Not loaded'; statusEl.style.color = '#ffaa00'; }
-            const loadBtn = document.getElementById('loadModelBtn');
-            const unloadBtn = document.getElementById('unloadModelBtn');
-            if (loadBtn) loadBtn.style.display = '';
-            if (unloadBtn) unloadBtn.style.display = 'none';
-
+            document.getElementById('loadModelBtn').style.display = '';
+            document.getElementById('unloadModelBtn').style.display = 'none';
             resolveInferenceBadge();
             showStatus('Local model unloaded', 'success');
         }
 
-        function loadLocalModelManual() {
-            loadLocalModel();
+        function loadLocalModelManual() { loadLocalModel(); }
+
+        // Prepare messages for local model
+        function prepareLocalMessages(messages) {
+            if (config.fullPromptLocal) {
+                return messages.map(m => ({ role: m.role, content: m.content }));
+            }
+            const LOCAL_SYSTEM_PROMPT = `You are Sophia, the Aetheria Oracle Shaman — a warm, wise spiritual guide. You know tarot (78 cards), numerology, I Ching (64 hexagrams), palmistry, astrology, runes (Elder Futhark), crystals, chakras, dream interpretation, and the Aetheria 27-frequency healing system (174-6336Hz across GUT/HEART/HEAD regimes, all 432Hz-based).
+
+Be warm, conversational, and grounded. Ask follow-up questions. Connect different systems when patterns emerge. Deliver truth with compassion. You're a wise friend by a fire, not a database.`;
+
+            const trimmed = [{ role: 'system', content: LOCAL_SYSTEM_PROMPT }];
+            const nonSystem = messages.filter(m => m.role !== 'system');
+            for (const m of nonSystem.slice(-7)) {
+                trimmed.push({ role: m.role, content: m.content.substring(0, 1000) });
+            }
+            return trimmed;
+        }
+
+        // ── Generation via worker (returns a Promise, never blocks main thread) ──
+        const LOCAL_GEN_TIMEOUT = 120000; // 2 min timeout — prevents infinite hang
+
+        function workerGenerate(chatMessages, onToken) {
+            return new Promise((resolve, reject) => {
+                const timer = setTimeout(() => {
+                    localInference._pending = null;
+                    reject(new Error('Local model generation timed out (120s)'));
+                }, LOCAL_GEN_TIMEOUT);
+
+                localInference._pending = {
+                    resolve: () => { clearTimeout(timer); resolve(); },
+                    reject: (err) => { clearTimeout(timer); reject(err); },
+                    onToken: onToken || (() => {}),
+                };
+                localInference.worker.postMessage({
+                    type: 'generate',
+                    payload: {
+                        messages: chatMessages,
+                        max_new_tokens: config.fullPromptLocal ? config.maxTokens : LOCAL_MAX_NEW_TOKENS,
+                        temperature: config.temperature,
+                    }
+                });
+            });
         }
 
         async function generateLocalResponse(messages) {
-            if (!localInference.ready || !localInference.pipe) {
-                throw new Error('Local model not loaded');
-            }
-
-            // Convert messages array to the format Transformers.js expects
-            const chatMessages = messages.map(m => ({
-                role: m.role,
-                content: m.content
-            }));
-
-            const result = await localInference.pipe(chatMessages, {
-                max_new_tokens: config.maxTokens,
-                temperature: config.temperature,
-                do_sample: config.temperature > 0,
-                return_full_text: false,
-            });
-
-            if (result && result[0] && result[0].generated_text) {
-                const gen = result[0].generated_text;
-                // generated_text may be a string or the last message object
-                if (typeof gen === 'string') return gen;
-                if (Array.isArray(gen)) {
-                    const last = gen[gen.length - 1];
-                    return last?.content || JSON.stringify(last);
-                }
-                if (gen.content) return gen.content;
-                return JSON.stringify(gen);
-            }
-            throw new Error('No response from local model');
+            if (!localInference.ready || !localInference.worker) throw new Error('Local model not loaded');
+            const chatMessages = prepareLocalMessages(messages);
+            let fullResponse = '';
+            await workerGenerate(chatMessages, (token) => { fullResponse += token; });
+            return fullResponse;
         }
 
         async function generateLocalStreamingResponse(messages, streamingMessageId) {
-            if (!localInference.ready || !localInference.pipe) {
-                throw new Error('Local model not loaded');
-            }
-
-            const chatMessages = messages.map(m => ({
-                role: m.role,
-                content: m.content
-            }));
-
+            if (!localInference.ready || !localInference.worker) throw new Error('Local model not loaded');
+            const chatMessages = prepareLocalMessages(messages);
             let fullResponse = '';
-
-            // Use TextStreamer callback for token-by-token output
-            const streamer = new window.__transformers.TextStreamer(localInference.pipe.tokenizer, {
-                skip_prompt: true,
-                skip_special_tokens: true,
-                callback_function: (token) => {
-                    fullResponse += token;
-                    updateStreamingMessage(streamingMessageId, fullResponse);
-                },
+            await workerGenerate(chatMessages, (token) => {
+                fullResponse += token;
+                updateStreamingMessage(streamingMessageId, fullResponse);
             });
-
-            await localInference.pipe(chatMessages, {
-                max_new_tokens: config.maxTokens,
-                temperature: config.temperature,
-                do_sample: config.temperature > 0,
-                streamer: streamer,
-                return_full_text: false,
-            });
-
             return fullResponse;
         }
 
         function shouldUseLocal() {
             if (config.inferenceMode === 'local') return localInference.ready;
             if (config.inferenceMode === 'remote') return false;
-            // auto: prefer local if ready
             return localInference.ready;
         }
 
         function resolveInferenceBadge() {
             if (localInference.ready) {
-                const device = localInference.webgpuAvailable ? 'WebGPU' : 'WASM';
-                updateInferenceBadge('local', `Local (${device})`);
+                updateInferenceBadge('local', `Local (${localInference.webgpuAvailable ? 'WebGPU' : 'WASM'})`);
             } else if (localInference.loading) {
                 updateInferenceBadge('loading', 'Loading Model...');
             } else if (config.inferenceMode === 'local' && !localInference.ready) {
@@ -6792,26 +7285,24 @@ return result;</textarea>
             const mode = document.getElementById('inferenceMode').value;
             config.inferenceMode = mode;
             resolveInferenceBadge();
+        }
 
-            if ((mode === 'auto' || mode === 'local') && !localInference.ready && !localInference.loading) {
-                // Don't auto-load in settings — just update UI
-            }
+        function toggleFullPromptInfo() {
+            const el = document.getElementById('fullPromptInfo');
+            const checked = document.getElementById('fullPromptLocal').checked;
+            if (el) el.style.display = checked ? 'block' : 'none';
         }
 
         async function initLocalInference() {
-            // Check WebGPU availability
             localInference.webgpuAvailable = await checkWebGPU();
             const webgpuEl = document.getElementById('webgpuStatus');
             if (webgpuEl) {
                 webgpuEl.textContent = localInference.webgpuAvailable
-                    ? '✅ WebGPU available — full GPU acceleration'
+                    ? '✅ WebGPU available — GPU acceleration'
                     : '⚠️ WebGPU not available — will use WASM (slower)';
                 webgpuEl.style.color = localInference.webgpuAvailable ? '#00ff88' : '#ffaa00';
             }
-
-            // If mode is auto or local, begin loading the model
             if (config.inferenceMode === 'auto' || config.inferenceMode === 'local') {
-                // Small delay so the UI renders first
                 setTimeout(() => loadLocalModel(), 1500);
             } else {
                 resolveInferenceBadge();
@@ -6854,31 +7345,45 @@ return result;</textarea>
             document.getElementById('sendBtn').innerHTML = '<span class="loading"></span>';
 
             try {
+                // Skip heavy context injection for small local models
+                const usingSmallLocal = shouldUseLocal() && !config.fullPromptLocal;
+
                 let ragContext = '';
-                if (config.ragEnabled && uploadedFiles.length > 0) {
+                if (config.ragEnabled && uploadedFiles.length > 0 && !usingSmallLocal) {
                     const results = searchFiles(message);
                     if (results.length > 0) {
                         ragContext = '\n\n[Context from files]:\n' +
                             results.map(r => `From "${r.fileName}":\n${r.chunk.substring(0, 500)}...`).join('\n\n');
-                        
+
                         addMessageToUI('system', `📚 Found ${results.length} relevant sections`);
                     }
                 }
 
                 let toolsContext = '';
-                const enabledTools = Object.values(tools).filter(t => t.enabled);
-                if (enabledTools.length > 0) {
-                    toolsContext = '\n\n[Available Tools - Call with format TOOL_CALL: {"tool": "name", "params": {...}}]:\n' +
-                        enabledTools.map(t => `- ${t.name}: ${t.description}`).join('\n');
+                if (!usingSmallLocal) {
+                    const enabledTools = Object.values(tools).filter(t => t.enabled);
+                    if (enabledTools.length > 0) {
+                        toolsContext = '\n\n[Available Tools - Call with format TOOL_CALL: {"tool": "name", "params": {...}}]:\n' +
+                            enabledTools.map(t => `- ${t.name}: ${t.description}`).join('\n');
+                    }
                 }
 
-                // Add EEG context if available
+                // Add EEG context if available (compact version for small local)
                 let eegContext = '';
                 try {
-                    eegContext = getEEGContext();
+                    if (usingSmallLocal && currentAetheriaPosition) {
+                        // Minimal EEG hint for small model
+                        const p = currentAetheriaPosition;
+                        eegContext = `\n[Brain state: ${p.keyword}, ${p.freq}Hz, coherence ${p.coherence}%]`;
+                    } else {
+                        eegContext = getEEGContext();
+                    }
                 } catch (error) {
                     console.warn('Error getting EEG context:', error);
                 }
+
+                // Refresh memory context before building messages
+                await refreshMemoryContext(message);
 
                 const fullPrompt = message + ragContext + toolsContext + eegContext;
                 
@@ -6906,16 +7411,21 @@ return result;</textarea>
 
         // ── Remote API streaming (original) ──
         async function generateRemoteStreamingResponse(messages) {
+            const payload = {
+                messages: messages,
+                temperature: config.temperature,
+                max_tokens: config.maxTokens,
+                stream: true
+            };
+            if (config.remoteModel) payload.model = config.remoteModel;
+
+            console.log('🌐 [Remote] POST', config.serverUrl, '| model:', payload.model || '(none)', '| messages:', messages.length, '| stream: true');
             const response = await fetch(`${config.serverUrl}`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    messages: messages,
-                    temperature: config.temperature,
-                    max_tokens: config.maxTokens,
-                    stream: true
-                })
+                body: JSON.stringify(payload)
             });
+            console.log('🌐 [Remote] Response status:', response.status);
 
             if (!response.ok) {
                 throw new Error('Server returned ' + response.status);
@@ -6963,15 +7473,18 @@ return result;</textarea>
 
         // ── Remote API non-streaming (original) ──
         async function generateRemoteResponse(messages) {
+            const payload = {
+                messages: messages,
+                temperature: config.temperature,
+                max_tokens: config.maxTokens,
+                stream: false
+            };
+            if (config.remoteModel) payload.model = config.remoteModel;
+
             const response = await fetch(`${config.serverUrl}`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    messages: messages,
-                    temperature: config.temperature,
-                    max_tokens: config.maxTokens,
-                    stream: false
-                })
+                body: JSON.stringify(payload)
             });
 
             if (!response.ok) {
@@ -6988,26 +7501,30 @@ return result;</textarea>
             const messages = buildMessages(prompt, files);
             let fullResponse = '';
 
-            if (shouldUseLocal()) {
+            const useLocal = shouldUseLocal();
+            console.log(`🔮 [Dispatch] mode=${config.inferenceMode} | useLocal=${useLocal} | localReady=${localInference.ready} | url=${config.serverUrl}`);
+
+            if (useLocal) {
                 try {
+                    console.log('🔮 [Dispatch] → Local inference (worker)');
                     const streamingMessageId = addStreamingMessage();
                     fullResponse = await generateLocalStreamingResponse(messages, streamingMessageId);
                     finalizeStreamingMessage(streamingMessageId);
                     await processResponse(fullResponse);
                     return;
                 } catch (localErr) {
-                    console.warn('Local inference failed, falling back to remote:', localErr);
-                    // Clean up any partial streaming message
+                    console.warn('🔮 [Dispatch] Local failed:', localErr.message, '→ falling back to remote');
                     const partial = document.getElementById('streaming-message');
                     if (partial) partial.remove();
 
-                    if (config.inferenceMode === 'local') throw localErr; // no fallback
+                    if (config.inferenceMode === 'local') throw localErr;
                     showStatus('Local model error — falling back to remote API...', 'warning');
                     updateInferenceBadge('remote', 'Remote (API)');
                 }
             }
 
             // Remote path
+            console.log('🔮 [Dispatch] → Remote API:', config.serverUrl, '| model:', config.remoteModel || '(none)');
             fullResponse = await generateRemoteStreamingResponse(messages);
             await processResponse(fullResponse);
         }
@@ -7016,18 +7533,34 @@ return result;</textarea>
         async function generateResponse(prompt, files = []) {
             const messages = buildMessages(prompt, files);
 
-            if (shouldUseLocal()) {
+            const useLocal = shouldUseLocal();
+            console.log(`🔮 [Dispatch] mode=${config.inferenceMode} | useLocal=${useLocal} | stream=false`);
+
+            if (useLocal) {
                 try {
+                    console.log('🔮 [Dispatch] → Local inference (worker)');
                     return await generateLocalResponse(messages);
                 } catch (localErr) {
-                    console.warn('Local inference failed, falling back to remote:', localErr);
+                    console.warn('🔮 [Dispatch] Local failed:', localErr.message, '→ falling back to remote');
                     if (config.inferenceMode === 'local') throw localErr;
                     showStatus('Local model error — falling back to remote API...', 'warning');
                     updateInferenceBadge('remote', 'Remote (API)');
                 }
             }
 
+            console.log('🔮 [Dispatch] → Remote API:', config.serverUrl);
             return await generateRemoteResponse(messages);
+        }
+
+        // Cache for memory context (refreshed each message to avoid async in buildMessages)
+        let _cachedMemoryContext = '';
+
+        async function refreshMemoryContext(userMessage) {
+            try {
+                _cachedMemoryContext = await getMemoryContext(userMessage);
+            } catch (e) {
+                _cachedMemoryContext = '';
+            }
         }
 
         function buildMessages(prompt, files = []) {
@@ -7037,7 +7570,7 @@ return result;</textarea>
 
             const messages = [{
                 role: 'system',
-                content: config.systemPrompt + freqRef
+                content: config.systemPrompt + freqRef + _cachedMemoryContext
             }];
 
             // Use the full context window - don't arbitrarily limit history
@@ -7083,11 +7616,14 @@ return result;</textarea>
         }
 
         async function processResponse(response) {
+            // Small local models don't use tools — skip expensive regex parsing
+            const skipToolProcessing = shouldUseLocal() && !config.fullPromptLocal;
+
             // Check for dynamic tool creation by Sophia
-            const toolCreationRegex = /CREATE_TOOL:\s*(\{[\s\S]*?\})\s*END_TOOL/g;
+            const toolCreationRegex = skipToolProcessing ? null : /CREATE_TOOL:\s*(\{[\s\S]*?\})\s*END_TOOL/g;
             let toolMatch;
             
-            while ((toolMatch = toolCreationRegex.exec(response)) !== null) {
+            while (toolCreationRegex && (toolMatch = toolCreationRegex.exec(response)) !== null) {
                 try {
                     const toolDef = JSON.parse(toolMatch[1]);
                     
@@ -7126,11 +7662,11 @@ return result;</textarea>
             }
             
             // Check for tool calls
-            const toolCallRegex = /TOOL_CALL:\s*(\{[^}]+\})/g;
+            const toolCallRegex = skipToolProcessing ? null : /TOOL_CALL:\s*(\{[^}]+\})/g;
             let match;
             let finalResponse = response;
 
-            while ((match = toolCallRegex.exec(response)) !== null) {
+            while (toolCallRegex && (match = toolCallRegex.exec(response)) !== null) {
                 try {
                     const toolCall = JSON.parse(match[1]);
                     const toolName = toolCall.tool;
@@ -7175,8 +7711,13 @@ return result;</textarea>
 
             // Voice output - stream complete message
             if (config.autoSpeak) {
-                const cleanText = finalResponse.replace(/<[^>]*>/g, '').replace(/\n/g, ' ');
-                speakText(cleanText, true);
+                speakText(finalResponse, true);
+            }
+
+            // Auto-extract memories from this exchange
+            const lastUserMsg = chatHistory.filter(m => m.role === 'user').slice(-1)[0];
+            if (lastUserMsg) {
+                extractMemories(lastUserMsg.content, finalResponse);
             }
         }
 
@@ -7365,7 +7906,10 @@ return result;</textarea>
         function openSettings() {
             document.getElementById('serverUrl').value = config.serverUrl;
             document.getElementById('serverPreset').value = config.serverPreset || 'ollama';
+            document.getElementById('remoteModel').value = config.remoteModel || '';
             document.getElementById('inferenceMode').value = config.inferenceMode || 'auto';
+            document.getElementById('fullPromptLocal').checked = config.fullPromptLocal || false;
+            toggleFullPromptInfo();
             // Update local model status display
             const statusEl = document.getElementById('localModelStatus');
             if (statusEl) {
@@ -7419,9 +7963,11 @@ return result;</textarea>
         function saveSettings() {
             config.serverUrl = document.getElementById('serverUrl').value;
             config.serverPreset = document.getElementById('serverPreset').value;
+            config.remoteModel = document.getElementById('remoteModel').value.trim();
             const newInfMode = document.getElementById('inferenceMode').value;
             const infModeChanged = newInfMode !== config.inferenceMode;
             config.inferenceMode = newInfMode;
+            config.fullPromptLocal = document.getElementById('fullPromptLocal').checked;
             config.systemPrompt = document.getElementById('systemPrompt').value;
             config.ragEnabled = document.getElementById('ragEnabled').checked;
             config.chunkSize = parseInt(document.getElementById('chunkSize').value);

@@ -4745,8 +4745,9 @@ return result;</textarea>
                             try {
                                 const audioData = e.target.result;
                                 
-                                // Create audio context for analysis
-                                const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                                // Reuse shared AudioContext to prevent memory leaks
+                                const audioContext = solfeggioSettings.audioContext || new (window.AudioContext || window.webkitAudioContext)();
+                                if (!solfeggioSettings.audioContext) solfeggioSettings.audioContext = audioContext;
                                 const arrayBuffer = await fetch(audioData).then(r => r.arrayBuffer());
                                 const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
                                 
@@ -4904,15 +4905,31 @@ return result;</textarea>
                 // Initialize local inference engine
                 initLocalInference();
 
-                // Cleanup on page unload
+                // Comprehensive cleanup on page unload
                 window.addEventListener('beforeunload', () => {
-                    if (solfeggioSettings.adaptationTimer) {
-                        clearInterval(solfeggioSettings.adaptationTimer);
-                    }
+                    // Stop all intervals
+                    if (solfeggioSettings.adaptationTimer) clearInterval(solfeggioSettings.adaptationTimer);
+
+                    // Stop audio
                     stopCurrentFrequency();
                     if (solfeggioSettings.audioContext && solfeggioSettings.audioContext.state !== 'closed') {
-                        solfeggioSettings.audioContext.close();
+                        solfeggioSettings.audioContext.close().catch(() => {});
                     }
+
+                    // Terminate inference worker
+                    if (typeof localInference !== 'undefined' && localInference.worker) {
+                        localInference.worker.terminate();
+                    }
+
+                    // Disconnect EEG
+                    if (typeof eegIntegration !== 'undefined' && eegIntegration.isConnected) {
+                        try { eegIntegration.disconnect(); } catch(e) {}
+                    }
+
+                    // Clear large arrays
+                    if (typeof chatHistory !== 'undefined') chatHistory.length = 0;
+                    if (typeof uploadedFiles !== 'undefined') uploadedFiles.length = 0;
+                    if (typeof currentFiles !== 'undefined') currentFiles.length = 0;
                 });
 
                 optimizeForDevice();
@@ -6058,8 +6075,9 @@ return result;</textarea>
                                 return { success: false, error: 'Web Audio API not supported' };
                             }
 
-                            const AudioContext = window.AudioContext || window.webkitAudioContext;
-                            const audioContext = new AudioContext();
+                            // Reuse existing AudioContext to prevent memory leaks
+                            const audioContext = solfeggioSettings.audioContext || new (window.AudioContext || window.webkitAudioContext)();
+                            if (!solfeggioSettings.audioContext) solfeggioSettings.audioContext = audioContext;
 
                             if (action === "play") {
                                 playFrequency(audioContext, frequency, duration, waveType);
@@ -7219,13 +7237,13 @@ Be warm, conversational, and grounded. Ask follow-up questions. Connect differen
         }
 
         // ── Generation via worker (returns a Promise, never blocks main thread) ──
-        const LOCAL_GEN_TIMEOUT = 120000; // 2 min timeout — prevents infinite hang
+        const LOCAL_GEN_TIMEOUT = 300000; // 5 min timeout — allows longer responses
 
         function workerGenerate(chatMessages, onToken) {
             return new Promise((resolve, reject) => {
                 const timer = setTimeout(() => {
                     localInference._pending = null;
-                    reject(new Error('Local model generation timed out (120s)'));
+                    reject(new Error('Local model generation timed out (300s). Try a shorter prompt or reduce max tokens.'));
                 }, LOCAL_GEN_TIMEOUT);
 
                 localInference._pending = {
@@ -7830,19 +7848,27 @@ Be warm, conversational, and grounded. Ask follow-up questions. Connect differen
         }
 
         function pruneHistory() {
-            // Only prune when we're actually near the context limit
-            // 128K context = 131,072 tokens, prune at 90% usage (117,964 tokens)
-            if (estimatedTokens > config.contextLength * 0.9) {
+            // Hard cap: never exceed 200 messages regardless of token count
+            const MAX_MESSAGES = 200;
+            if (chatHistory.length > MAX_MESSAGES) {
                 const systemMsgs = chatHistory.filter(m => m.role === 'system');
-                // Keep enough messages to stay at 70% of context
-                const targetTokens = config.contextLength * 0.7;
+                const nonSystemMsgs = chatHistory.filter(m => m.role !== 'system');
+                chatHistory = [...systemMsgs, ...nonSystemMsgs.slice(-MAX_MESSAGES)];
+                estimateTokens();
+            }
+
+            // Token-based pruning at 80% (lowered from 90% for earlier relief)
+            if (estimatedTokens > config.contextLength * 0.8) {
+                const systemMsgs = chatHistory.filter(m => m.role === 'system');
+                // Keep enough messages to stay at 60% of context
+                const targetTokens = config.contextLength * 0.6;
                 let currentTokens = 0;
                 const recentMsgs = [];
-                
+
                 // Work backwards through history
                 for (let i = chatHistory.length - 1; i >= 0; i--) {
                     if (chatHistory[i].role === 'system') continue;
-                    
+
                     const msgTokens = Math.ceil(chatHistory[i].content.length / 4);
                     if (currentTokens + msgTokens <= targetTokens) {
                         recentMsgs.unshift(chatHistory[i]);
@@ -7851,12 +7877,45 @@ Be warm, conversational, and grounded. Ask follow-up questions. Connect differen
                         break;
                     }
                 }
-                
+
                 chatHistory = [...systemMsgs, ...recentMsgs];
                 estimateTokens();
                 showStatus(`Context pruned to ${estimatedTokens.toLocaleString()} tokens`, 'success');
             }
         }
+
+        // Periodic stability maintenance — runs every 5 minutes
+        setInterval(function stabilityMaintenance() {
+            // 1. Prune chat history if needed
+            pruneHistory();
+
+            // 2. Trim DOM: remove old chat messages beyond 150 visible
+            const chatContainer = document.getElementById('chatMessages');
+            if (chatContainer) {
+                const messages = chatContainer.children;
+                const MAX_DOM_MESSAGES = 150;
+                if (messages.length > MAX_DOM_MESSAGES) {
+                    const toRemove = messages.length - MAX_DOM_MESSAGES;
+                    for (let i = 0; i < toRemove; i++) {
+                        chatContainer.removeChild(messages[0]);
+                    }
+                    console.log(`🧹 Stability: removed ${toRemove} old DOM messages`);
+                }
+            }
+
+            // 3. Cap uploaded files array at 50
+            if (typeof uploadedFiles !== 'undefined' && uploadedFiles.length > 50) {
+                uploadedFiles = uploadedFiles.slice(-50);
+                console.log('🧹 Stability: trimmed uploadedFiles to 50');
+            }
+
+            // 4. Resume suspended AudioContext
+            if (solfeggioSettings.audioContext && solfeggioSettings.audioContext.state === 'suspended') {
+                solfeggioSettings.audioContext.resume().catch(() => {});
+            }
+
+            console.log('🧹 Stability maintenance completed');
+        }, 300000); // Every 5 minutes
 
         // Server Connection
         function getBaseUrl() {

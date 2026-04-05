@@ -1624,7 +1624,7 @@
                     <option value="remote">Remote Only (API Server)</option>
                 </select>
                 <div id="localModelInfo" style="background: rgba(0, 255, 136, 0.1); padding: 10px; border-radius: 6px; margin-bottom: 8px; font-size: 0.85rem; border: 1px solid rgba(0, 255, 136, 0.3);">
-                    <strong>🧠 Local Model:</strong> Qwen2.5-0.5B-Instruct (Q4F16)
+                    <strong>🧠 Local Model:</strong> Llama-3.2-1B-Instruct (Q4F16)
                     <div style="margin-top: 6px;">
                         <span>Status: </span><span id="localModelStatus" style="color: #ffaa00;">Not loaded</span>
                     </div>
@@ -1633,6 +1633,14 @@
                         <button class="btn btn-small btn-secondary" onclick="unloadLocalModel()" id="unloadModelBtn" style="flex: 1; display: none;">🗑️ Unload</button>
                     </div>
                     <div style="margin-top: 6px; font-size: 0.75rem; color: #888;" id="webgpuStatus">Checking WebGPU...</div>
+                </div>
+
+                <label style="font-weight: normal; display: flex; align-items: center; gap: 10px; margin-top: 4px;">
+                    <input type="checkbox" id="fullPromptLocal" onchange="toggleFullPromptInfo()">
+                    <strong>Send full prompt + frequency table to local/API</strong>
+                </label>
+                <div id="fullPromptInfo" style="font-size: 0.75rem; color: #888; margin-top: 4px; display: none;">
+                    Enable this when running a capable model (Gemma 4, Llama 70B, etc.) via Ollama or llama.cpp. The full Aetheria Oracle system prompt and 27-frequency reference table will be included in every request. Leave off for small browser models.
                 </div>
             </div>
 
@@ -3742,6 +3750,7 @@ return result;</textarea>
             serverUrl: 'http://localhost:11434/v1/chat/completions',
             serverPreset: 'ollama',
             inferenceMode: 'auto', // 'auto', 'local', 'remote'
+            fullPromptLocal: false, // send full system prompt + freq table to local/API
             systemPrompt: '',
             ragEnabled: true,
             chunkSize: 1000,
@@ -6584,8 +6593,9 @@ return result;</textarea>
         // LOCAL INFERENCE ENGINE (WebGPU + Transformers.js)
         // ═══════════════════════════════════════════════════
 
-        const LOCAL_MODEL_ID = 'onnx-community/Qwen2.5-0.5B-Instruct';
+        const LOCAL_MODEL_ID = 'onnx-community/Llama-3.2-1B-Instruct';
         const LOCAL_MODEL_DTYPE = 'q4f16';
+        const LOCAL_MAX_NEW_TOKENS = 512; // Browser-safe limit
 
         let localInference = {
             ready: false,
@@ -6755,19 +6765,41 @@ return result;</textarea>
             loadLocalModel();
         }
 
+        // Prepare messages for local model
+        // When fullPromptLocal is ON: pass through everything (for Ollama + Gemma 4 etc.)
+        // When OFF: trimmed compact prompt for small browser models
+        function prepareLocalMessages(messages) {
+            if (config.fullPromptLocal) {
+                // Full pass-through — user is running a capable model via Ollama/llama.cpp
+                return messages.map(m => ({ role: m.role, content: m.content }));
+            }
+
+            // Compact mode for small browser models
+            const LOCAL_SYSTEM_PROMPT = `You are Sophia, the Aetheria Oracle Shaman — a warm, wise spiritual guide. You know tarot (78 cards), numerology, I Ching (64 hexagrams), palmistry, astrology, runes (Elder Futhark), crystals, chakras, dream interpretation, and the Aetheria 27-frequency healing system (174-6336Hz across GUT/HEART/HEAD regimes, all 432Hz-based).
+
+Be warm, conversational, and grounded. Ask follow-up questions. Connect different systems when patterns emerge. Deliver truth with compassion. You're a wise friend by a fire, not a database.`;
+
+            const trimmed = [];
+            trimmed.push({ role: 'system', content: LOCAL_SYSTEM_PROMPT });
+
+            // Only include last 3 exchanges + current message to fit context
+            const nonSystem = messages.filter(m => m.role !== 'system');
+            const recent = nonSystem.slice(-7);
+            for (const m of recent) {
+                trimmed.push({ role: m.role, content: m.content.substring(0, 1000) });
+            }
+            return trimmed;
+        }
+
         async function generateLocalResponse(messages) {
             if (!localInference.ready || !localInference.pipe) {
                 throw new Error('Local model not loaded');
             }
 
-            // Convert messages array to the format Transformers.js expects
-            const chatMessages = messages.map(m => ({
-                role: m.role,
-                content: m.content
-            }));
+            const chatMessages = prepareLocalMessages(messages);
 
             const result = await localInference.pipe(chatMessages, {
-                max_new_tokens: config.maxTokens,
+                max_new_tokens: config.fullPromptLocal ? config.maxTokens : LOCAL_MAX_NEW_TOKENS,
                 temperature: config.temperature,
                 do_sample: config.temperature > 0,
                 return_full_text: false,
@@ -6775,7 +6807,6 @@ return result;</textarea>
 
             if (result && result[0] && result[0].generated_text) {
                 const gen = result[0].generated_text;
-                // generated_text may be a string or the last message object
                 if (typeof gen === 'string') return gen;
                 if (Array.isArray(gen)) {
                     const last = gen[gen.length - 1];
@@ -6792,11 +6823,7 @@ return result;</textarea>
                 throw new Error('Local model not loaded');
             }
 
-            const chatMessages = messages.map(m => ({
-                role: m.role,
-                content: m.content
-            }));
-
+            const chatMessages = prepareLocalMessages(messages);
             let fullResponse = '';
 
             // Use TextStreamer callback for token-by-token output
@@ -6810,7 +6837,7 @@ return result;</textarea>
             });
 
             await localInference.pipe(chatMessages, {
-                max_new_tokens: config.maxTokens,
+                max_new_tokens: config.fullPromptLocal ? config.maxTokens : LOCAL_MAX_NEW_TOKENS,
                 temperature: config.temperature,
                 do_sample: config.temperature > 0,
                 streamer: streamer,
@@ -6848,6 +6875,12 @@ return result;</textarea>
             if ((mode === 'auto' || mode === 'local') && !localInference.ready && !localInference.loading) {
                 // Don't auto-load in settings — just update UI
             }
+        }
+
+        function toggleFullPromptInfo() {
+            const el = document.getElementById('fullPromptInfo');
+            const checked = document.getElementById('fullPromptLocal').checked;
+            if (el) el.style.display = checked ? 'block' : 'none';
         }
 
         async function initLocalInference() {
@@ -7418,6 +7451,8 @@ return result;</textarea>
             document.getElementById('serverUrl').value = config.serverUrl;
             document.getElementById('serverPreset').value = config.serverPreset || 'ollama';
             document.getElementById('inferenceMode').value = config.inferenceMode || 'auto';
+            document.getElementById('fullPromptLocal').checked = config.fullPromptLocal || false;
+            toggleFullPromptInfo();
             // Update local model status display
             const statusEl = document.getElementById('localModelStatus');
             if (statusEl) {
@@ -7474,6 +7509,7 @@ return result;</textarea>
             const newInfMode = document.getElementById('inferenceMode').value;
             const infModeChanged = newInfMode !== config.inferenceMode;
             config.inferenceMode = newInfMode;
+            config.fullPromptLocal = document.getElementById('fullPromptLocal').checked;
             config.systemPrompt = document.getElementById('systemPrompt').value;
             config.ragEnabled = document.getElementById('ragEnabled').checked;
             config.chunkSize = parseInt(document.getElementById('chunkSize').value);

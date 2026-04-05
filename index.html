@@ -7518,7 +7518,7 @@ Use this data to personalize your response. Comment on their current state when 
         }
 
         // ── Generation via worker (returns a Promise, never blocks main thread) ──
-        const LOCAL_GEN_TIMEOUT = 300000; // 5 min timeout — allows longer responses
+        const LOCAL_GEN_TIMEOUT = 600000; // 10 min timeout — E4B on mobile needs time for long readings
 
         function workerGenerate(chatMessages, onToken) {
             return new Promise((resolve, reject) => {

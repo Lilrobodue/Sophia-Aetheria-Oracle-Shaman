@@ -2470,7 +2470,14 @@ return result;</textarea>
                     }
                     
                     if (connectionChoice === 'bluetooth') {
-                        await this.connectViaBluetooth();
+                        // If auto-reconnecting and we have a saved device, use direct
+                        // GATT reconnect (doesn't need user gesture). Otherwise use
+                        // requestDevice() which shows the picker.
+                        if (skipDialog && this._savedBluetoothDevice) {
+                            await this.reconnectViaBluetooth();
+                        } else {
+                            await this.connectViaBluetooth();
+                        }
                     } else if (connectionChoice === 'service') {
                         await this.connectToEEGService();
                     } else if (connectionChoice === 'simulation') {
@@ -2700,7 +2707,53 @@ return result;</textarea>
                     }
                 }
             }
-            
+
+            // Reconnect to a previously paired Muse using the saved BluetoothDevice
+            // reference. Unlike requestDevice(), gatt.connect() does NOT require a
+            // user gesture, so this can be called from a timer during auto-reconnect.
+            async reconnectViaBluetooth() {
+                if (!this._savedBluetoothDevice) {
+                    throw new Error('No saved Bluetooth device — cannot auto-reconnect. Please connect manually.');
+                }
+
+                const device = this._savedBluetoothDevice;
+                console.log('🔄 Reconnecting to saved Muse device:', device.name);
+
+                try {
+                    const server = await device.gatt.connect();
+                    console.log('🔄 Re-connected to GATT server');
+
+                    const service = await server.getPrimaryService(this.MUSE_CHARACTERISTICS.SERVICE);
+                    console.log('🔄 Muse service re-acquired');
+
+                    this.deviceInfo = {
+                        name: device.name || 'Muse Device',
+                        address: device.id,
+                        type: 'bluetooth',
+                        device: device,
+                        server: server,
+                        service: service
+                    };
+
+                    this.connected = true;
+                    this.streaming = false;
+
+                    // The gattserverdisconnected listener is still attached from the
+                    // original connectViaBluetooth() call — no need to add it again.
+
+                    this.dispatchEvent(new CustomEvent('connected', {
+                        detail: this.deviceInfo
+                    }));
+
+                    // Restart EEG data streaming
+                    await this.startRealBluetoothEEGStreaming();
+                    console.log('✅ Bluetooth EEG reconnection successful');
+
+                } catch (error) {
+                    throw new Error('Bluetooth reconnection failed: ' + error.message);
+                }
+            }
+
             async startRealBluetoothEEGStreaming() {
                 console.log('🔵 Starting REAL Bluetooth EEG streaming...');
                 
@@ -3541,6 +3594,7 @@ return result;</textarea>
                     this.connectionLost = false;
                     this.reconnectAttempts = 0;
                     this.lastConnectionMethod = null; // Clear remembered connection method
+                    this._savedBluetoothDevice = null; // Clear saved device on manual disconnect
                 }
                 
                 this.connected = false;
@@ -3624,54 +3678,62 @@ return result;</textarea>
             
             handleBluetoothDisconnection() {
                 console.log('🔵 Handling Bluetooth disconnection...');
-                
+
                 const wasConnectedAndStreaming = this.connected && this.streaming;
-                
+
                 // Update connection state
                 this.connected = false;
                 this.streaming = false;
-                
+
                 // Mark as connection lost for auto-reconnect logic
                 if (wasConnectedAndStreaming && !this.simulationMode) {
                     this.connectionLost = true;
                     console.log('📱 Connection lost - marking for auto-reconnect');
                 }
-                
+
                 // Clear processing intervals
                 if (this.dataProcessingInterval) {
                     clearInterval(this.dataProcessingInterval);
                     this.dataProcessingInterval = null;
                 }
-                
+
                 if (this.simulationInterval) {
                     clearInterval(this.simulationInterval);
                     this.simulationInterval = null;
                 }
-                
-                // Clear data but preserve some for potential reconnect context
+
+                // Clear EEG data buffers
                 this.realEEGData.TP9 = [];
                 this.realEEGData.AF7 = [];
                 this.realEEGData.AF8 = [];
                 this.realEEGData.TP10 = [];
                 this.realEEGData.timestamps = [];
-                
-                // Don't clear deviceInfo completely - we might need it for reconnect
-                const previousDeviceInfo = { ...this.deviceInfo };
+
+                // CRITICAL: Preserve the BluetoothDevice reference for reconnection
+                // navigator.bluetooth.requestDevice() requires a user gesture — we cannot
+                // call it from a timer. But device.gatt.connect() works without one, as
+                // long as we keep the original device object alive.
+                if (this.deviceInfo && this.deviceInfo.device) {
+                    this._savedBluetoothDevice = this.deviceInfo.device;
+                    console.log('🔵 Saved BluetoothDevice reference for reconnect:', this._savedBluetoothDevice.name);
+                }
+
+                const previousDeviceInfo = this.deviceInfo ? { ...this.deviceInfo } : null;
                 this.deviceInfo = null;
                 this.eegCharacteristics = {};
-                
+
                 // Emit disconnected event
                 this.dispatchEvent(new CustomEvent('disconnected', {
-                    detail: { 
+                    detail: {
                         unexpected: this.connectionLost,
                         previousDevice: previousDeviceInfo
                     }
                 }));
-                
+
                 // Attempt auto-reconnect if enabled and connection was lost unexpectedly
-                if (this.connectionLost && this.autoReconnectEnabled && 
+                if (this.connectionLost && this.autoReconnectEnabled &&
                     this.reconnectAttempts < this.maxReconnectAttempts) {
-                    
+
                     console.log('🔄 Starting auto-reconnect sequence...');
                     setTimeout(() => {
                         this.scheduleReconnect();
@@ -8592,11 +8654,17 @@ Be warm, conversational, and grounded. Ask follow-up questions. Connect differen
                 eegIntegration.addEventListener('reconnectionFailed', (event) => {
                     const { attempts } = event.detail;
                     updateEEGStatus('Auto-reconnect failed - Manual connection required', 'error');
-                    
+
                     const connectBtn = document.getElementById('eegConnectBtn');
                     connectBtn.textContent = '🔌 Connect Muse 2';
                     connectBtn.disabled = false;
-                    
+
+                    // Re-enable auto-reconnect so future disconnections can still
+                    // trigger it after the user manually reconnects
+                    eegIntegration.autoReconnectEnabled = config.eegAutoReconnect;
+                    eegIntegration.reconnectAttempts = 0;
+                    eegIntegration.reconnectDelay = config.eegReconnectDelay * 1000 || 3000;
+
                     addMessageToUI('system', `❌ EEG auto-reconnection failed after ${attempts} attempts. Please manually reconnect your Muse device.`);
                     showStatus(`❌ EEG auto-reconnect failed after ${attempts} attempts`, 'error');
                 });

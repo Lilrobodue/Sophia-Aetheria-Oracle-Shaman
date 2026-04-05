@@ -1624,7 +1624,7 @@
                     <option value="remote">Remote Only (API Server)</option>
                 </select>
                 <div id="localModelInfo" style="background: rgba(0, 255, 136, 0.1); padding: 10px; border-radius: 6px; margin-bottom: 8px; font-size: 0.85rem; border: 1px solid rgba(0, 255, 136, 0.3);">
-                    <strong>🧠 Local Model:</strong> onnx-community/gemma-4-E4B-it (Q4)
+                    <strong>🧠 Local Model:</strong> Qwen2.5-0.5B-Instruct (Q4F16)
                     <div style="margin-top: 6px;">
                         <span>Status: </span><span id="localModelStatus" style="color: #ffaa00;">Not loaded</span>
                     </div>
@@ -6584,7 +6584,7 @@ return result;</textarea>
         // LOCAL INFERENCE ENGINE (WebGPU + Transformers.js)
         // ═══════════════════════════════════════════════════
 
-        const LOCAL_MODEL_ID = 'onnx-community/gemma-3-1b-it-ONNX';
+        const LOCAL_MODEL_ID = 'onnx-community/Qwen2.5-0.5B-Instruct';
         const LOCAL_MODEL_DTYPE = 'q4f16';
 
         let localInference = {
@@ -6691,7 +6691,8 @@ return result;</textarea>
                 localInference.ready = true;
                 localInference.loading = false;
 
-                updateInferenceBadge('local', 'Local (WebGPU)');
+                const deviceLabel = localInference.webgpuAvailable ? 'WebGPU' : 'WASM';
+                updateInferenceBadge('local', `Local (${deviceLabel})`);
                 updateModelProgress(100, 'Model loaded and cached for offline use!');
                 setTimeout(hideModelProgress, 2500);
 
@@ -6705,13 +6706,17 @@ return result;</textarea>
                 console.log('✅ Local model loaded:', LOCAL_MODEL_ID, '| device:', localInference.webgpuAvailable ? 'webgpu' : 'wasm');
 
             } catch (err) {
+                const errMsg = (err && err.message) ? err.message
+                    : (typeof err === 'string') ? err
+                    : (typeof err === 'number') ? `HTTP/fetch error (code: ${err})`
+                    : JSON.stringify(err);
                 console.error('Failed to load local model:', err);
                 localInference.loading = false;
                 localInference.failed = true;
-                localInference.error = err.message;
+                localInference.error = errMsg;
 
                 hideModelProgress();
-                if (statusEl) { statusEl.textContent = 'Failed: ' + err.message; statusEl.style.color = '#ff4444'; }
+                if (statusEl) { statusEl.textContent = 'Failed: ' + errMsg; statusEl.style.color = '#ff4444'; }
 
                 const loadBtn = document.getElementById('loadModelBtn');
                 if (loadBtn) loadBtn.style.display = '';
@@ -6722,7 +6727,7 @@ return result;</textarea>
                     showStatus('Local model unavailable — using remote API', 'warning');
                 } else {
                     updateInferenceBadge('unavailable', 'Model Failed');
-                    showStatus('Local model failed to load: ' + err.message, 'error');
+                    showStatus('Local model failed: ' + errMsg, 'error');
                 }
             }
         }

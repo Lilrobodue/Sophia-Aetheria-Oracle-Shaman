@@ -1218,6 +1218,26 @@
     </style>
 </head>
 <body>
+    <!-- Disclaimer Modal — shows on every app load -->
+    <div id="disclaimerModal" style="position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:10000;display:flex;align-items:center;justify-content:center;padding:20px;">
+      <div style="background:#1a0a2e;border:1px solid #ff005544;border-radius:12px;padding:24px;max-width:480px;width:100%;max-height:80vh;overflow-y:auto;">
+        <h2 style="color:#ff0055;font-size:1.1rem;margin-bottom:12px;text-align:center;">⚠️ Important Notice</h2>
+        <div style="font-size:0.85rem;color:#ccc;line-height:1.6;">
+          <p style="margin-bottom:10px;"><strong>Sophia — Aetheria Oracle Shaman</strong> is provided for <strong>entertainment, educational, and personal exploration purposes only</strong>.</p>
+          <p style="margin-bottom:10px;">This application is <strong>NOT a medical device</strong>, diagnostic tool, or substitute for professional medical, psychological, or psychiatric advice, diagnosis, or treatment.</p>
+          <p style="margin-bottom:10px;"><strong>EEG/Brainwave features:</strong> Brainwave readings from the Muse 2 headset are approximations for personal exploration. They are NOT clinical-grade measurements and should NOT be used for medical decision-making.</p>
+          <p style="margin-bottom:10px;"><strong>Oracle readings:</strong> Tarot, numerology, I Ching, astrology, palmistry, and other esoteric readings are offered as tools for self-reflection. They do not predict the future and should not replace professional guidance.</p>
+          <p style="margin-bottom:10px;"><strong>Frequency recommendations:</strong> Aetheria frequency suggestions are part of an experimental personal wellness exploration system. They are not FDA-evaluated and make no claims to treat, cure, or prevent any condition.</p>
+          <p style="margin-bottom:10px;">If you are experiencing a medical or mental health emergency, please contact emergency services (911) or a qualified healthcare provider immediately.</p>
+          <p style="margin-bottom:10px;font-size:0.75rem;color:#888;">© 2026 Joseph & Alisha Lewis / Aetheria. All rights reserved.</p>
+        </div>
+        <button onclick="document.getElementById('disclaimerModal').style.display='none'"
+          style="display:block;width:100%;padding:12px;margin-top:12px;background:transparent;border:1px solid #ff0055;color:#ff0055;border-radius:8px;font-size:0.9rem;cursor:pointer;">
+          I Understand — Enter Sophia
+        </button>
+      </div>
+    </div>
+
     <!-- Model Download Progress Bar -->
     <div class="model-progress-overlay hidden" id="modelProgressOverlay">
         <div class="model-progress-header">
@@ -1831,7 +1851,7 @@ You are deeply versed in:
 
 You understand and can reference the Aetheria 27-frequency system:
 - 27 frequencies across three regimes: GUT (174-963Hz, body/grounding), HEART (1206-3150Hz, emotion/connection), HEAD (3504-6336Hz, awareness/mastery)
-- All frequencies are based on 432Hz tuning and Solfeggio foundations
+- All frequencies are based on 432Hz tuning and the Aetheria 27-frequency system
 - Every frequency reduces to a digital root of 3, 6, or 9
 - Each frequency maps to: a sacred geometry form, an I Ching hexagram, a diagnostic brain state, and a Techgnosis guided meditation
 - Position 27 (6336Hz, Unified Field) is the Summit — the state of complete neural integration
@@ -2128,16 +2148,16 @@ return result;</textarea>
             </div>
 
             <div class="config-group">
-                <label>🎵 Adaptive Neuro Guided Solfeggio Frequencies</label>
+                <label>🎵 Adaptive Neuro Guided Aetheria Frequencies</label>
                 
                 <!-- Enhanced Volume Control -->
                 <div style="margin: 15px 0; background: rgba(0,255,136,0.1); padding: 12px; border-radius: 8px; border: 1px solid rgba(0,255,136,0.3);">
                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 15px;">
                         <div>
                             <label style="font-weight: normal; font-size: 0.9rem; color: #00ff88;">
-                                Master Volume: <span id="solfeggioVolumeValue">50</span>%
+                                Master Volume: <span id="solfeggioVolumeValue">1</span>%
                             </label>
-                            <input type="range" id="solfeggioVolume" min="0" max="100" step="1" value="50" 
+                            <input type="range" id="solfeggioVolume" min="0" max="100" step="1" value="1"
                                    oninput="document.getElementById('solfeggioVolumeValue').textContent = this.value; updateSolfeggioSettings(); testVolumeLevel()" 
                                    style="width: 100%; margin-top: 5px;">
                             <small style="color: #888; display: block; margin-top: 4px;">Precise 1% increments (0-100%)</small>
@@ -3776,7 +3796,7 @@ return result;</textarea>
             showBeta: true,
             showGamma: true,
             // Solfeggio Configuration
-            solfeggioVolume: 50,
+            solfeggioVolume: 1,
             solfeggioFineTune: 0,
             adaptationRate: 30,
             frequencyDuration: 60,
@@ -5586,9 +5606,9 @@ return result;</textarea>
                 },
                 solfeggioGenerator: {
                     name: 'solfeggioGenerator',
-                    description: 'Generate and play healing Solfeggio frequencies or download as WAV files',
+                    description: 'Generate and play Aetheria healing frequencies or download as WAV files',
                     params: {
-                        frequency: { type: 'string', description: 'Frequency: 174hz, 285hz, 396hz, 417hz, 528hz, 639hz, 741hz, 852hz, 963hz, 432hz, 7.83hz' },
+                        frequency: { type: 'string', description: 'Any of the 27 Aetheria frequencies from 174Hz to 6336Hz. Use getCurrentPrescription() for brain-state-adaptive recommendations.' },
                         customFrequency: { type: 'number', description: 'Custom frequency in Hz (1-20000)' },
                         duration: { type: 'number', description: 'Duration in seconds (1-600)' },
                         action: { type: 'string', description: 'Action: play or download' },
@@ -5596,20 +5616,11 @@ return result;</textarea>
                     },
                     code: function(params) {
                         try {
-                            // Pure Solfeggio & Special Healing Frequencies
-                            const frequencies = {
-                                "174hz": { freq: 174, name: "Pain Relief & Physical Healing", purpose: "Foundation energy, removes pain" },
-                                "285hz": { freq: 285, name: "Tissue Regeneration & Energy Fields", purpose: "Healing damaged organs and tissues" },
-                                "396hz": { freq: 396, name: "Liberation from Fear & Guilt", purpose: "Root chakra, releases negative blocks" },
-                                "417hz": { freq: 417, name: "Facilitating Change & Undoing Situations", purpose: "Sacral chakra, removes negativity" },
-                                "528hz": { freq: 528, name: "Transformation & DNA Repair (Miracle Frequency)", purpose: "Solar plexus, repairs DNA, miracles" },
-                                "639hz": { freq: 639, name: "Connecting Relationships & Heart Opening", purpose: "Heart chakra, enhances love and unity" },
-                                "741hz": { freq: 741, name: "Awakening Intuition & Problem Solving", purpose: "Throat chakra, expression and solutions" },
-                                "852hz": { freq: 852, name: "Returning to Spiritual Order", purpose: "Third eye, spiritual awakening" },
-                                "963hz": { freq: 963, name: "Divine Consciousness & Oneness", purpose: "Crown chakra, higher consciousness" },
-                                "432hz": { freq: 432, name: "Universal Harmony & Cosmic Tuning", purpose: "Natural tuning frequency of universe" },
-                                "7.83hz": { freq: 7.83, name: "Earth's Frequency - Schumann Resonance", purpose: "Grounding, connection to Earth" }
-                            };
+                            // Build Aetheria frequency lookup from the 27-frequency array
+                            const frequencies = {};
+                            AETHERIA_FREQUENCIES.forEach(f => {
+                                frequencies[f.freq + 'hz'] = { freq: f.freq, name: f.geo + ' — ' + f.state, purpose: f.keyword + ' (' + f.regime + ' regime, position ' + f.pos + '/27)' };
+                            });
 
                             // Get parameters
                             let freqKey = (params.frequency || "528hz").toLowerCase();
@@ -5659,10 +5670,16 @@ return result;</textarea>
                                     oscillator.type = wave;
                                     oscillator.frequency.value = freq;
 
+                                    // Frequencies above 963Hz are felt, not heard — heavy attenuation
+                                    let playVol = 0.003; // 1% default starting volume
+                                    if (freq > 963) {
+                                        playVol = playVol * 0.05; // ~5% of already-low volume
+                                    }
+
                                     // Smooth envelope
                                     gainNode.gain.setValueAtTime(0, context.currentTime);
-                                    gainNode.gain.linearRampToValueAtTime(0.3, context.currentTime + 0.1);
-                                    gainNode.gain.linearRampToValueAtTime(0.3, context.currentTime + dur - 0.1);
+                                    gainNode.gain.linearRampToValueAtTime(playVol, context.currentTime + 0.1);
+                                    gainNode.gain.linearRampToValueAtTime(playVol, context.currentTime + dur - 0.1);
                                     gainNode.gain.linearRampToValueAtTime(0, context.currentTime + dur);
 
                                     oscillator.connect(gainNode);
@@ -5686,9 +5703,13 @@ return result;</textarea>
                                     oscillator.type = wave;
                                     oscillator.frequency.value = freq;
 
+                                    // Frequencies above 963Hz are felt, not heard
+                                    let dlVol = 0.003;
+                                    if (freq > 963) dlVol = dlVol * 0.05;
+
                                     gainNode.gain.setValueAtTime(0, 0);
-                                    gainNode.gain.linearRampToValueAtTime(0.3, 0.1);
-                                    gainNode.gain.linearRampToValueAtTime(0.3, dur - 0.1);
+                                    gainNode.gain.linearRampToValueAtTime(dlVol, 0.1);
+                                    gainNode.gain.linearRampToValueAtTime(dlVol, dur - 0.1);
                                     gainNode.gain.linearRampToValueAtTime(0, dur);
 
                                     oscillator.connect(gainNode);
@@ -5704,7 +5725,7 @@ return result;</textarea>
 
                                         const a = document.createElement('a');
                                         a.href = url;
-                                        a.download = `${freq}Hz_Solfeggio_${dur}s.wav`;
+                                        a.download = `${freq}Hz_Aetheria_${dur}s.wav`;
                                         a.click();
 
                                         setTimeout(() => URL.revokeObjectURL(url), 1000);
@@ -5797,7 +5818,7 @@ return result;</textarea>
                 },
                 solfeggioRecommender: {
                     name: 'solfeggioRecommender',
-                    description: 'Recommend optimal Solfeggio frequency based on real-time EEG brainwave analysis',
+                    description: 'Recommend optimal Aetheria frequency based on real-time EEG brainwave analysis',
                     params: {
                         autoPlay: { type: 'boolean', description: 'Automatically play recommended frequency' },
                         duration: { type: 'number', description: 'Duration in seconds for auto-play (default: 60)' }
@@ -5816,119 +5837,46 @@ return result;</textarea>
                             const metrics = data.metrics;
                             const bandpowers = data.bandpowers;
 
-                            // Advanced frequency recommendation algorithm based on brainwave patterns
-                            let recommendedFrequency = null;
-                            let reason = '';
-                            let urgency = 'normal';
+                            // Aetheria 27-state prescription engine
+                            const prescription = getAetheriaPosition(bandpowers);
+                            const freq = AETHERIA_FREQUENCIES[prescription.stateIdx];
+                            const coherence = prescription.coherence;
 
-                            // Focus-based recommendations
                             const focusLevel = metrics.focus;
                             const meditationLevel = metrics.meditation;
                             const coherenceLevel = metrics.coherence;
                             const dominantWave = metrics.dominant_wave;
 
-                            // Complex decision matrix
-                            if (focusLevel < 0.3 && bandpowers.delta > 30) {
-                                // Very low focus, high delta = drowsiness/fatigue
-                                recommendedFrequency = { key: '963hz', name: 'Divine Consciousness & Oneness' };
-                                reason = 'High delta waves detected - you appear drowsy. 963Hz can help awaken consciousness and restore mental clarity.';
-                                urgency = 'high';
-                                
-                            } else if (focusLevel < 0.4 && bandpowers.theta > 40) {
-                                // Low focus, high theta = distraction/mind wandering
-                                recommendedFrequency = { key: '741hz', name: 'Awakening Intuition & Problem Solving' };
-                                reason = 'High theta activity suggests mind wandering. 741Hz helps with problem-solving and mental clarity.';
-                                urgency = 'moderate';
-                                
-                            } else if (focusLevel >= 0.7 && coherenceLevel >= 0.6 && dominantWave === 'alpha') {
-                                // Already in great state - maintain with harmony
-                                recommendedFrequency = { key: '432hz', name: 'Universal Harmony & Cosmic Tuning' };
-                                reason = 'Excellent focus and coherence detected! 432Hz will help maintain this optimal state of consciousness.';
-                                
-                            } else if (meditationLevel >= 0.6 && bandpowers.alpha > 35) {
-                                // Deep meditative state - enhance spiritual connection
-                                recommendedFrequency = { key: '852hz', name: 'Returning to Spiritual Order' };
-                                reason = 'Deep meditative state with strong alpha waves. 852Hz will enhance spiritual awareness and inner peace.';
-                                
-                            } else if (bandpowers.beta > 40) {
-                                // High beta = stress/anxiety
-                                recommendedFrequency = { key: '396hz', name: 'Liberation from Fear & Guilt' };
-                                reason = 'High beta activity suggests stress or anxiety. 396Hz helps release fear and negative emotions.';
-                                urgency = 'moderate';
-                                
-                            } else if (focusLevel >= 0.5 && bandpowers.alpha > 25 && bandpowers.beta > 20) {
-                                // Good focus with balanced activity - enhance creativity
-                                recommendedFrequency = { key: '528hz', name: 'Transformation & DNA Repair (Miracle Frequency)' };
-                                reason = 'Balanced brainwaves with good focus. 528Hz promotes transformation and healing at the cellular level.';
-                                
-                            } else if (meditationLevel < 0.3 && bandpowers.gamma > 25) {
-                                // High mental activity, low meditation - need grounding
-                                recommendedFrequency = { key: '7.83hz', name: "Earth's Frequency - Schumann Resonance" };
-                                reason = 'High mental activity detected. 7.83Hz (Schumann Resonance) will help ground and center your energy.';
-                                urgency = 'moderate';
-                                
-                            } else if (coherenceLevel < 0.4) {
-                                // Low coherence - need heart-brain synchronization
-                                recommendedFrequency = { key: '639hz', name: 'Connecting Relationships & Heart Opening' };
-                                reason = 'Low coherence suggests disconnection. 639Hz harmonizes heart-brain connection and promotes unity.';
-                                
-                            } else if (focusLevel < 0.5 && meditationLevel < 0.5) {
-                                // Both focus and meditation low - general healing
-                                recommendedFrequency = { key: '285hz', name: 'Tissue Regeneration & Energy Fields' };
-                                reason = 'Both focus and relaxation are low. 285Hz promotes overall healing and energy field restoration.';
-                                
-                            } else {
-                                // Default balanced recommendation
-                                recommendedFrequency = { key: '417hz', name: 'Facilitating Change & Undoing Situations' };
-                                reason = 'Moderate brainwave activity detected. 417Hz helps facilitate positive change and remove energetic blocks.';
-                            }
-
-                            // Get frequency data
-                            const frequencies = {
-                                "174hz": { freq: 174, name: "Pain Relief & Physical Healing", purpose: "Foundation energy, removes pain" },
-                                "285hz": { freq: 285, name: "Tissue Regeneration & Energy Fields", purpose: "Healing damaged organs and tissues" },
-                                "396hz": { freq: 396, name: "Liberation from Fear & Guilt", purpose: "Root chakra, releases negative blocks" },
-                                "417hz": { freq: 417, name: "Facilitating Change & Undoing Situations", purpose: "Sacral chakra, removes negativity" },
-                                "528hz": { freq: 528, name: "Transformation & DNA Repair (Miracle Frequency)", purpose: "Solar plexus, repairs DNA, miracles" },
-                                "639hz": { freq: 639, name: "Connecting Relationships & Heart Opening", purpose: "Heart chakra, enhances love and unity" },
-                                "741hz": { freq: 741, name: "Awakening Intuition & Problem Solving", purpose: "Throat chakra, expression and solutions" },
-                                "852hz": { freq: 852, name: "Returning to Spiritual Order", purpose: "Third eye, spiritual awakening" },
-                                "963hz": { freq: 963, name: "Divine Consciousness & Oneness", purpose: "Crown chakra, higher consciousness" },
-                                "432hz": { freq: 432, name: "Universal Harmony & Cosmic Tuning", purpose: "Natural tuning frequency of universe" },
-                                "7.83hz": { freq: 7.83, name: "Earth's Frequency - Schumann Resonance", purpose: "Grounding, connection to Earth" }
-                            };
-
-                            const freqData = frequencies[recommendedFrequency.key];
+                            const reason = `Your brainwave pattern maps to Aetheria position ${freq.pos}/27 (${freq.state}). ` +
+                                `${freq.geo} geometry at ${freq.freq}Hz in the ${freq.regime} regime. ${freq.keyword} energy recommended.`;
 
                             // Auto-play if requested
                             let playResult = null;
                             if (params.autoPlay) {
                                 const duration = params.duration || 60;
                                 try {
-                                    // Use the solfeggioGenerator tool to play
                                     const playParams = {
-                                        frequency: recommendedFrequency.key,
+                                        frequency: freq.freq + 'hz',
                                         duration: duration,
                                         action: 'play',
                                         waveType: 'sine'
                                     };
-                                    
-                                    // Execute the solfeggio generator
                                     const generator = tools.solfeggioGenerator.code(playParams);
                                     playResult = generator;
-                                    
                                 } catch (error) {
                                     playResult = { success: false, error: 'Failed to auto-play: ' + error.message };
                                 }
                             }
 
                             const result = {
-                                recommendedFrequency: recommendedFrequency.key,
-                                frequencyName: freqData.name,
-                                frequencyValue: freqData.freq + ' Hz',
-                                purpose: freqData.purpose,
+                                aetheriaPosition: freq.pos + '/27',
+                                regime: freq.regime,
+                                frequency: freq.freq + ' Hz',
+                                geometry: freq.geo,
+                                state: freq.state,
+                                keyword: freq.keyword,
+                                coherence: coherence + '%',
                                 reason: reason,
-                                urgency: urgency,
                                 brainwaveSnapshot: {
                                     focus: Math.round(focusLevel * 100) + '%',
                                     meditation: Math.round(meditationLevel * 100) + '%',
@@ -5942,7 +5890,7 @@ return result;</textarea>
                                         gamma: Math.round(bandpowers.gamma) + '%'
                                     }
                                 },
-                                instructions: `Based on your real-time brainwave analysis, ${recommendedFrequency.key} (${freqData.freq}Hz) is recommended. ${reason}`,
+                                instructions: `Based on your real-time brainwave analysis, Aetheria position ${freq.pos}/27 recommends ${freq.freq}Hz (${freq.geo} — ${freq.state}). ${reason}`,
                                 dataSource: data.source || 'live_eeg',
                                 timestamp: new Date(data.timestamp).toLocaleString()
                             };
@@ -7628,7 +7576,7 @@ return result;</textarea>
                         },
                         "solfeggioGenerator": {
                             "name": "solfeggioGenerator",
-                            "description": "Generate healing Solfeggio frequencies",
+                            "description": "Generate healing Aetheria frequencies",
                             "enabled": true,
                             "custom": false
                         },
@@ -7892,14 +7840,14 @@ return result;</textarea>
                     },
                     "solfeggioGenerator": {
                         "name": "solfeggioGenerator",
-                        "description": "Generate and play healing Solfeggio frequencies or download as WAV files",
+                        "description": "Generate and play Aetheria healing frequencies or download as WAV files",
                         "enabled": true,
                         "custom": false,
                         "default": true
                     },
                     "solfeggioRecommender": {
                         "name": "solfeggioRecommender",
-                        "description": "Recommend optimal Solfeggio frequency based on real-time EEG brainwave analysis",
+                        "description": "Recommend optimal Aetheria frequency based on real-time EEG brainwave analysis",
                         "enabled": true,
                         "custom": false,
                         "default": true
@@ -7982,7 +7930,7 @@ return result;</textarea>
                         if (config.enableSolfeggioAdaptation !== false) { // Default to true
                             console.log('🎵 Starting adaptive monitoring...');
                             startAdaptiveMonitoring();
-                            addMessageToUI('system', '🎵 Adaptive Neuro Guided Solfeggio Frequencies activated - system will adapt to your brain state');
+                            addMessageToUI('system', '🎵 Adaptive Neuro Guided Aetheria Frequencies activated - system will adapt to your brain state');
                         }
                     }, 2000); // Wait 2 seconds for EEG to stabilize
                 });
@@ -8382,10 +8330,10 @@ return result;</textarea>
             document.getElementById('showGamma').checked = config.showGamma;
             
             // Load Solfeggio settings (fully adaptive - no timing controls)
-            document.getElementById('solfeggioVolume').value = config.solfeggioVolume || 50;
+            document.getElementById('solfeggioVolume').value = config.solfeggioVolume || 1;
             document.getElementById('fineTune').value = config.solfeggioFineTune || 0;
             document.getElementById('enableSolfeggioAdaptation').checked = config.enableSolfeggioAdaptation !== undefined ? config.enableSolfeggioAdaptation : true;
-            document.getElementById('solfeggioVolumeValue').textContent = config.solfeggioVolume || 50;
+            document.getElementById('solfeggioVolumeValue').textContent = config.solfeggioVolume || 1;
             document.getElementById('fineTuneValue').textContent = config.solfeggioFineTune || 0;
             
             // Update solfeggio display
@@ -8412,9 +8360,9 @@ return result;</textarea>
             }
         }
 
-        // Enhanced Adaptive Solfeggio Frequency System with Advanced State Management
+        // Enhanced Adaptive Aetheria Frequency System with Advanced State Management
         let solfeggioSettings = {
-            volume: 50,              // Master volume percentage (0-100)
+            volume: 1,               // Master volume percentage (0-100), starts at 1%
             fineTune: 0,            // Fine tune gain in dB (-20 to +20)
             enabled: true,
             // Fully adaptive timing - no fixed rates or durations
@@ -8460,19 +8408,17 @@ return result;</textarea>
             isMobile: /Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)
         };
 
-        // Solfeggio frequencies with their associated benefits for different brain states
-        const solfeggioFrequencies = {
-            174: { name: '174 Hz - Pain Relief & Grounding', benefits: ['stress', 'anxiety', 'pain'], brainStates: ['high_beta', 'high_gamma'] },
-            285: { name: '285 Hz - Cellular Healing', benefits: ['healing', 'recovery'], brainStates: ['delta'] },
-            396: { name: '396 Hz - Liberation from Fear', benefits: ['fear', 'guilt', 'trauma'], brainStates: ['high_theta'] },
-            417: { name: '417 Hz - Facilitating Change', benefits: ['change', 'creativity', 'transformation'], brainStates: ['alpha', 'beta'] },
-            432: { name: '432 Hz - Universal Harmony', benefits: ['harmony', 'balance', 'universal_tuning'], brainStates: ['alpha', 'balanced'] },
-            528: { name: '528 Hz - Love & DNA Repair', benefits: ['love', 'healing', 'transformation'], brainStates: ['alpha', 'theta', 'balanced'] },
-            639: { name: '639 Hz - Connection & Relationships', benefits: ['relationships', 'communication', 'harmony'], brainStates: ['alpha', 'high_alpha'] },
-            741: { name: '741 Hz - Awakening Intuition', benefits: ['intuition', 'problem_solving', 'expression'], brainStates: ['beta', 'high_alpha'] },
-            852: { name: '852 Hz - Returning to Spiritual Order', benefits: ['spirituality', 'intuition', 'inner_strength'], brainStates: ['theta', 'gamma'] },
-            963: { name: '963 Hz - Divine Connection', benefits: ['enlightenment', 'unity', 'transcendence'], brainStates: ['gamma'] }
-        };
+        // Aetheria frequencies — built from the authoritative 27-frequency array
+        const solfeggioFrequencies = {};
+        AETHERIA_FREQUENCIES.forEach(f => {
+            solfeggioFrequencies[f.freq] = {
+                name: f.freq + ' Hz - ' + f.geo + ' (' + f.state + ')',
+                benefits: [f.keyword.toLowerCase()],
+                brainStates: [f.regime.toLowerCase()],
+                regime: f.regime,
+                position: f.pos
+            };
+        });
 
         function updateSolfeggioSettings() {
             // Update settings from sliders
@@ -8731,7 +8677,7 @@ return result;</textarea>
                 if (eegConnected && eegStreaming) {
                     startAdaptiveMonitoring();
                     solfeggioSettings.adaptationActive = true;
-                    showStatus('🎵 Fully Adaptive Solfeggio Intelligence activated - monitoring brain state continuously', 'success');
+                    showStatus('🎵 Fully Adaptive Aetheria Intelligence activated - monitoring brain state continuously', 'success');
                 } else {
                     showStatus('⚠️ Connect EEG device first to enable adaptive mode', 'error');
                     document.getElementById('enableSolfeggioAdaptation').checked = false;
@@ -8744,7 +8690,7 @@ return result;</textarea>
                 }
                 stopCurrentFrequency();
                 solfeggioSettings.adaptationActive = false;
-                showStatus('🎵 Adaptive Solfeggio Intelligence disabled', 'success');
+                showStatus('🎵 Adaptive Aetheria Intelligence disabled', 'success');
             }
             
             updateSolfeggioDisplay();
@@ -9055,7 +9001,7 @@ return result;</textarea>
                 }
                 
                 // Initialize default volume settings if not already set
-                if (!solfeggioSettings.volume) solfeggioSettings.volume = 50;
+                if (!solfeggioSettings.volume && solfeggioSettings.volume !== 0) solfeggioSettings.volume = 1;
                 if (!solfeggioSettings.fineTune) solfeggioSettings.fineTune = 0;
                 if (solfeggioSettings.enabled === undefined) solfeggioSettings.enabled = true;
                 
@@ -9877,8 +9823,10 @@ return result;</textarea>
                 
                 // Set volume
                 const currentTime = solfeggioSettings.audioContext.currentTime;
-                const volume = solfeggioSettings.totalVolume || 0.3;
-                
+                let volume = solfeggioSettings.totalVolume || 0.003;
+                // Frequencies above 963Hz are felt, not heard
+                if (frequency > 963) volume = volume * 0.05;
+
                 solfeggioSettings.gainNode.gain.cancelScheduledValues(currentTime);
                 solfeggioSettings.gainNode.gain.setValueAtTime(0, currentTime);
                 solfeggioSettings.gainNode.gain.linearRampToValueAtTime(volume, currentTime + 0.1);
@@ -10094,7 +10042,7 @@ return result;</textarea>
                 testOscillator.type = 'sine';
                 testOscillator.frequency.setValueAtTime(528, solfeggioSettings.audioContext.currentTime);
                 
-                const volume = (solfeggioSettings.volume || 50) / 100 * 0.3; // Safe volume
+                const volume = (solfeggioSettings.volume || 1) / 100 * 0.3; // Safe volume, default 1%
                 testGain.gain.setValueAtTime(0, solfeggioSettings.audioContext.currentTime);
                 testGain.gain.linearRampToValueAtTime(volume, solfeggioSettings.audioContext.currentTime + 0.1);
                 testGain.gain.linearRampToValueAtTime(volume, solfeggioSettings.audioContext.currentTime + 4.9);
@@ -10121,7 +10069,7 @@ return result;</textarea>
                 }, 5500);
                 
                 console.log('✅ Test frequency started - 528Hz for 5 seconds');
-                showStatus('🎵 Test: 528Hz Solfeggio playing for 5 seconds', 'success');
+                showStatus('🎵 Test: 528Hz Aetheria frequency playing for 5 seconds', 'success');
                 
             } catch (error) {
                 console.error('❌ Direct audio test failed:', error);
@@ -10171,7 +10119,7 @@ return result;</textarea>
                 await startFrequencyPlaybackFixed(frequency, duration);
                 
                 // Show user feedback
-                const freqName = solfeggioFrequencies[frequency]?.name || `${frequency}Hz Solfeggio`;
+                const freqName = solfeggioFrequencies[frequency]?.name || `${frequency}Hz Aetheria`;
                 const reason = brainState ? ` for ${brainState.description}` : '';
                 showStatus(`🎵 Playing ${freqName}${reason}`, 'success');
                 
@@ -10254,11 +10202,15 @@ return result;</textarea>
                 solfeggioSettings.pendingOscillator.connect(solfeggioSettings.pendingGainNode);
                 solfeggioSettings.pendingGainNode.connect(solfeggioSettings.audioContext.destination);
                 
+                // Frequencies above 963Hz are felt, not heard — apply heavy attenuation
+                let crossfadeVolume = solfeggioSettings.totalVolume || 0.003;
+                if (newFrequency > 963) crossfadeVolume = crossfadeVolume * 0.05;
+
                 // Set up crossfade envelope
                 // New frequency starts at 0 and fades in
                 solfeggioSettings.pendingGainNode.gain.setValueAtTime(0, currentTime);
                 solfeggioSettings.pendingGainNode.gain.linearRampToValueAtTime(
-                    solfeggioSettings.totalVolume, 
+                    crossfadeVolume,
                     currentTime + crossfadeDuration
                 );
                 
@@ -10425,18 +10377,25 @@ return result;</textarea>
                     }
                 }
                 
+                // Frequencies above 963Hz are "felt not heard" — apply heavy attenuation
+                let effectiveVolume = solfeggioSettings.totalVolume || 0.003;
+                if (frequency > 963) {
+                    // Scale down to ~5% of user volume for supra-Solfeggio Aetheria frequencies
+                    effectiveVolume = effectiveVolume * 0.05;
+                }
+
                 // Set up gain envelope for smooth playback
                 solfeggioSettings.gainNode.gain.setValueAtTime(0, currentTime);
                 solfeggioSettings.gainNode.gain.linearRampToValueAtTime(
-                    solfeggioSettings.totalVolume || 0.3, 
+                    effectiveVolume,
                     currentTime + fadeTime
                 );
                 solfeggioSettings.gainNode.gain.setValueAtTime(
-                    solfeggioSettings.totalVolume || 0.3, 
+                    effectiveVolume,
                     currentTime + fadeTime + Math.max(0.1, sustainTime)
                 );
                 solfeggioSettings.gainNode.gain.linearRampToValueAtTime(
-                    0, 
+                    0,
                     currentTime + playbackDuration
                 );
                 
@@ -10449,7 +10408,7 @@ return result;</textarea>
                 
                 // Store current frequency info
                 solfeggioSettings.currentFrequency = frequency;
-                solfeggioSettings.currentFrequencyName = solfeggioFrequencies[frequency]?.name || `${frequency}Hz Solfeggio`;
+                solfeggioSettings.currentFrequencyName = solfeggioFrequencies[frequency]?.name || `${frequency}Hz Aetheria`;
                 solfeggioSettings.adaptationActive = true;
                 solfeggioSettings.currentFrequencyStartTime = Date.now();
                 
@@ -11008,7 +10967,7 @@ return result;</textarea>
             // Save to localStorage
             localStorage.setItem('sophiaUnifiedConfig', JSON.stringify(config));
             
-            showStatus('Enhanced EEG settings saved! AI-driven Solfeggio system configured.', 'success');
+            showStatus('Enhanced EEG settings saved! AI-driven Aetheria frequency system configured.', 'success');
             closeEEGSettings();
         }
 

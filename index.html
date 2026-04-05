@@ -6866,16 +6866,19 @@ Be warm, conversational, and grounded. Ask follow-up questions. Connect differen
         }
 
         // ── Generation via worker (returns a Promise, never blocks main thread) ──
-        async function generateLocalResponse(messages) {
-            if (!localInference.ready || !localInference.worker) throw new Error('Local model not loaded');
-            const chatMessages = prepareLocalMessages(messages);
-            let fullResponse = '';
+        const LOCAL_GEN_TIMEOUT = 120000; // 2 min timeout — prevents infinite hang
 
-            await new Promise((resolve, reject) => {
+        function workerGenerate(chatMessages, onToken) {
+            return new Promise((resolve, reject) => {
+                const timer = setTimeout(() => {
+                    localInference._pending = null;
+                    reject(new Error('Local model generation timed out (120s)'));
+                }, LOCAL_GEN_TIMEOUT);
+
                 localInference._pending = {
-                    resolve,
-                    reject,
-                    onToken: (token) => { fullResponse += token; }
+                    resolve: () => { clearTimeout(timer); resolve(); },
+                    reject: (err) => { clearTimeout(timer); reject(err); },
+                    onToken: onToken || (() => {}),
                 };
                 localInference.worker.postMessage({
                     type: 'generate',
@@ -6886,6 +6889,13 @@ Be warm, conversational, and grounded. Ask follow-up questions. Connect differen
                     }
                 });
             });
+        }
+
+        async function generateLocalResponse(messages) {
+            if (!localInference.ready || !localInference.worker) throw new Error('Local model not loaded');
+            const chatMessages = prepareLocalMessages(messages);
+            let fullResponse = '';
+            await workerGenerate(chatMessages, (token) => { fullResponse += token; });
             return fullResponse;
         }
 
@@ -6893,24 +6903,9 @@ Be warm, conversational, and grounded. Ask follow-up questions. Connect differen
             if (!localInference.ready || !localInference.worker) throw new Error('Local model not loaded');
             const chatMessages = prepareLocalMessages(messages);
             let fullResponse = '';
-
-            await new Promise((resolve, reject) => {
-                localInference._pending = {
-                    resolve,
-                    reject,
-                    onToken: (token) => {
-                        fullResponse += token;
-                        updateStreamingMessage(streamingMessageId, fullResponse);
-                    }
-                };
-                localInference.worker.postMessage({
-                    type: 'generate',
-                    payload: {
-                        messages: chatMessages,
-                        max_new_tokens: config.fullPromptLocal ? config.maxTokens : LOCAL_MAX_NEW_TOKENS,
-                        temperature: config.temperature,
-                    }
-                });
+            await workerGenerate(chatMessages, (token) => {
+                fullResponse += token;
+                updateStreamingMessage(streamingMessageId, fullResponse);
             });
             return fullResponse;
         }
@@ -7066,14 +7061,15 @@ Be warm, conversational, and grounded. Ask follow-up questions. Connect differen
                 max_tokens: config.maxTokens,
                 stream: true
             };
-            // Include model name if set (required by LM Studio, optional for Ollama)
             if (config.remoteModel) payload.model = config.remoteModel;
 
+            console.log('🌐 [Remote] POST', config.serverUrl, '| model:', payload.model || '(none)', '| messages:', messages.length, '| stream: true');
             const response = await fetch(`${config.serverUrl}`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
             });
+            console.log('🌐 [Remote] Response status:', response.status);
 
             if (!response.ok) {
                 throw new Error('Server returned ' + response.status);
@@ -7149,26 +7145,30 @@ Be warm, conversational, and grounded. Ask follow-up questions. Connect differen
             const messages = buildMessages(prompt, files);
             let fullResponse = '';
 
-            if (shouldUseLocal()) {
+            const useLocal = shouldUseLocal();
+            console.log(`🔮 [Dispatch] mode=${config.inferenceMode} | useLocal=${useLocal} | localReady=${localInference.ready} | url=${config.serverUrl}`);
+
+            if (useLocal) {
                 try {
+                    console.log('🔮 [Dispatch] → Local inference (worker)');
                     const streamingMessageId = addStreamingMessage();
                     fullResponse = await generateLocalStreamingResponse(messages, streamingMessageId);
                     finalizeStreamingMessage(streamingMessageId);
                     await processResponse(fullResponse);
                     return;
                 } catch (localErr) {
-                    console.warn('Local inference failed, falling back to remote:', localErr);
-                    // Clean up any partial streaming message
+                    console.warn('🔮 [Dispatch] Local failed:', localErr.message, '→ falling back to remote');
                     const partial = document.getElementById('streaming-message');
                     if (partial) partial.remove();
 
-                    if (config.inferenceMode === 'local') throw localErr; // no fallback
+                    if (config.inferenceMode === 'local') throw localErr;
                     showStatus('Local model error — falling back to remote API...', 'warning');
                     updateInferenceBadge('remote', 'Remote (API)');
                 }
             }
 
             // Remote path
+            console.log('🔮 [Dispatch] → Remote API:', config.serverUrl, '| model:', config.remoteModel || '(none)');
             fullResponse = await generateRemoteStreamingResponse(messages);
             await processResponse(fullResponse);
         }
@@ -7177,17 +7177,22 @@ Be warm, conversational, and grounded. Ask follow-up questions. Connect differen
         async function generateResponse(prompt, files = []) {
             const messages = buildMessages(prompt, files);
 
-            if (shouldUseLocal()) {
+            const useLocal = shouldUseLocal();
+            console.log(`🔮 [Dispatch] mode=${config.inferenceMode} | useLocal=${useLocal} | stream=false`);
+
+            if (useLocal) {
                 try {
+                    console.log('🔮 [Dispatch] → Local inference (worker)');
                     return await generateLocalResponse(messages);
                 } catch (localErr) {
-                    console.warn('Local inference failed, falling back to remote:', localErr);
+                    console.warn('🔮 [Dispatch] Local failed:', localErr.message, '→ falling back to remote');
                     if (config.inferenceMode === 'local') throw localErr;
                     showStatus('Local model error — falling back to remote API...', 'warning');
                     updateInferenceBadge('remote', 'Remote (API)');
                 }
             }
 
+            console.log('🔮 [Dispatch] → Remote API:', config.serverUrl);
             return await generateRemoteResponse(messages);
         }
 

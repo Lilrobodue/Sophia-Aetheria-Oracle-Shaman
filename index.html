@@ -7144,6 +7144,7 @@ import {
     Gemma4ForConditionalGeneration,
     TextStreamer,
     RawImage,
+    read_audio,
     env,
 } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers';
 env.allowLocalModels = false;
@@ -7180,12 +7181,21 @@ self.onmessage = async (e) => {
         }
         try {
             // Build Gemma 4 chat-template messages
-            // Convert flat messages to multimodal format when images are present
+            // Convert flat messages to multimodal format when images/audio are present
             const messages = payload.messages.map(m => {
-                if (m.images && m.images.length > 0) {
+                const hasImages = m.images && m.images.length > 0;
+                const hasAudio = m.audio && m.audio.length > 0;
+                if (hasImages || hasAudio) {
                     const content = [];
-                    for (let i = 0; i < m.images.length; i++) {
-                        content.push({ type: 'image' });
+                    if (hasImages) {
+                        for (let i = 0; i < m.images.length; i++) {
+                            content.push({ type: 'image' });
+                        }
+                    }
+                    if (hasAudio) {
+                        for (let i = 0; i < m.audio.length; i++) {
+                            content.push({ type: 'audio' });
+                        }
                     }
                     content.push({ type: 'text', text: m.content });
                     return { role: m.role, content };
@@ -7211,8 +7221,22 @@ self.onmessage = async (e) => {
                 imageInputs = loaded.length === 1 ? loaded[0] : loaded;
             }
 
-            // Tokenize prompt + images
-            const inputs = await processor(prompt, imageInputs, { add_special_tokens: false });
+            // Load audio if any message contains it
+            // Audio must be Float32Array from read_audio(url, 16000)
+            let audioInputs = null;
+            const audioDataUrls = [];
+            for (const m of payload.messages) {
+                if (m.audio) audioDataUrls.push(...m.audio);
+            }
+            if (audioDataUrls.length > 0) {
+                const loaded = await Promise.all(
+                    audioDataUrls.map(url => read_audio(url, 16000))
+                );
+                audioInputs = loaded.length === 1 ? loaded[0] : loaded;
+            }
+
+            // Tokenize: processor(text, images, audio, options)
+            const inputs = await processor(prompt, imageInputs, audioInputs, { add_special_tokens: false });
 
             // Stream tokens
             const streamer = new TextStreamer(processor.tokenizer, {
@@ -7457,6 +7481,7 @@ self.onmessage = async (e) => {
                 return messages.map(m => {
                     const msg = { role: m.role, content: m.content };
                     if (m.images) msg.images = m.images;
+                    if (m.audio) msg.audio = m.audio;
                     return msg;
                 });
             }
@@ -7484,8 +7509,9 @@ Use this data to personalize your response. Comment on their current state when 
             const nonSystem = messages.filter(m => m.role !== 'system');
             for (const m of nonSystem.slice(-7)) {
                 const msg = { role: m.role, content: m.content.substring(0, 2000) };
-                // Preserve image data for vision — Gemma 4 can see palm photos etc.
+                // Preserve image + audio data for Gemma 4 multimodal
                 if (m.images) msg.images = m.images;
+                if (m.audio) msg.audio = m.audio;
                 trimmed.push(msg);
             }
             return trimmed;
@@ -7872,12 +7898,17 @@ Use this data to personalize your response. Comment on their current state when 
             });
 
             const currentMsg = { role: 'user', content: prompt };
-            
+
             const images = files.filter(f => f.type === 'image');
             if (images.length > 0) {
                 currentMsg.images = images.map(img => img.data);
             }
-            
+
+            const audioFiles = files.filter(f => f.type === 'audio');
+            if (audioFiles.length > 0) {
+                currentMsg.audio = audioFiles.map(a => a.data);
+            }
+
             messages.push(currentMsg);
 
             return messages;

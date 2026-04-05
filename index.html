@@ -1339,6 +1339,17 @@
             </div>
 
             <div class="sidebar-section">
+                <h3>💜 Sophia's Memory <span id="memoryCount" style="color: #888; font-size: 0.75rem; font-weight: normal;">0</span></h3>
+                <div id="memoryList" style="max-height: 200px; overflow-y: auto; margin-bottom: 8px;">
+                    <p style="color: #888; font-size: 0.8rem;">No memories yet. Sophia remembers as you talk.</p>
+                </div>
+                <div style="display: flex; gap: 6px;">
+                    <button class="btn btn-small btn-primary" onclick="saveManualMemory()" style="flex: 1;">+ Add Memory</button>
+                    <button class="btn btn-small btn-secondary" onclick="if(confirm('Clear all memories?')) clearAllMemories()" style="flex: 1;">Clear All</button>
+                </div>
+            </div>
+
+            <div class="sidebar-section">
                 <h3>⚙️ Quick Actions</h3>
                 <button class="btn btn-small btn-secondary" onclick="openSettings()" style="width: 100%; margin-bottom: 8px;">
                     Settings
@@ -3920,6 +3931,298 @@ return result;</textarea>
         // END AETHERIA PRESCRIPTION ENGINE
         // ═══════════════════════════════════════════════════
 
+        // ═══════════════════════════════════════════════════
+        // SOPHIA MEMORY SYSTEM — persistent across sessions
+        // ═══════════════════════════════════════════════════
+        // Types: reading, observation, personal, session
+
+        async function saveMemory(memory) {
+            if (!db) return null;
+            const entry = {
+                type: memory.type || 'observation',
+                content: memory.content,
+                tags: memory.tags || [],
+                timestamp: Date.now(),
+                date: new Date().toLocaleDateString(),
+                source: memory.source || 'auto',
+            };
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(['memories'], 'readwrite');
+                const store = tx.objectStore('memories');
+                const req = store.add(entry);
+                req.onsuccess = () => { resolve(req.result); renderMemoryPanel(); };
+                req.onerror = () => reject(req.error);
+            });
+        }
+
+        async function getAllMemories() {
+            if (!db) return [];
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(['memories'], 'readonly');
+                const store = tx.objectStore('memories');
+                const req = store.getAll();
+                req.onsuccess = () => resolve(req.result || []);
+                req.onerror = () => reject(req.error);
+            });
+        }
+
+        async function getMemoriesByType(type) {
+            if (!db) return [];
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(['memories'], 'readonly');
+                const idx = tx.objectStore('memories').index('type');
+                const req = idx.getAll(type);
+                req.onsuccess = () => resolve(req.result || []);
+                req.onerror = () => reject(req.error);
+            });
+        }
+
+        async function deleteMemory(id) {
+            if (!db) return;
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(['memories'], 'readwrite');
+                const store = tx.objectStore('memories');
+                const req = store.delete(id);
+                req.onsuccess = () => { resolve(); renderMemoryPanel(); };
+                req.onerror = () => reject(req.error);
+            });
+        }
+
+        async function clearAllMemories() {
+            if (!db) return;
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(['memories'], 'readwrite');
+                const store = tx.objectStore('memories');
+                const req = store.clear();
+                req.onsuccess = () => { resolve(); renderMemoryPanel(); };
+                req.onerror = () => reject(req.error);
+            });
+        }
+
+        async function searchMemories(query) {
+            const all = await getAllMemories();
+            const q = query.toLowerCase();
+            return all.filter(m =>
+                m.content.toLowerCase().includes(q) ||
+                (m.tags && m.tags.some(t => t.toLowerCase().includes(q)))
+            );
+        }
+
+        // Get recent + relevant memories for context injection
+        async function getMemoryContext(userMessage) {
+            try {
+                const all = await getAllMemories();
+                if (all.length === 0) return '';
+
+                // Recent memories (last 10)
+                const sorted = all.sort((a, b) => b.timestamp - a.timestamp);
+                const recent = sorted.slice(0, 10);
+
+                // Keyword-relevant memories from the user's message
+                const words = userMessage.toLowerCase().split(/\s+/).filter(w => w.length > 3);
+                const relevant = all.filter(m => {
+                    const mc = m.content.toLowerCase();
+                    return words.some(w => mc.includes(w));
+                });
+
+                // Combine, deduplicate, limit
+                const combined = new Map();
+                for (const m of [...relevant, ...recent]) {
+                    combined.set(m.id, m);
+                }
+                const memories = [...combined.values()].slice(0, 15);
+
+                if (memories.length === 0) return '';
+
+                const typeIcons = { reading: '🃏', observation: '👁️', personal: '💜', session: '📝' };
+                let ctx = '\n\n## Sophia\'s Memories (from past sessions)\n';
+                for (const m of memories) {
+                    const icon = typeIcons[m.type] || '📌';
+                    ctx += `${icon} [${m.date}] ${m.content}\n`;
+                }
+                ctx += '\nUse these memories naturally — reference past readings, notice patterns, remember details the person shared. Don\'t list them mechanically.\n';
+                return ctx;
+            } catch (e) {
+                console.warn('Memory context error:', e);
+                return '';
+            }
+        }
+
+        // Auto-extract memories from conversation
+        async function extractMemories(userMsg, assistantMsg) {
+            try {
+                const u = userMsg.toLowerCase();
+                const a = assistantMsg.toLowerCase();
+                const tags = [];
+
+                // Personal details — name
+                const nameMatch = userMsg.match(/(?:my name is|i'm|i am|call me)\s+([A-Z][a-z]+)/i);
+                if (nameMatch) {
+                    await saveMemory({
+                        type: 'personal',
+                        content: `User's name is ${nameMatch[1]}`,
+                        tags: ['name', 'identity'],
+                        source: 'auto',
+                    });
+                }
+
+                // Personal details — birthday / zodiac
+                const bdayMatch = userMsg.match(/(?:born on|birthday is|born)\s+(\w+\s+\d{1,2}(?:\s*,?\s*\d{4})?)/i);
+                if (bdayMatch) {
+                    await saveMemory({
+                        type: 'personal',
+                        content: `User's birthday: ${bdayMatch[1]}`,
+                        tags: ['birthday', 'astrology'],
+                        source: 'auto',
+                    });
+                }
+
+                // Readings — tarot cards
+                const tarotCards = assistantMsg.match(/(?:drew|pulled|card is|cards?:?)\s+(?:the\s+)?([A-Z][a-z]+(?:\s+(?:of\s+)?[A-Z][a-z]+)*)/g);
+                if (tarotCards && tarotCards.length > 0) {
+                    await saveMemory({
+                        type: 'reading',
+                        content: `Tarot reading: ${tarotCards.join(', ')}`,
+                        tags: ['tarot', 'reading'],
+                        source: 'auto',
+                    });
+                }
+
+                // Readings — I Ching hexagram
+                const hexMatch = assistantMsg.match(/[Hh]exagram\s*#?\s*(\d{1,2})(?:\s*[-—]\s*(.+?)(?:\.|,|\n))?/);
+                if (hexMatch) {
+                    await saveMemory({
+                        type: 'reading',
+                        content: `I Ching: Hexagram #${hexMatch[1]}${hexMatch[2] ? ' — ' + hexMatch[2].trim() : ''}`,
+                        tags: ['iching', 'reading', 'hexagram'],
+                        source: 'auto',
+                    });
+                }
+
+                // Readings — numerology life path
+                const lifePathMatch = assistantMsg.match(/life\s*path\s*(?:number\s*)?(?:is\s*)?(\d{1,2})/i);
+                if (lifePathMatch) {
+                    await saveMemory({
+                        type: 'reading',
+                        content: `Numerology: Life Path number is ${lifePathMatch[1]}`,
+                        tags: ['numerology', 'reading', 'lifepath'],
+                        source: 'auto',
+                    });
+                }
+
+                // Readings — runes
+                const runeMatch = assistantMsg.match(/(?:rune|drew|cast)\s*:?\s*(Fehu|Uruz|Thurisaz|Ansuz|Raidho|Kenaz|Gebo|Wunjo|Hagalaz|Nauthiz|Isa|Jera|Eihwaz|Perthro|Algiz|Sowilo|Tiwaz|Berkano|Ehwaz|Mannaz|Laguz|Ingwaz|Dagaz|Othala)/i);
+                if (runeMatch) {
+                    await saveMemory({
+                        type: 'reading',
+                        content: `Rune cast: ${runeMatch[1]}`,
+                        tags: ['rune', 'reading'],
+                        source: 'auto',
+                    });
+                }
+
+                // Observations — emotional states, life situations
+                const emotionPatterns = [
+                    /(?:i(?:'m| am) feeling|i feel)\s+(.{10,60})/i,
+                    /(?:going through|dealing with|struggling with)\s+(.{10,60})/i,
+                    /(?:worried about|anxious about|excited about)\s+(.{10,60})/i,
+                ];
+                for (const pat of emotionPatterns) {
+                    const match = userMsg.match(pat);
+                    if (match) {
+                        await saveMemory({
+                            type: 'observation',
+                            content: `User shared: "${match[0].trim()}"`,
+                            tags: ['emotion', 'context'],
+                            source: 'auto',
+                        });
+                        break; // one per message
+                    }
+                }
+
+                // Aetheria frequency mentions
+                const freqMatch = assistantMsg.match(/(\d{3,4})\s*Hz.*?(?:suggest|recommend|try|resonate)/i);
+                if (freqMatch) {
+                    await saveMemory({
+                        type: 'reading',
+                        content: `Recommended frequency: ${freqMatch[1]}Hz`,
+                        tags: ['frequency', 'aetheria'],
+                        source: 'auto',
+                    });
+                }
+
+                // Session summary — save every 5 exchanges
+                if (chatHistory.length > 0 && chatHistory.length % 10 === 0) {
+                    const lastFew = chatHistory.slice(-6).map(m =>
+                        `${m.role}: ${m.content.substring(0, 100)}`
+                    ).join(' | ');
+                    await saveMemory({
+                        type: 'session',
+                        content: `Session snippet (${chatHistory.length} msgs): ${lastFew}`,
+                        tags: ['session', 'summary'],
+                        source: 'auto',
+                    });
+                }
+
+            } catch (e) {
+                console.warn('Memory extraction error:', e);
+            }
+        }
+
+        // Render memory panel in sidebar
+        async function renderMemoryPanel() {
+            const list = document.getElementById('memoryList');
+            if (!list) return;
+            try {
+                const all = await getAllMemories();
+                if (all.length === 0) {
+                    list.innerHTML = '<p style="color: #888; font-size: 0.8rem;">No memories yet. Sophia remembers as you talk.</p>';
+                    const countEl = document.getElementById('memoryCount');
+                    if (countEl) countEl.textContent = '0';
+                    return;
+                }
+
+                const sorted = all.sort((a, b) => b.timestamp - a.timestamp);
+                const typeIcons = { reading: '🃏', observation: '👁️', personal: '💜', session: '📝' };
+
+                list.innerHTML = sorted.slice(0, 30).map(m => `
+                    <div style="background: rgba(0,0,0,0.3); padding: 6px 8px; border-radius: 5px; margin-bottom: 4px; font-size: 0.75rem; position: relative;">
+                        <span>${typeIcons[m.type] || '📌'}</span>
+                        <span style="color: #ccc;">${m.content.substring(0, 80)}${m.content.length > 80 ? '...' : ''}</span>
+                        <span style="color: #555; display: block; font-size: 0.65rem; margin-top: 2px;">${m.date} · ${m.type}</span>
+                        <button onclick="deleteMemory(${m.id})" style="position:absolute;top:4px;right:4px;background:none;border:none;color:#ff005544;cursor:pointer;font-size:0.7rem;" title="Forget this">✕</button>
+                    </div>
+                `).join('');
+
+                if (all.length > 30) {
+                    list.innerHTML += `<p style="color: #888; font-size: 0.7rem; text-align: center;">+ ${all.length - 30} more memories</p>`;
+                }
+
+                const countEl = document.getElementById('memoryCount');
+                if (countEl) countEl.textContent = all.length;
+            } catch (e) {
+                list.innerHTML = '<p style="color: #ff4444; font-size: 0.8rem;">Error loading memories</p>';
+            }
+        }
+
+        // Manual memory save from user
+        function saveManualMemory() {
+            const input = prompt('What should Sophia remember?');
+            if (input && input.trim()) {
+                saveMemory({
+                    type: 'personal',
+                    content: input.trim(),
+                    tags: ['manual'],
+                    source: 'manual',
+                });
+                showStatus('Memory saved!', 'success');
+            }
+        }
+
+        // ═══════════════════════════════════════════════════
+        // END MEMORY SYSTEM
+        // ═══════════════════════════════════════════════════
+
         // Server endpoint presets
         const SERVER_PRESETS = {
             ollama: 'http://localhost:11434/v1/chat/completions',
@@ -4207,23 +4510,28 @@ return result;</textarea>
         
         async function initIndexedDB() {
             return new Promise((resolve, reject) => {
-                const request = indexedDB.open('SophiaOracleDB', 1);
-                
+                const request = indexedDB.open('SophiaOracleDB', 2); // v2: adds memories store
+
                 request.onerror = () => reject(request.error);
                 request.onsuccess = () => {
                     db = request.result;
                     resolve(db);
                 };
-                
+
                 request.onupgradeneeded = (event) => {
                     const db = event.target.result;
-                    
-                    // Create object stores if they don't exist
+
                     if (!db.objectStoreNames.contains('files')) {
                         db.createObjectStore('files', { keyPath: 'id', autoIncrement: true });
                     }
                     if (!db.objectStoreNames.contains('metadata')) {
                         db.createObjectStore('metadata', { keyPath: 'key' });
+                    }
+                    if (!db.objectStoreNames.contains('memories')) {
+                        const memStore = db.createObjectStore('memories', { keyPath: 'id', autoIncrement: true });
+                        memStore.createIndex('type', 'type', { unique: false });
+                        memStore.createIndex('timestamp', 'timestamp', { unique: false });
+                        memStore.createIndex('tags', 'tags', { unique: false, multiEntry: true });
                     }
                 };
             });
@@ -4465,6 +4773,9 @@ return result;</textarea>
 
                 // Reading of the Day
                 renderReadingOfTheDay();
+
+                // Load memory panel
+                renderMemoryPanel();
 
                 // Restore server preset UI
                 if (config.serverPreset) {
@@ -7029,6 +7340,9 @@ Be warm, conversational, and grounded. Ask follow-up questions. Connect differen
                     console.warn('Error getting EEG context:', error);
                 }
 
+                // Refresh memory context before building messages
+                await refreshMemoryContext(message);
+
                 const fullPrompt = message + ragContext + toolsContext + eegContext;
                 
                 if (config.streamingEnabled) {
@@ -7196,6 +7510,17 @@ Be warm, conversational, and grounded. Ask follow-up questions. Connect differen
             return await generateRemoteResponse(messages);
         }
 
+        // Cache for memory context (refreshed each message to avoid async in buildMessages)
+        let _cachedMemoryContext = '';
+
+        async function refreshMemoryContext(userMessage) {
+            try {
+                _cachedMemoryContext = await getMemoryContext(userMessage);
+            } catch (e) {
+                _cachedMemoryContext = '';
+            }
+        }
+
         function buildMessages(prompt, files = []) {
             // Append Aetheria frequency reference data to system prompt
             const freqRef = '\n\n## Aetheria 27-Frequency Quick Reference\n' +
@@ -7203,7 +7528,7 @@ Be warm, conversational, and grounded. Ask follow-up questions. Connect differen
 
             const messages = [{
                 role: 'system',
-                content: config.systemPrompt + freqRef
+                content: config.systemPrompt + freqRef + _cachedMemoryContext
             }];
 
             // Use the full context window - don't arbitrarily limit history
@@ -7345,6 +7670,12 @@ Be warm, conversational, and grounded. Ask follow-up questions. Connect differen
             // Voice output - stream complete message
             if (config.autoSpeak) {
                 speakText(finalResponse, true);
+            }
+
+            // Auto-extract memories from this exchange
+            const lastUserMsg = chatHistory.filter(m => m.role === 'user').slice(-1)[0];
+            if (lastUserMsg) {
+                extractMemories(lastUserMsg.content, finalResponse);
             }
         }
 

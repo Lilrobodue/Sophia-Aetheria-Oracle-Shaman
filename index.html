@@ -8,9 +8,11 @@
     <meta name="theme-color" content="#1a0a2e">
     <meta name="description" content="Sophia - Aetheria Oracle Shaman. Tarot, numerology, I Ching, palmistry, and frequency healing guidance.">
     <meta name="apple-mobile-web-app-title" content="Sophia Oracle">
-    <link rel="manifest" id="manifest-link">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <link rel="manifest" href="manifest.json">
+    <link rel="apple-touch-icon" sizes="192x192" href="icons/icon-192.png">
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3CradialGradient id='g' cx='50%25' cy='40%25' r='50%25'%3E%3Cstop offset='0%25' stop-color='%23c4a0ff'/%3E%3Cstop offset='50%25' stop-color='%237B50D4'/%3E%3Cstop offset='100%25' stop-color='%231a0a2e'/%3E%3C/radialGradient%3E%3CradialGradient id='s' cx='35%25' cy='30%25' r='25%25'%3E%3Cstop offset='0%25' stop-color='%23ffffff' stop-opacity='0.6'/%3E%3Cstop offset='100%25' stop-color='%23ffffff' stop-opacity='0'/%3E%3C/radialGradient%3E%3C/defs%3E%3Crect fill='%230a0a0f' width='64' height='64' rx='14'/%3E%3Ccircle cx='32' cy='28' r='16' fill='url(%23g)' stroke='%23ff005580' stroke-width='1'/%3E%3Ccircle cx='28' cy='24' r='6' fill='url(%23s)'/%3E%3Cpath d='M18 44 C18 40 46 40 46 44 L48 50 C48 52 16 52 16 50 Z' fill='%23ff005544' stroke='%23ff005566' stroke-width='0.5'/%3E%3Ccircle cx='32' cy='28' r='16' fill='none' stroke='%23c4a0ff22' stroke-width='3'/%3E%3C/svg%3E">
-    <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect fill='%231a0a2e' width='100' height='100' rx='20'/%3E%3Ccircle cx='50' cy='42' r='26' fill='%237B50D4' stroke='%23ff0055' stroke-width='1.5' opacity='0.9'/%3E%3Ccircle cx='42' cy='35' r='10' fill='white' opacity='0.15'/%3E%3Cpath d='M26 70 C26 64 74 64 74 70 L76 80 C76 82 24 82 24 80 Z' fill='%23ff005566'/%3E%3C/svg%3E">
     <title>Sophia - Aetheria Oracle Shaman</title>
     <!-- Transformers.js loads inside Web Worker — no main-thread import needed -->
     <style>
@@ -4595,67 +4597,52 @@ return result;</textarea>
                 return c.toDataURL('image/png');
             }
 
-            // Generate icons at standard PWA sizes
-            const sizes = [48, 72, 96, 128, 144, 192, 256, 512];
-            const icons = sizes.map(size => ({
-                src: generateIconDataUrl(size),
-                sizes: `${size}x${size}`,
-                type: 'image/png',
-                purpose: 'any maskable'
-            }));
-
-            const manifest = {
-                name: 'Sophia - Aetheria Oracle Shaman',
-                short_name: 'Sophia Oracle',
-                description: 'Tarot, numerology, I Ching, palmistry, and frequency healing guidance.',
-                start_url: '.',
-                display: 'standalone',
-                background_color: '#0a0a0f',
-                theme_color: '#1a0a2e',
-                orientation: 'any',
-                categories: ['lifestyle', 'health'],
-                icons: icons
-            };
-            const blob = new Blob([JSON.stringify(manifest)], { type: 'application/json' });
-            const url = URL.createObjectURL(blob);
-            const link = document.getElementById('manifest-link');
-            if (link) link.href = url;
         }
 
-        // Service Worker registration
-        function registerServiceWorker() {
-            if ('serviceWorker' in navigator) {
-                // Create inline service worker
-                const swCode = `
-                    const CACHE_NAME = 'sophia-oracle-v1';
-                    const OFFLINE_URL = '/';
-                    self.addEventListener('install', (e) => {
-                        self.skipWaiting();
-                    });
-                    self.addEventListener('activate', (e) => {
-                        e.waitUntil(clients.claim());
-                    });
-                    self.addEventListener('fetch', (e) => {
-                        if (e.request.method !== 'GET') return;
-                        if (e.request.url.includes('/v1/chat/completions')) return;
-                        e.respondWith(
-                            caches.match(e.request).then(cached => cached || fetch(e.request).then(response => {
-                                if (response.ok) {
-                                    const clone = response.clone();
-                                    caches.open(CACHE_NAME).then(cache => cache.put(e.request, clone));
-                                }
-                                return response;
-                            }).catch(() => caches.match(OFFLINE_URL)))
-                        );
-                    });
-                `;
-                const blob = new Blob([swCode], { type: 'application/javascript' });
-                const swUrl = URL.createObjectURL(blob);
-                navigator.serviceWorker.register(swUrl, { scope: '.' }).then(reg => {
-                    console.log('Service Worker registered:', reg.scope);
-                }).catch(err => {
-                    console.warn('Service Worker registration failed:', err);
-                });
+        // Generate PNG icon files and cache them BEFORE SW registers,
+        // so manifest.json icon references resolve from the start.
+        async function generateAndCacheIcons() {
+            try {
+                const cache = await caches.open('sophia-v2');
+                const iconConfigs = [
+                    { size: 192, file: 'icons/icon-192.png' },
+                    { size: 512, file: 'icons/icon-512.png' },
+                    { size: 192, file: 'icons/icon-maskable-192.png' },
+                    { size: 512, file: 'icons/icon-maskable-512.png' },
+                ];
+
+                for (const { size, file } of iconConfigs) {
+                    const url = new URL(file, location.href).href;
+                    // Skip if already cached
+                    const existing = await cache.match(url);
+                    if (existing) continue;
+
+                    const dataUrl = generateIconDataUrl(size);
+                    const response = await fetch(dataUrl);
+                    const blob = await response.blob();
+                    await cache.put(url, new Response(blob, {
+                        headers: { 'Content-Type': 'image/png' }
+                    }));
+                    console.log('📲 Cached PWA icon:', file, size + 'px');
+                }
+            } catch (err) {
+                console.warn('Icon caching failed:', err);
+            }
+        }
+
+        // Service Worker registration — real file for true offline PWA
+        async function registerServiceWorker() {
+            if (!('serviceWorker' in navigator)) return;
+
+            try {
+                // Generate and cache icons FIRST so they're available
+                // when the manifest is fetched during PWA install
+                await generateAndCacheIcons();
+
+                const reg = await navigator.serviceWorker.register('./sw.js', { scope: './' });
+                console.log('📲 Service Worker registered:', reg.scope);
+            } catch (err) {
+                console.warn('Service Worker registration failed:', err);
             }
         }
 

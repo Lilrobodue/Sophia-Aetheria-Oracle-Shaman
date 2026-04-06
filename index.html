@@ -1678,8 +1678,9 @@
                         <label style="font-weight: normal; font-size: 0.8rem; color: #00ff88;">
                             Model Size:
                             <select id="localModelPicker" onchange="onLocalModelChange()" style="margin-left: 6px; padding: 2px 4px; font-size: 0.8rem; background: #1a1a2e; color: #fff; border: 1px solid #333; border-radius: 4px;">
-                                <option value="e2b">E2B — Fast (~3.2 GB, ~2B params)</option>
-                                <option value="e4b">E4B — Quality (~5.1 GB, ~4.5B params)</option>
+                                <option value="lite">Gemma 3 1B — Lite (~0.6 GB, text only)</option>
+                                <option value="e2b">Gemma 4 E2B — Vision (~3.2 GB, 10GB+ RAM)</option>
+                                <option value="e4b">Gemma 4 E4B — Best (~5.1 GB, 16GB+ RAM)</option>
                             </select>
                         </label>
                         <div id="modelPickerHint" style="font-size: 0.7rem; color: #888; margin-top: 2px;">Auto-selected based on device memory</div>
@@ -1706,15 +1707,19 @@
             <div class="config-group">
                 <label>Remote API Endpoint</label>
                 <select id="serverPreset" class="text-input" onchange="applyServerPreset()" style="margin-bottom: 8px;">
-                    <option value="lmstudio">Local — LM Studio</option>
+                    <option value="lmlink">LM Studio — LM Link (HTTPS, works from mobile)</option>
+                    <option value="lmstudio">LM Studio — Local (same PC only)</option>
                     <option value="ollama">Local — Ollama</option>
                     <option value="llamacpp">Local — llama.cpp</option>
                     <option value="huggingface">HuggingFace Space</option>
                     <option value="custom">Custom</option>
                 </select>
-                <input type="text" id="serverUrl" class="text-input" value="http://localhost:1234/api/v1/chat" style="margin-bottom: 8px;">
+                <input type="text" id="serverUrl" class="text-input" value="https://YOUR-LINK.lmstudio.ai/v1/chat/completions" oninput="checkMixedContent()" style="margin-bottom: 8px;">
                 <input type="text" id="remoteModel" class="text-input" placeholder="Model name (e.g. gemma-4-e4b-it)" style="margin-bottom: 8px;">
                 <div style="font-size: 0.7rem; color: #888; margin: -4px 0 8px 2px;">Set model name (e.g. gemma-4-e4b-it). Required for LM Studio. For Ollama, leave blank.</div>
+                <div id="mixedContentWarning" style="display: none; background: rgba(255,107,0,0.2); padding: 8px; border-radius: 6px; margin-bottom: 8px; font-size: 0.75rem; border: 1px solid #ff6b00; color: #ff6b00;">
+                    <strong>HTTPS → HTTP blocked:</strong> This site loads over HTTPS, so HTTP endpoints (local IPs) won't work from mobile. Use <strong>LM Link</strong> in LM Studio to get an HTTPS URL, or select the LM Link preset above.
+                </div>
                 <div style="display: flex; gap: 8px; align-items: center;">
                     <button class="btn btn-small btn-secondary" onclick="testConnectionManual()" style="flex: 1;">🔗 Test Connection</button>
                     <span id="connectionTestResult" style="font-size: 0.8rem; color: #888;">Not tested</span>
@@ -3871,8 +3876,8 @@ return result;</textarea>
 
         // Configuration
         let config = {
-            serverUrl: 'http://localhost:1234/api/v1/chat',
-            serverPreset: 'lmstudio',
+            serverUrl: 'https://YOUR-LINK.lmstudio.ai/v1/chat/completions',
+            serverPreset: 'lmlink',
             inferenceMode: 'auto', // 'auto', 'local', 'remote'
             fullPromptLocal: false, // send full system prompt + freq table to local/API
             remoteModel: '', // model name for LM Studio / Ollama (e.g. 'gemma-4-e4b-it')
@@ -4342,6 +4347,7 @@ return result;</textarea>
 
         // Server endpoint presets
         const SERVER_PRESETS = {
+            lmlink: 'https://YOUR-LINK.lmstudio.ai/v1/chat/completions',
             lmstudio: 'http://localhost:1234/api/v1/chat',
             ollama: 'http://localhost:11434/v1/chat/completions',
             llamacpp: 'http://localhost:8080/v1/chat/completions',
@@ -4355,8 +4361,20 @@ return result;</textarea>
             if (preset !== 'custom') {
                 urlInput.value = SERVER_PRESETS[preset];
             }
-            urlInput.readOnly = (preset !== 'custom' && preset !== 'huggingface' && preset !== 'lmstudio');
+            // Allow editing for presets that need user-specific URLs
+            urlInput.readOnly = (preset === 'ollama' || preset === 'llamacpp');
             config.serverPreset = preset;
+            checkMixedContent();
+        }
+
+        // Show warning when HTTPS site tries to use HTTP endpoint
+        function checkMixedContent() {
+            const warn = document.getElementById('mixedContentWarning');
+            if (!warn) return;
+            const url = document.getElementById('serverUrl').value;
+            const siteIsHttps = location.protocol === 'https:';
+            const urlIsHttp = url.startsWith('http://');
+            warn.style.display = (siteIsHttps && urlIsHttp) ? 'block' : 'none';
         }
 
         async function testConnectionManual() {
@@ -4380,7 +4398,7 @@ return result;</textarea>
                 const response = await Promise.race([
                     fetch(serverUrl, {
                         method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
+                        headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': 'true' },
                         body: JSON.stringify(testPayload),
                     }),
                     new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 8000))
@@ -4625,7 +4643,7 @@ return result;</textarea>
         // so manifest.json icon references resolve from the start.
         async function generateAndCacheIcons() {
             try {
-                const cache = await caches.open('sophia-v4');
+                const cache = await caches.open('sophia-v8');
                 const iconConfigs = [
                     { size: 192, file: 'icons/icon-192.png' },
                     { size: 512, file: 'icons/icon-512.png' },
@@ -5312,42 +5330,41 @@ return result;</textarea>
                 config.modelTier = 'premium';
                 config.recommendedModel = 'Gemma 4 E4B (Premium — ~5.1 GB)';
                 config.memoryBudget = effectiveMemory + 'GB est. (Premium)';
-                config.features = ['Vision-Language Model', 'E4B Quality', 'Ultra Streaming', 'Full Context', 'Maximum Performance', 'Advanced Image Understanding'];
+                config.features = ['Vision + Audio', 'E4B Quality', 'Ultra Streaming', 'Full Context', 'Maximum Performance'];
             } else if (effectiveMemory >= 12) {
-                // High: E4B is feasible but tight — use it for quality
-                selectedLocalModel = 'e4b';
+                // High: E2B — E4B is too tight on 12GB mobile
+                selectedLocalModel = 'e2b';
                 config.contextLength = 24576;
                 config.maxTokens = 2048;
                 config.modelTier = 'high';
-                config.recommendedModel = 'Gemma 4 E4B (High — ~5.1 GB)';
+                config.recommendedModel = 'Gemma 4 E2B (High — ~3.2 GB)';
                 config.memoryBudget = effectiveMemory + 'GB est. (High Performance)';
-                config.features = ['Vision-Language Model', 'E4B Quality', 'Fast Streaming', 'Extended Context', 'High Performance', 'Image Analysis'];
-            } else if (effectiveMemory >= 8) {
-                // Standard: E2B for speed and safety
-                selectedLocalModel = 'e2b';
-                config.contextLength = 24576;
-                config.maxTokens = 2048;
-                config.modelTier = 'standard';
-                config.recommendedModel = 'Gemma 4 E2B (Standard — ~3.2 GB)';
-                config.memoryBudget = effectiveMemory + 'GB est. (Standard)';
-                config.features = ['Vision-Language Model', 'E2B Fast', 'Smart Streaming', 'Standard Context', 'Balanced Performance'];
-            } else {
-                // Lite: E2B with reduced tokens
+                config.features = ['Vision + Audio', 'E2B Quality', 'Fast Streaming', 'Extended Context', 'Image Analysis'];
+            } else if (effectiveMemory >= 10) {
+                // Standard: E2B is feasible with 10GB+
                 selectedLocalModel = 'e2b';
                 config.contextLength = 16384;
                 config.maxTokens = 1024;
+                config.modelTier = 'standard';
+                config.recommendedModel = 'Gemma 4 E2B (Standard — ~3.2 GB)';
+                config.memoryBudget = effectiveMemory + 'GB est. (Standard)';
+                config.features = ['Vision + Audio', 'E2B Fast', 'Smart Streaming', 'Standard Context'];
+            } else {
+                // Lite: Gemma 3 1B — fits in ~600MB, works on 8GB phones
+                selectedLocalModel = 'lite';
+                config.contextLength = 8192;
+                config.maxTokens = 512;
                 config.modelTier = 'lite';
-                config.recommendedModel = 'Gemma 4 E2B (Lite — ~3.2 GB)';
+                config.recommendedModel = 'Gemma 3 1B (Lite — ~0.6 GB)';
                 config.memoryBudget = effectiveMemory + 'GB est. (Lite)';
-                config.features = ['Vision-Language Model', 'E2B Fast', 'Efficient Streaming', 'Compact Context', 'Optimized Performance'];
+                config.features = ['Text Only', 'Very Fast', 'Compact', 'Low Memory'];
             }
 
             // Mobile adjustments — only limit LOW-memory mobile devices
-            // High-memory phones (like 24GB flagships) should not be capped
             if (category === 'mobile') {
-                if (effectiveMemory < 8) {
-                    config.contextLength = Math.min(config.contextLength, 16384);
-                    config.maxTokens = Math.min(config.maxTokens, 1024);
+                if (effectiveMemory < 6) {
+                    config.contextLength = Math.min(config.contextLength, 4096);
+                    config.maxTokens = Math.min(config.maxTokens, 256);
                 }
                 config.features.push('Mobile Optimized', 'Efficient Vision Processing');
             }
@@ -7101,14 +7118,27 @@ return result;</textarea>
 
         // Smart model picker — selects E2B or E4B based on device capabilities
         const LOCAL_MODELS = {
+            'lite': {
+                id: 'onnx-community/gemma-3-1b-it-ONNX',
+                name: 'Gemma 3 1B',
+                params: '~1B',
+                download: '~0.6 GB',
+                minMemory: 4,   // GB
+                speed: 'Very fast',
+                quality: 'Basic',
+                type: 'text-generation',  // uses pipeline() — text only
+                dtype: 'q4',
+            },
             'e2b': {
                 id: 'onnx-community/gemma-4-E2B-it-ONNX',
                 name: 'Gemma 4 E2B',
                 params: '~2B effective',
                 download: '~3.2 GB',
-                minMemory: 4,   // GB
+                minMemory: 10,  // GB — needs ~6GB free after OS/browser
                 speed: 'Fast',
                 quality: 'Good',
+                type: 'gemma4-vision',  // uses Gemma4ForConditionalGeneration — vision + audio
+                dtype: 'q4f16',
             },
             'e4b': {
                 id: 'onnx-community/gemma-4-E4B-it-ONNX',
@@ -7118,6 +7148,8 @@ return result;</textarea>
                 minMemory: 12,  // GB
                 speed: 'Moderate',
                 quality: 'Excellent',
+                type: 'gemma4-vision',
+                dtype: 'q4f16',
             },
         };
 
@@ -7145,10 +7177,14 @@ return result;</textarea>
             _pending: null, // {resolve, reject, onToken} for current generation
         };
 
-        // ── Build inline Web Worker source (Gemma 4 vision + text) ──
+        // ── Build inline Web Worker source ──
+        // Supports two modes:
+        //   'gemma4-vision' → Gemma4ForConditionalGeneration + AutoProcessor (vision/audio/text)
+        //   'text-generation' → pipeline('text-generation') for small text-only models
         function createInferenceWorkerSource() {
             return `
 import {
+    pipeline,
     AutoProcessor,
     Gemma4ForConditionalGeneration,
     TextStreamer,
@@ -7161,21 +7197,34 @@ env.useBrowserCache = true;
 
 let processor = null;
 let model = null;
+let pipe = null;       // for text-generation pipeline mode
+let modelType = null;  // 'gemma4-vision' or 'text-generation'
 
 self.onmessage = async (e) => {
     const { type, payload } = e.data;
 
     if (type === 'load') {
+        modelType = payload.modelType || 'gemma4-vision';
         try {
-            self.postMessage({ type: 'progress', payload: { status: 'progress', name: 'processor', progress: 0 } });
-            processor = await AutoProcessor.from_pretrained(payload.modelId);
-
-            model = await Gemma4ForConditionalGeneration.from_pretrained(payload.modelId, {
-                dtype: payload.dtype,
-                device: payload.device,
-                progress_callback: (p) => self.postMessage({ type: 'progress', payload: p }),
-            });
-            self.postMessage({ type: 'loaded' });
+            if (modelType === 'text-generation') {
+                // ── Small text-only model via pipeline ──
+                pipe = await pipeline('text-generation', payload.modelId, {
+                    dtype: payload.dtype,
+                    device: payload.device,
+                    progress_callback: (p) => self.postMessage({ type: 'progress', payload: p }),
+                });
+                self.postMessage({ type: 'loaded' });
+            } else {
+                // ── Gemma 4 vision model ──
+                self.postMessage({ type: 'progress', payload: { status: 'progress', name: 'processor', progress: 0 } });
+                processor = await AutoProcessor.from_pretrained(payload.modelId);
+                model = await Gemma4ForConditionalGeneration.from_pretrained(payload.modelId, {
+                    dtype: payload.dtype,
+                    device: payload.device,
+                    progress_callback: (p) => self.postMessage({ type: 'progress', payload: p }),
+                });
+                self.postMessage({ type: 'loaded' });
+            }
         } catch (err) {
             const msg = (err && err.message) ? err.message : String(err);
             self.postMessage({ type: 'loadError', payload: msg });
@@ -7184,27 +7233,53 @@ self.onmessage = async (e) => {
     }
 
     if (type === 'generate') {
+        // ── Text-only pipeline mode ──
+        if (modelType === 'text-generation') {
+            if (!pipe) { self.postMessage({ type: 'genError', payload: 'Model not loaded' }); return; }
+            try {
+                const streamer = new TextStreamer(pipe.tokenizer, {
+                    skip_prompt: true,
+                    skip_special_tokens: true,
+                    callback_function: (token) => {
+                        self.postMessage({ type: 'token', payload: token });
+                    },
+                });
+                // Strip images/audio — text-only model can't use them
+                const textMessages = payload.messages.map(m => ({
+                    role: m.role,
+                    content: m.content,
+                }));
+                await pipe(textMessages, {
+                    max_new_tokens: payload.max_new_tokens,
+                    temperature: payload.temperature,
+                    do_sample: payload.temperature > 0,
+                    streamer,
+                    return_full_text: false,
+                });
+                self.postMessage({ type: 'genDone' });
+            } catch (err) {
+                const msg = (err && err.message) ? err.message : String(err);
+                self.postMessage({ type: 'genError', payload: msg });
+            }
+            return;
+        }
+
+        // ── Gemma 4 vision mode ──
         if (!model || !processor) {
             self.postMessage({ type: 'genError', payload: 'Model not loaded' });
             return;
         }
         try {
-            // Build Gemma 4 chat-template messages
-            // Convert flat messages to multimodal format when images/audio are present
             const messages = payload.messages.map(m => {
                 const hasImages = m.images && m.images.length > 0;
                 const hasAudio = m.audio && m.audio.length > 0;
                 if (hasImages || hasAudio) {
                     const content = [];
                     if (hasImages) {
-                        for (let i = 0; i < m.images.length; i++) {
-                            content.push({ type: 'image' });
-                        }
+                        for (let i = 0; i < m.images.length; i++) content.push({ type: 'image' });
                     }
                     if (hasAudio) {
-                        for (let i = 0; i < m.audio.length; i++) {
-                            content.push({ type: 'audio' });
-                        }
+                        for (let i = 0; i < m.audio.length; i++) content.push({ type: 'audio' });
                     }
                     content.push({ type: 'text', text: m.content });
                     return { role: m.role, content };
@@ -7217,37 +7292,28 @@ self.onmessage = async (e) => {
                 add_generation_prompt: true,
             });
 
-            // Load images if any message contains them
             let imageInputs = null;
             const imageDataUrls = [];
             for (const m of payload.messages) {
                 if (m.images) imageDataUrls.push(...m.images);
             }
             if (imageDataUrls.length > 0) {
-                const loaded = await Promise.all(
-                    imageDataUrls.map(url => RawImage.fromURL(url))
-                );
+                const loaded = await Promise.all(imageDataUrls.map(url => RawImage.fromURL(url)));
                 imageInputs = loaded.length === 1 ? loaded[0] : loaded;
             }
 
-            // Load audio if any message contains it
-            // Audio must be Float32Array from read_audio(url, 16000)
             let audioInputs = null;
             const audioDataUrls = [];
             for (const m of payload.messages) {
                 if (m.audio) audioDataUrls.push(...m.audio);
             }
             if (audioDataUrls.length > 0) {
-                const loaded = await Promise.all(
-                    audioDataUrls.map(url => read_audio(url, 16000))
-                );
+                const loaded = await Promise.all(audioDataUrls.map(url => read_audio(url, 16000)));
                 audioInputs = loaded.length === 1 ? loaded[0] : loaded;
             }
 
-            // Tokenize: processor(text, images, audio, options)
             const inputs = await processor(prompt, imageInputs, audioInputs, { add_special_tokens: false });
 
-            // Stream tokens
             const streamer = new TextStreamer(processor.tokenizer, {
                 skip_prompt: true,
                 skip_special_tokens: true,
@@ -7274,6 +7340,8 @@ self.onmessage = async (e) => {
     if (type === 'unload') {
         model = null;
         processor = null;
+        pipe = null;
+        modelType = null;
         self.postMessage({ type: 'unloaded' });
     }
 };
@@ -7414,11 +7482,13 @@ self.onmessage = async (e) => {
 
             try {
                 localInference.worker = spawnInferenceWorker();
+                const modelInfo = LOCAL_MODELS[selectedLocalModel];
                 localInference.worker.postMessage({
                     type: 'load',
                     payload: {
-                        modelId: getLocalModelId(),
-                        dtype: LOCAL_MODEL_DTYPE,
+                        modelId: modelInfo.id,
+                        modelType: modelInfo.type,
+                        dtype: modelInfo.dtype,
                         device: localInference.webgpuAvailable ? 'webgpu' : 'wasm',
                     }
                 });
@@ -7612,11 +7682,8 @@ Use this data to personalize your response. Comment on their current state when 
                     : '⚠️ WebGPU not available — will use WASM (slower)';
                 webgpuEl.style.color = localInference.webgpuAvailable ? '#00ff88' : '#ffaa00';
             }
-            if (config.inferenceMode === 'auto' || config.inferenceMode === 'local') {
-                setTimeout(() => loadLocalModel(), 1500);
-            } else {
-                resolveInferenceBadge();
-            }
+            // Don't auto-load model on startup — user clicks "Load Model" when ready
+            resolveInferenceBadge();
         }
 
         // ═══════════════════════════════════════════════════
@@ -7725,7 +7792,7 @@ Use this data to personalize your response. Comment on their current state when 
             console.log('🌐 [Remote] POST', config.serverUrl, '| model:', payload.model || '(none)', '| messages:', messages.length, '| stream: true');
             const response = await fetch(`${config.serverUrl}`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': 'true' },
                 body: JSON.stringify(payload)
             });
             console.log('🌐 [Remote] Response status:', response.status);
@@ -7786,7 +7853,7 @@ Use this data to personalize your response. Comment on their current state when 
 
             const response = await fetch(`${config.serverUrl}`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': 'true' },
                 body: JSON.stringify(payload)
             });
 
@@ -8228,7 +8295,7 @@ Use this data to personalize your response. Comment on their current state when 
                 const response = await Promise.race([
                     fetch(config.serverUrl, {
                         method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
+                        headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': 'true' },
                         body: JSON.stringify(testPayload),
                     }).catch(() => null),
                     new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000))
@@ -8267,7 +8334,8 @@ Use this data to personalize your response. Comment on their current state when 
 
         function openSettings() {
             document.getElementById('serverUrl').value = config.serverUrl;
-            document.getElementById('serverPreset').value = config.serverPreset || 'ollama';
+            document.getElementById('serverPreset').value = config.serverPreset || 'lmlink';
+            checkMixedContent();
             document.getElementById('remoteModel').value = config.remoteModel || '';
             document.getElementById('inferenceMode').value = config.inferenceMode || 'auto';
             document.getElementById('fullPromptLocal').checked = config.fullPromptLocal || false;
@@ -8374,9 +8442,6 @@ Use this data to personalize your response. Comment on their current state when 
             // If inference mode changed, update badge and potentially load model
             if (infModeChanged) {
                 resolveInferenceBadge();
-                if ((config.inferenceMode === 'auto' || config.inferenceMode === 'local') && !localInference.ready && !localInference.loading) {
-                    loadLocalModel();
-                }
             }
         }
 

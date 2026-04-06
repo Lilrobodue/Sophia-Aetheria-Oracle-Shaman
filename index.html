@@ -4647,7 +4647,7 @@ return result;</textarea>
         // so manifest.json icon references resolve from the start.
         async function generateAndCacheIcons() {
             try {
-                const cache = await caches.open('sophia-v10');
+                const cache = await caches.open('sophia-v11');
                 const iconConfigs = [
                     { size: 192, file: 'icons/icon-192.png' },
                     { size: 512, file: 'icons/icon-512.png' },
@@ -7527,12 +7527,13 @@ self.onmessage = async (e) => {
                 const forceWasm = document.getElementById('forceWasm')?.checked;
                 const device = (localInference.webgpuAvailable && !forceWasm) ? 'webgpu' : 'wasm';
 
-                // q4/q4f16 use GatherBlockQuantized — WebGPU only.
-                // Fall back to q8 on WASM so the CPU runtime has the kernels.
+                // q4/q4f16 use GatherBlockQuantized — a WebGPU-only ONNX operator.
+                // WASM has no kernel for it. Fall back to 'quantized' (standard ONNX
+                // int8 quantization) which has full CPU/WASM support.
                 let dtype = modelInfo.dtype;
                 if (device === 'wasm' && (dtype === 'q4' || dtype === 'q4f16')) {
-                    dtype = 'q8';
-                    console.log('🧠 WASM mode: switched dtype from', modelInfo.dtype, '→ q8 (CPU-compatible)');
+                    dtype = 'quantized';
+                    console.log('🧠 WASM mode: switched dtype from', modelInfo.dtype, '→ quantized (CPU-compatible)');
                 }
 
                 console.log(`🧠 Loading ${modelInfo.name} on ${device} dtype=${dtype} (forceWasm=${!!forceWasm})`);

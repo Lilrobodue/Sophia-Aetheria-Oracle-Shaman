@@ -4364,27 +4364,44 @@ return result;</textarea>
             resultEl.textContent = 'Testing...';
             resultEl.style.color = '#ffaa00';
             try {
+                // Test by sending a minimal chat request to the actual endpoint.
+                // This avoids mixed-content errors from probing separate HTTP URLs
+                // when the page is loaded over HTTPS.
                 const serverUrl = document.getElementById('serverUrl').value;
-                const baseUrl = serverUrl
-                    .replace(/\/v1\/chat\/completions\/?$/, '')
-                    .replace(/\/api\/v1\/chat\/?$/, '');
+                const model = document.getElementById('remoteModel').value || '';
+                const testPayload = {
+                    messages: [{ role: 'user', content: 'hi' }],
+                    max_tokens: 1,
+                    temperature: 0,
+                    stream: false,
+                };
+                if (model) testPayload.model = model;
+
                 const response = await Promise.race([
-                    fetch(baseUrl + '/health', { method: 'GET' }).catch(() => null),
-                    fetch(baseUrl + '/v1/models', { method: 'GET' }).catch(() => null),
-                    fetch(baseUrl + '/api/v1/models', { method: 'GET' }).catch(() => null),
-                    new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000))
+                    fetch(serverUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(testPayload),
+                    }),
+                    new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 8000))
                 ]);
                 if (response && response.ok) {
                     resultEl.textContent = 'Connected!';
                     resultEl.style.color = '#00ff88';
                     updateConnectionStatus(true);
                 } else {
-                    resultEl.textContent = 'No response';
+                    resultEl.textContent = response ? `Error ${response.status}` : 'No response';
                     resultEl.style.color = '#ff4444';
                     updateConnectionStatus(false);
                 }
             } catch (e) {
-                resultEl.textContent = 'Failed';
+                if (e.message === 'timeout') {
+                    resultEl.textContent = 'Timeout';
+                } else if (e.message.includes('Mixed Content') || e.name === 'TypeError') {
+                    resultEl.textContent = 'Blocked (HTTPS→HTTP)';
+                } else {
+                    resultEl.textContent = 'Failed';
+                }
                 resultEl.style.color = '#ff4444';
                 updateConnectionStatus(false);
             }
@@ -4608,7 +4625,7 @@ return result;</textarea>
         // so manifest.json icon references resolve from the start.
         async function generateAndCacheIcons() {
             try {
-                const cache = await caches.open('sophia-v3');
+                const cache = await caches.open('sophia-v4');
                 const iconConfigs = [
                     { size: 192, file: 'icons/icon-192.png' },
                     { size: 512, file: 'icons/icon-512.png' },
@@ -8199,11 +8216,21 @@ Use this data to personalize your response. Comment on their current state when 
 
         async function testConnection() {
             try {
-                const baseUrl = getBaseUrl();
+                // Test against the actual chat endpoint to avoid mixed-content blocks
+                const testPayload = {
+                    messages: [{ role: 'user', content: 'hi' }],
+                    max_tokens: 1,
+                    temperature: 0,
+                    stream: false,
+                };
+                if (config.remoteModel) testPayload.model = config.remoteModel;
+
                 const response = await Promise.race([
-                    fetch(`${baseUrl}/health`, { method: 'GET' }).catch(() => null),
-                    fetch(`${baseUrl}/v1/models`, { method: 'GET' }).catch(() => null),
-                    fetch(`${baseUrl}/api/v1/models`, { method: 'GET' }).catch(() => null),
+                    fetch(config.serverUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(testPayload),
+                    }).catch(() => null),
                     new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000))
                 ]);
 

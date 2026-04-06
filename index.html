@@ -1678,7 +1678,8 @@
                         <label style="font-weight: normal; font-size: 0.8rem; color: #00ff88;">
                             Model Size:
                             <select id="localModelPicker" onchange="onLocalModelChange()" style="margin-left: 6px; padding: 2px 4px; font-size: 0.8rem; background: #1a1a2e; color: #fff; border: 1px solid #333; border-radius: 4px;">
-                                <option value="lite">Gemma 3 1B — Lite (~0.6 GB, text only)</option>
+                                <option value="tiny">Qwen 0.5B — Tiny (~0.3 GB, any device)</option>
+                                <option value="lite">Gemma 3 1B — Lite (~0.6 GB, 6GB+ RAM)</option>
                                 <option value="e2b">Gemma 4 E2B — Vision (~3.2 GB, 10GB+ RAM)</option>
                                 <option value="e4b">Gemma 4 E4B — Best (~5.1 GB, 16GB+ RAM)</option>
                             </select>
@@ -1693,6 +1694,9 @@
                         <button class="btn btn-small btn-secondary" onclick="unloadLocalModel()" id="unloadModelBtn" style="flex: 1; display: none;">🗑️ Unload</button>
                     </div>
                     <div style="margin-top: 6px; font-size: 0.75rem; color: #888;" id="webgpuStatus">Checking WebGPU...</div>
+                    <label style="font-weight: normal; display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 0.75rem; color: #ffaa00;">
+                        <input type="checkbox" id="forceWasm"> Force WASM (no GPU) — use if model crashes on load
+                    </label>
                 </div>
 
                 <label style="font-weight: normal; display: flex; align-items: center; gap: 10px; margin-top: 4px;">
@@ -1707,7 +1711,7 @@
             <div class="config-group">
                 <label>Remote API Endpoint</label>
                 <select id="serverPreset" class="text-input" onchange="applyServerPreset()" style="margin-bottom: 8px;">
-                    <option value="lmlink">LM Studio — LM Link (HTTPS, works from mobile)</option>
+                    <option value="lmlink">LM Studio — LM Link (HTTPS, works with other devices with the LM Studio PC app)</option>
                     <option value="lmstudio">LM Studio — Local (same PC only)</option>
                     <option value="ollama">Local — Ollama</option>
                     <option value="llamacpp">Local — llama.cpp</option>
@@ -4643,7 +4647,7 @@ return result;</textarea>
         // so manifest.json icon references resolve from the start.
         async function generateAndCacheIcons() {
             try {
-                const cache = await caches.open('sophia-v8');
+                const cache = await caches.open('sophia-v9');
                 const iconConfigs = [
                     { size: 192, file: 'icons/icon-192.png' },
                     { size: 512, file: 'icons/icon-512.png' },
@@ -5349,18 +5353,27 @@ return result;</textarea>
                 config.recommendedModel = 'Gemma 4 E2B (Standard — ~3.2 GB)';
                 config.memoryBudget = effectiveMemory + 'GB est. (Standard)';
                 config.features = ['Vision + Audio', 'E2B Fast', 'Smart Streaming', 'Standard Context'];
-            } else {
-                // Lite: Gemma 3 1B — fits in ~600MB, works on 8GB phones
+            } else if (effectiveMemory >= 6) {
+                // Lite: Gemma 3 1B — fits in ~600MB
                 selectedLocalModel = 'lite';
                 config.contextLength = 8192;
                 config.maxTokens = 512;
                 config.modelTier = 'lite';
                 config.recommendedModel = 'Gemma 3 1B (Lite — ~0.6 GB)';
                 config.memoryBudget = effectiveMemory + 'GB est. (Lite)';
-                config.features = ['Text Only', 'Very Fast', 'Compact', 'Low Memory'];
+                config.features = ['Text Only', 'Fast', 'Compact'];
+            } else {
+                // Tiny: Qwen 0.5B — runs on almost anything
+                selectedLocalModel = 'tiny';
+                config.contextLength = 4096;
+                config.maxTokens = 256;
+                config.modelTier = 'tiny';
+                config.recommendedModel = 'Qwen 0.5B (Tiny — ~0.3 GB)';
+                config.memoryBudget = effectiveMemory + 'GB est. (Tiny)';
+                config.features = ['Text Only', 'Instant', 'Ultra-Compact'];
             }
 
-            // Mobile adjustments — only limit LOW-memory mobile devices
+            // Mobile adjustments
             if (category === 'mobile') {
                 if (effectiveMemory < 6) {
                     config.contextLength = Math.min(config.contextLength, 4096);
@@ -7118,15 +7131,26 @@ return result;</textarea>
 
         // Smart model picker — selects E2B or E4B based on device capabilities
         const LOCAL_MODELS = {
+            'tiny': {
+                id: 'onnx-community/Qwen2.5-0.5B-Instruct',
+                name: 'Qwen 0.5B',
+                params: '~0.5B',
+                download: '~0.3 GB',
+                minMemory: 2,   // GB — runs on almost anything
+                speed: 'Instant',
+                quality: 'Basic',
+                type: 'text-generation',
+                dtype: 'q4',
+            },
             'lite': {
                 id: 'onnx-community/gemma-3-1b-it-ONNX',
                 name: 'Gemma 3 1B',
                 params: '~1B',
                 download: '~0.6 GB',
-                minMemory: 4,   // GB
+                minMemory: 6,   // GB
                 speed: 'Very fast',
-                quality: 'Basic',
-                type: 'text-generation',  // uses pipeline() — text only
+                quality: 'Good',
+                type: 'text-generation',
                 dtype: 'q4',
             },
             'e2b': {
@@ -7399,15 +7423,32 @@ self.onmessage = async (e) => {
                 localInference.failed = true;
                 localInference.error = payload;
                 hideModelProgress();
-                const statusEl = document.getElementById('localModelStatus');
-                if (statusEl) { statusEl.textContent = 'Failed: ' + payload; statusEl.style.color = '#ff4444'; }
-                document.getElementById('loadModelBtn').style.display = '';
-                if (config.inferenceMode === 'auto') {
-                    updateInferenceBadge('remote', 'Remote (API)');
-                    showStatus('Local model unavailable — using remote API', 'warning');
+
+                const wasmBox = document.getElementById('forceWasm');
+                const wasWebGPU = localInference.webgpuAvailable && !(wasmBox && wasmBox.checked);
+
+                // If WebGPU failed, auto-check "Force WASM" and suggest retry
+                if (wasWebGPU && wasmBox) {
+                    wasmBox.checked = true;
+                    const statusEl = document.getElementById('localModelStatus');
+                    if (statusEl) {
+                        statusEl.textContent = 'WebGPU crashed — tap Load again (WASM mode enabled)';
+                        statusEl.style.color = '#ffaa00';
+                    }
+                    document.getElementById('loadModelBtn').style.display = '';
+                    showStatus('WebGPU failed on this device. WASM fallback enabled — try loading again.', 'warning');
                 } else {
-                    updateInferenceBadge('unavailable', 'Model Failed');
-                    showStatus('Local model failed: ' + payload, 'error');
+                    const statusEl = document.getElementById('localModelStatus');
+                    if (statusEl) { statusEl.textContent = 'Failed: ' + payload; statusEl.style.color = '#ff4444'; }
+                    document.getElementById('loadModelBtn').style.display = '';
+
+                    if (config.inferenceMode === 'auto') {
+                        updateInferenceBadge('remote', 'Remote (API)');
+                        showStatus('Local model unavailable — using remote API', 'warning');
+                    } else {
+                        updateInferenceBadge('unavailable', 'Model Failed');
+                        showStatus('Local model failed: ' + payload, 'error');
+                    }
                 }
                 return;
             }
@@ -7483,13 +7524,16 @@ self.onmessage = async (e) => {
             try {
                 localInference.worker = spawnInferenceWorker();
                 const modelInfo = LOCAL_MODELS[selectedLocalModel];
+                const forceWasm = document.getElementById('forceWasm')?.checked;
+                const device = (localInference.webgpuAvailable && !forceWasm) ? 'webgpu' : 'wasm';
+                console.log(`🧠 Loading ${modelInfo.name} on ${device} (forceWasm=${!!forceWasm})`);
                 localInference.worker.postMessage({
                     type: 'load',
                     payload: {
                         modelId: modelInfo.id,
                         modelType: modelInfo.type,
                         dtype: modelInfo.dtype,
-                        device: localInference.webgpuAvailable ? 'webgpu' : 'wasm',
+                        device: device,
                     }
                 });
                 // The 'loaded' or 'loadError' message handler takes it from here

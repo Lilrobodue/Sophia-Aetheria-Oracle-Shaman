@@ -4647,7 +4647,7 @@ return result;</textarea>
         // so manifest.json icon references resolve from the start.
         async function generateAndCacheIcons() {
             try {
-                const cache = await caches.open('sophia-v11');
+                const cache = await caches.open('sophia-v12');
                 const iconConfigs = [
                     { size: 192, file: 'icons/icon-192.png' },
                     { size: 512, file: 'icons/icon-512.png' },
@@ -7135,23 +7135,23 @@ return result;</textarea>
                 id: 'onnx-community/Qwen2.5-0.5B-Instruct',
                 name: 'Qwen 0.5B',
                 params: '~0.5B',
-                download: '~0.3 GB',
+                download: '~0.5 GB',
                 minMemory: 2,   // GB — runs on almost anything
                 speed: 'Instant',
                 quality: 'Basic',
                 type: 'text-generation',
-                dtype: 'q4',
+                dtype: 'quantized',  // standard ONNX int8 — works on both WebGPU and WASM
             },
             'lite': {
                 id: 'onnx-community/gemma-3-1b-it-ONNX',
                 name: 'Gemma 3 1B',
                 params: '~1B',
-                download: '~0.6 GB',
+                download: '~1 GB',
                 minMemory: 6,   // GB
                 speed: 'Very fast',
                 quality: 'Good',
                 type: 'text-generation',
-                dtype: 'q4',
+                dtype: 'quantized',  // standard ONNX int8 — works on both WebGPU and WASM
             },
             'e2b': {
                 id: 'onnx-community/gemma-4-E2B-it-ONNX',

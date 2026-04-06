@@ -4647,7 +4647,7 @@ return result;</textarea>
         // so manifest.json icon references resolve from the start.
         async function generateAndCacheIcons() {
             try {
-                const cache = await caches.open('sophia-v9');
+                const cache = await caches.open('sophia-v10');
                 const iconConfigs = [
                     { size: 192, file: 'icons/icon-192.png' },
                     { size: 512, file: 'icons/icon-512.png' },
@@ -7526,13 +7526,22 @@ self.onmessage = async (e) => {
                 const modelInfo = LOCAL_MODELS[selectedLocalModel];
                 const forceWasm = document.getElementById('forceWasm')?.checked;
                 const device = (localInference.webgpuAvailable && !forceWasm) ? 'webgpu' : 'wasm';
-                console.log(`🧠 Loading ${modelInfo.name} on ${device} (forceWasm=${!!forceWasm})`);
+
+                // q4/q4f16 use GatherBlockQuantized — WebGPU only.
+                // Fall back to q8 on WASM so the CPU runtime has the kernels.
+                let dtype = modelInfo.dtype;
+                if (device === 'wasm' && (dtype === 'q4' || dtype === 'q4f16')) {
+                    dtype = 'q8';
+                    console.log('🧠 WASM mode: switched dtype from', modelInfo.dtype, '→ q8 (CPU-compatible)');
+                }
+
+                console.log(`🧠 Loading ${modelInfo.name} on ${device} dtype=${dtype} (forceWasm=${!!forceWasm})`);
                 localInference.worker.postMessage({
                     type: 'load',
                     payload: {
                         modelId: modelInfo.id,
                         modelType: modelInfo.type,
-                        dtype: modelInfo.dtype,
+                        dtype: dtype,
                         device: device,
                     }
                 });

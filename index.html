@@ -1706,14 +1706,15 @@
             <div class="config-group">
                 <label>Remote API Endpoint</label>
                 <select id="serverPreset" class="text-input" onchange="applyServerPreset()" style="margin-bottom: 8px;">
+                    <option value="lmstudio">Local — LM Studio</option>
                     <option value="ollama">Local — Ollama</option>
                     <option value="llamacpp">Local — llama.cpp</option>
                     <option value="huggingface">HuggingFace Space</option>
                     <option value="custom">Custom</option>
                 </select>
-                <input type="text" id="serverUrl" class="text-input" value="http://localhost:11434/v1/chat/completions" style="margin-bottom: 8px;">
+                <input type="text" id="serverUrl" class="text-input" value="http://localhost:1234/api/v1/chat" style="margin-bottom: 8px;">
                 <input type="text" id="remoteModel" class="text-input" placeholder="Model name (e.g. gemma-4-e4b-it)" style="margin-bottom: 8px;">
-                <div style="font-size: 0.7rem; color: #888; margin: -4px 0 8px 2px;">Required for LM Studio. For Ollama, leave blank to use the loaded model.</div>
+                <div style="font-size: 0.7rem; color: #888; margin: -4px 0 8px 2px;">Set model name (e.g. gemma-4-e4b-it). Required for LM Studio. For Ollama, leave blank.</div>
                 <div style="display: flex; gap: 8px; align-items: center;">
                     <button class="btn btn-small btn-secondary" onclick="testConnectionManual()" style="flex: 1;">🔗 Test Connection</button>
                     <span id="connectionTestResult" style="font-size: 0.8rem; color: #888;">Not tested</span>
@@ -3870,8 +3871,8 @@ return result;</textarea>
 
         // Configuration
         let config = {
-            serverUrl: 'http://localhost:11434/v1/chat/completions',
-            serverPreset: 'ollama',
+            serverUrl: 'http://localhost:1234/api/v1/chat',
+            serverPreset: 'lmstudio',
             inferenceMode: 'auto', // 'auto', 'local', 'remote'
             fullPromptLocal: false, // send full system prompt + freq table to local/API
             remoteModel: '', // model name for LM Studio / Ollama (e.g. 'gemma-4-e4b-it')
@@ -4341,6 +4342,7 @@ return result;</textarea>
 
         // Server endpoint presets
         const SERVER_PRESETS = {
+            lmstudio: 'http://localhost:1234/api/v1/chat',
             ollama: 'http://localhost:11434/v1/chat/completions',
             llamacpp: 'http://localhost:8080/v1/chat/completions',
             huggingface: 'https://YOUR-SPACE.hf.space/v1/chat/completions',
@@ -4353,7 +4355,7 @@ return result;</textarea>
             if (preset !== 'custom') {
                 urlInput.value = SERVER_PRESETS[preset];
             }
-            urlInput.readOnly = (preset !== 'custom' && preset !== 'huggingface');
+            urlInput.readOnly = (preset !== 'custom' && preset !== 'huggingface' && preset !== 'lmstudio');
             config.serverPreset = preset;
         }
 
@@ -4363,10 +4365,13 @@ return result;</textarea>
             resultEl.style.color = '#ffaa00';
             try {
                 const serverUrl = document.getElementById('serverUrl').value;
-                const baseUrl = serverUrl.replace(/\/v1\/chat\/completions\/?$/, '');
+                const baseUrl = serverUrl
+                    .replace(/\/v1\/chat\/completions\/?$/, '')
+                    .replace(/\/api\/v1\/chat\/?$/, '');
                 const response = await Promise.race([
                     fetch(baseUrl + '/health', { method: 'GET' }).catch(() => null),
                     fetch(baseUrl + '/v1/models', { method: 'GET' }).catch(() => null),
+                    fetch(baseUrl + '/api/v1/models', { method: 'GET' }).catch(() => null),
                     new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000))
                 ]);
                 if (response && response.ok) {
@@ -8187,7 +8192,9 @@ Use this data to personalize your response. Comment on their current state when 
 
         // Server Connection
         function getBaseUrl() {
-            return config.serverUrl.replace(/\/v1\/chat\/completions\/?$/, '');
+            return config.serverUrl
+                .replace(/\/v1\/chat\/completions\/?$/, '')
+                .replace(/\/api\/v1\/chat\/?$/, '');
         }
 
         async function testConnection() {
@@ -8196,6 +8203,7 @@ Use this data to personalize your response. Comment on their current state when 
                 const response = await Promise.race([
                     fetch(`${baseUrl}/health`, { method: 'GET' }).catch(() => null),
                     fetch(`${baseUrl}/v1/models`, { method: 'GET' }).catch(() => null),
+                    fetch(`${baseUrl}/api/v1/models`, { method: 'GET' }).catch(() => null),
                     new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000))
                 ]);
 

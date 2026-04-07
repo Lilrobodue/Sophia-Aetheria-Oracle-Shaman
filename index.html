@@ -4647,7 +4647,7 @@ return result;</textarea>
         // so manifest.json icon references resolve from the start.
         async function generateAndCacheIcons() {
             try {
-                const cache = await caches.open('sophia-v12');
+                const cache = await caches.open('sophia-v13');
                 const iconConfigs = [
                     { size: 192, file: 'icons/icon-192.png' },
                     { size: 512, file: 'icons/icon-512.png' },
@@ -7640,7 +7640,12 @@ Use this data to personalize your response. Comment on their current state when 
 
             const trimmed = [{ role: 'system', content: LOCAL_SYSTEM_PROMPT }];
             const nonSystem = messages.filter(m => m.role !== 'system');
-            for (const m of nonSystem.slice(-7)) {
+
+            // Fewer history messages for large models to save GPU memory
+            // E4B needs more room for KV cache, especially with EEG context
+            const isLargeModel = selectedLocalModel === 'e4b';
+            const historyLimit = isLargeModel ? 3 : 7;
+            for (const m of nonSystem.slice(-historyLimit)) {
                 const msg = { role: m.role, content: m.content.substring(0, 2000) };
                 // Preserve image + audio data for Gemma 4 multimodal
                 if (m.images) msg.images = m.images;
@@ -7665,11 +7670,17 @@ Use this data to personalize your response. Comment on their current state when 
                     reject: (err) => { clearTimeout(timer); reject(err); },
                     onToken: onToken || (() => {}),
                 };
+                // Cap output tokens for large models on mobile to avoid OOM
+                let maxTokens = config.maxTokens || getLocalMaxNewTokens();
+                if (selectedLocalModel === 'e4b' && maxTokens > 2048) {
+                    maxTokens = 2048;
+                }
+
                 localInference.worker.postMessage({
                     type: 'generate',
                     payload: {
                         messages: chatMessages,
-                        max_new_tokens: config.maxTokens || getLocalMaxNewTokens(),
+                        max_new_tokens: maxTokens,
                         temperature: config.temperature,
                     }
                 });
@@ -7683,6 +7694,9 @@ Use this data to personalize your response. Comment on their current state when 
             const chatMessages = prepareLocalMessages(messages);
             let fullResponse = '';
             await workerGenerate(chatMessages, (token) => { fullResponse += token; });
+            if (!fullResponse.trim()) {
+                throw new Error('Model returned empty response — may be out of GPU memory. Try a shorter question or switch to a smaller model.');
+            }
             return fullResponse;
         }
 
@@ -7694,6 +7708,9 @@ Use this data to personalize your response. Comment on their current state when 
                 fullResponse += token;
                 updateStreamingMessage(streamingMessageId, fullResponse);
             });
+            if (!fullResponse.trim()) {
+                throw new Error('Model returned empty response — may be out of GPU memory. Try a shorter question or switch to a smaller model.');
+            }
             return fullResponse;
         }
 
@@ -7798,12 +7815,16 @@ Use this data to personalize your response. Comment on their current state when 
                         enabledTools.map(t => `- ${t.name}: ${t.description}`).join('\n');
                 }
 
-                // Always include full EEG context — Gemma 4 can use it meaningfully
+                // EEG context — for local models, brainwave data is already injected
+                // into the system prompt by prepareLocalMessages(), so skip the
+                // duplicate here to save tokens and GPU memory.
                 let eegContext = '';
-                try {
-                    eegContext = getEEGContext();
-                } catch (error) {
-                    console.warn('Error getting EEG context:', error);
+                if (!shouldUseLocal()) {
+                    try {
+                        eegContext = getEEGContext();
+                    } catch (error) {
+                        console.warn('Error getting EEG context:', error);
+                    }
                 }
 
                 // Refresh memory context before building messages

@@ -1,5 +1,5 @@
 // Sophia Oracle — Service Worker for true offline PWA
-const CACHE_VERSION = 'sophia-v14';
+const CACHE_VERSION = 'sophia-v15';
 const PRECACHE_URLS = [
   './',
   './index.html',
@@ -15,10 +15,7 @@ self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(CACHE_VERSION).then((cache) => {
       return cache.addAll(PRECACHE_URLS).catch((err) => {
-        // Icons may not exist yet on first install — that's OK,
-        // they'll be generated and cached by the page.
         console.warn('SW: some precache URLs failed (icons may not exist yet):', err);
-        // At minimum cache the HTML
         return cache.addAll(['./', './index.html', './manifest.json']);
       });
     })
@@ -26,20 +23,21 @@ self.addEventListener('install', (event) => {
   self.skipWaiting();
 });
 
-// Activate: clean old caches, claim clients
+// Activate: clean old SOPHIA caches only — never touch transformers-cache
+// (that's where the multi-GB model files are stored by transformers.js)
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then((keys) =>
       Promise.all(
         keys
-          .filter((key) => key !== CACHE_VERSION)
+          .filter((key) => key.startsWith('sophia-') && key !== CACHE_VERSION)
           .map((key) => caches.delete(key))
       )
     ).then(() => self.clients.claim())
   );
 });
 
-// Fetch: cache-first for app shell, network-first for API/CDN
+// Fetch handler
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
 
@@ -50,8 +48,13 @@ self.addEventListener('fetch', (event) => {
   if (url.pathname.includes('/v1/chat/completions')) return;
   if (url.pathname.includes('/api/')) return;
 
-  // Network-first for CDN resources (transformers.js, etc.) — always try fresh
-  if (url.hostname.includes('cdn.jsdelivr.net') || url.hostname.includes('huggingface.co')) {
+  // DON'T intercept HuggingFace model downloads — let transformers.js
+  // manage its own cache (transformers-cache). Intercepting these causes
+  // re-downloads on every SW update and wastes gigabytes of bandwidth.
+  if (url.hostname.includes('huggingface.co')) return;
+
+  // Network-first for CDN JS libraries (transformers.js runtime, etc.)
+  if (url.hostname.includes('cdn.jsdelivr.net')) {
     event.respondWith(
       fetch(event.request)
         .then((response) => {
@@ -78,7 +81,6 @@ self.addEventListener('fetch', (event) => {
         }
         return response;
       }).catch(() => {
-        // Offline fallback — serve the main page for navigation requests
         if (event.request.mode === 'navigate') {
           return caches.match('./index.html');
         }

@@ -4647,7 +4647,7 @@ return result;</textarea>
         // so manifest.json icon references resolve from the start.
         async function generateAndCacheIcons() {
             try {
-                const cache = await caches.open('sophia-v13');
+                const cache = await caches.open('sophia-v14');
                 const iconConfigs = [
                     { size: 192, file: 'icons/icon-192.png' },
                     { size: 512, file: 'icons/icon-512.png' },
@@ -5966,12 +5966,42 @@ return result;</textarea>
                 speakText(message);
                 voiceOracleLastSpoke = now;
 
-                // Also add as a subtle system message in chat
-                addMessageToUI('system', `<div style="color: #ff6b9d; font-size: 0.85rem;">🔊 ${message}</div>`);
+                // Show as a temporary toast overlay — not a permanent chat message
+                showVoiceOracleToast(message);
             }
 
             voiceOracleLastPos = aethPos.pos;
             voiceOracleLastCoherence = coherence;
+        }
+
+        // Temporary toast for Voice Oracle — fades in, stays ~8s, fades out
+        function showVoiceOracleToast(message) {
+            // Remove previous toast if still showing
+            const old = document.getElementById('voiceOracleToast');
+            if (old) old.remove();
+
+            const toast = document.createElement('div');
+            toast.id = 'voiceOracleToast';
+            toast.innerHTML = `🔊 ${message}`;
+            toast.style.cssText = `
+                position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%);
+                max-width: 90%; width: 420px; padding: 12px 18px;
+                background: rgba(26, 10, 46, 0.95); border: 1px solid rgba(255, 107, 157, 0.4);
+                border-radius: 10px; color: #ff6b9d; font-size: 0.85rem; line-height: 1.4;
+                z-index: 9000; text-align: center; backdrop-filter: blur(8px);
+                opacity: 0; transition: opacity 0.4s ease;
+                pointer-events: none;
+            `;
+            document.body.appendChild(toast);
+
+            // Fade in
+            requestAnimationFrame(() => { toast.style.opacity = '1'; });
+
+            // Fade out and remove after 8 seconds
+            setTimeout(() => {
+                toast.style.opacity = '0';
+                setTimeout(() => toast.remove(), 500);
+            }, 8000);
         }
 
         // ═══════════════════════════════════════════════════

@@ -4647,7 +4647,7 @@ return result;</textarea>
         // so manifest.json icon references resolve from the start.
         async function generateAndCacheIcons() {
             try {
-                const cache = await caches.open('sophia-v16');
+                const cache = await caches.open('sophia-v19');
                 const iconConfigs = [
                     { size: 192, file: 'icons/icon-192.png' },
                     { size: 512, file: 'icons/icon-512.png' },
@@ -12078,25 +12078,61 @@ Use this data to personalize your response. Comment on their current state when 
             }
         }
 
+        // Rolling Aetheria position history — recorded every 5 seconds while EEG is streaming
+        let aetheriaTimeline = [];
+        const AETHERIA_TIMELINE_MAX = 354; // ~3 hours at 30s intervals
+
+        function recordAetheriaPosition() {
+            if (!currentEEGData || !eegStreaming || !currentAetheriaPosition) return;
+            const bp = currentEEGData.bandpowers;
+            const m = currentEEGData.metrics;
+            const p = currentAetheriaPosition;
+            aetheriaTimeline.push({
+                t: new Date().toISOString(),
+                pos: p.pos,
+                freq: p.freq,
+                regime: p.regime,
+                geo: p.geo,
+                state: p.state,
+                keyword: p.keyword,
+                hex: p.hex,
+                hexName: p.hexName,
+                coherence: p.coherence,
+                focus: Math.round(m.focus * 100),
+                meditation: Math.round(m.meditation * 100),
+                delta: Math.round(bp.delta),
+                theta: Math.round(bp.theta),
+                alpha: Math.round(bp.alpha),
+                beta: Math.round(bp.beta),
+                gamma: Math.round(bp.gamma),
+            });
+            if (aetheriaTimeline.length > AETHERIA_TIMELINE_MAX) {
+                aetheriaTimeline = aetheriaTimeline.slice(-AETHERIA_TIMELINE_MAX);
+            }
+        }
+        // Record every 30 seconds
+        setInterval(recordAetheriaPosition, 30000);
+
         function exportEEGData() {
-            if (!currentEEGData) {
+            if (!currentEEGData && aetheriaTimeline.length === 0) {
                 showStatus('No EEG data to export', 'error');
                 return;
             }
-            
-            // Get current Aetheria position from live brainwave data
-            const bandpowers = currentEEGData.bandpowers;
+
+            // Current snapshot
+            const bandpowers = currentEEGData ? currentEEGData.bandpowers : null;
             const aethPos = currentAetheriaPosition || (bandpowers ? getAetheriaPosition(bandpowers) : null);
 
             const exportData = {
+                exportVersion: 2,
                 timestamp: new Date().toISOString(),
                 device: eegIntegration?.getDeviceInfo()?.name || 'Unknown',
                 session: {
-                    startTime: new Date().toISOString(),
-                    duration: '1 minute'
+                    dataPoints: aetheriaTimeline.length,
+                    firstReading: aetheriaTimeline.length > 0 ? aetheriaTimeline[0].t : null,
+                    lastReading: aetheriaTimeline.length > 0 ? aetheriaTimeline[aetheriaTimeline.length - 1].t : null,
                 },
-                latestData: currentEEGData,
-                aetheria: aethPos ? {
+                currentPosition: aethPos ? {
                     position: aethPos.pos + '/27',
                     frequency: aethPos.freq + ' Hz',
                     regime: aethPos.regime,
@@ -12106,33 +12142,34 @@ Use this data to personalize your response. Comment on their current state when 
                     coherence: aethPos.coherence + '%',
                     iChing: '#' + aethPos.hex + ' ' + aethPos.hexName,
                 } : null,
-                frequencySystem: AETHERIA_FREQUENCIES.map(f => ({
-                    position: f.pos,
-                    frequency: f.freq,
-                    regime: f.regime,
-                    geometry: f.geo,
-                    state: f.state,
-                    keyword: f.keyword,
-                    hexagram: f.hex + ' — ' + f.hexName,
+                timeline: aetheriaTimeline,
+                latestBrainwave: currentEEGData ? {
+                    bandpowers: currentEEGData.bandpowers,
+                    metrics: currentEEGData.metrics,
+                    source: currentEEGData.source,
+                } : null,
+                frequencyReference: AETHERIA_FREQUENCIES.map(f => ({
+                    pos: f.pos, freq: f.freq, regime: f.regime,
+                    geo: f.geo, state: f.state, keyword: f.keyword,
+                    hex: f.hex, hexName: f.hexName,
                 })),
-                settings: {
-                    focusSensitivity: config.focusSensitivity,
-                    focusBoost: config.focusBoost,
-                    autoReconnect: config.eegAutoReconnect,
-                    reconnectAttempts: config.eegReconnectAttempts,
-                    reconnectDelay: config.eegReconnectDelay
-                }
             };
-            
-            const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+
+            const json = JSON.stringify(exportData, null, 2);
+            const blob = new Blob([json], { type: 'application/json' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = `sophia-eeg-data-${Date.now()}.json`;
+            a.download = `sophia-aetheria-session-${new Date().toISOString().slice(0,19).replace(/:/g,'-')}.json`;
+            document.body.appendChild(a);
             a.click();
-            URL.revokeObjectURL(url);
-            
-            showStatus('EEG data exported!', 'success');
+            // Delay cleanup so mobile browsers finish the download
+            setTimeout(() => {
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            }, 3000);
+
+            showStatus(`Exported ${aetheriaTimeline.length} Aetheria positions + brainwave data`, 'success');
         }
         
         // Reset EEG connection completely

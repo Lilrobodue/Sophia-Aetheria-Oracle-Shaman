@@ -4647,7 +4647,7 @@ return result;</textarea>
         // so manifest.json icon references resolve from the start.
         async function generateAndCacheIcons() {
             try {
-                const cache = await caches.open('sophia-v15');
+                const cache = await caches.open('sophia-v16');
                 const iconConfigs = [
                     { size: 192, file: 'icons/icon-192.png' },
                     { size: 512, file: 'icons/icon-512.png' },
@@ -12084,14 +12084,37 @@ Use this data to personalize your response. Comment on their current state when 
                 return;
             }
             
+            // Get current Aetheria position from live brainwave data
+            const bandpowers = currentEEGData.bandpowers;
+            const aethPos = currentAetheriaPosition || (bandpowers ? getAetheriaPosition(bandpowers) : null);
+
             const exportData = {
                 timestamp: new Date().toISOString(),
                 device: eegIntegration?.getDeviceInfo()?.name || 'Unknown',
                 session: {
                     startTime: new Date().toISOString(),
-                    duration: '1 minute' // This would track actual session duration
+                    duration: '1 minute'
                 },
                 latestData: currentEEGData,
+                aetheria: aethPos ? {
+                    position: aethPos.pos + '/27',
+                    frequency: aethPos.freq + ' Hz',
+                    regime: aethPos.regime,
+                    geometry: aethPos.geo,
+                    state: aethPos.state,
+                    keyword: aethPos.keyword,
+                    coherence: aethPos.coherence + '%',
+                    iChing: '#' + aethPos.hex + ' ' + aethPos.hexName,
+                } : null,
+                frequencySystem: AETHERIA_FREQUENCIES.map(f => ({
+                    position: f.pos,
+                    frequency: f.freq,
+                    regime: f.regime,
+                    geometry: f.geo,
+                    state: f.state,
+                    keyword: f.keyword,
+                    hexagram: f.hex + ' — ' + f.hexName,
+                })),
                 settings: {
                     focusSensitivity: config.focusSensitivity,
                     focusBoost: config.focusBoost,

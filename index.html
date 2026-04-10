@@ -566,6 +566,15 @@
             max-width: 90%;
         }
 
+        .message.system.eeg-notify {
+            animation: eegFadeOut 8s ease-out forwards;
+        }
+        @keyframes eegFadeOut {
+            0%   { opacity: 1; max-height: 200px; margin-bottom: 8px; }
+            70%  { opacity: 1; max-height: 200px; margin-bottom: 8px; }
+            100% { opacity: 0; max-height: 0; margin-bottom: 0; padding: 0; overflow: hidden; }
+        }
+
         .message-content.streaming::after {
             content: '▊';
             animation: blink 1s infinite;
@@ -1487,7 +1496,7 @@
                     Export
                 </button>
             </div>
-            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v26</div>
+            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v27</div>
             </div><!-- end sidebar-scroll -->
         </div>
 
@@ -8228,13 +8237,13 @@ Use this data to personalize your response. Comment on their current state when 
         }
 
         // ── Generation via worker (returns a Promise, never blocks main thread) ──
-        const LOCAL_GEN_TIMEOUT = 900000; // 15 min timeout — WASM on mobile with Athena context needs time
+        const LOCAL_GEN_TIMEOUT = 1800000; // 30 min timeout — WASM on mobile with Athena context is slow
 
         function workerGenerate(chatMessages, onToken) {
             return new Promise((resolve, reject) => {
                 const timer = setTimeout(() => {
                     localInference._pending = null;
-                    reject(new Error('Local model generation timed out (15min). Try a shorter prompt or reduce max tokens.'));
+                    reject(new Error('Local model generation timed out (30min). Try a shorter prompt or reduce max tokens.'));
                 }, LOCAL_GEN_TIMEOUT);
 
                 localInference._pending = {
@@ -8836,10 +8845,11 @@ Use this data to personalize your response. Comment on their current state when 
             dot.classList.remove('streaming');
         }
 
-        function addMessageToUI(role, content) {
+        function addMessageToUI(role, content, options = {}) {
             const container = document.getElementById('chatContainer');
             const messageDiv = document.createElement('div');
             messageDiv.className = `message ${role}`;
+            if (options.autoFade) messageDiv.classList.add('eeg-notify');
 
             const avatars = {
                 user: '👤',
@@ -8855,10 +8865,15 @@ Use this data to personalize your response. Comment on their current state when 
             `;
 
             container.appendChild(messageDiv);
-            
+
             // Only auto-scroll if user isn't manually scrolling
             if (!isUserScrolling) {
                 container.scrollTop = container.scrollHeight;
+            }
+
+            // Remove fading notifications from DOM after animation completes
+            if (options.autoFade) {
+                setTimeout(() => messageDiv.remove(), 8500);
             }
         }
 
@@ -9592,7 +9607,7 @@ Use this data to personalize your response. Comment on their current state when 
 
                     if (config.eegContextIntegration) {
                         const athenaMsg = isAthena ? ' (Athena: EEG + fNIRS + Heart Rate)' : '';
-                        addMessageToUI('system', `🧠 EEG device connected${athenaMsg} - brainwave data now available in conversation context`);
+                        addMessageToUI('system', `🧠 EEG device connected${athenaMsg} - brainwave data now available in conversation context`, {autoFade: true});
                     }
                     
                     // Initialize Adaptive Solfeggio System
@@ -9602,7 +9617,7 @@ Use this data to personalize your response. Comment on their current state when 
                         if (config.enableSolfeggioAdaptation !== false) { // Default to true
                             console.log('🎵 Starting adaptive monitoring...');
                             startAdaptiveMonitoring();
-                            addMessageToUI('system', '🎵 Adaptive Neuro Guided Aetheria Frequencies activated - system will adapt to your brain state');
+                            addMessageToUI('system', '🎵 Adaptive Neuro Guided Aetheria Frequencies activated - system will adapt to your brain state', {autoFade: true});
                         }
                     }, 2000); // Wait 2 seconds for EEG to stabilize
                 });
@@ -9622,7 +9637,7 @@ Use this data to personalize your response. Comment on their current state when 
                     
                     if (wasUnexpected) {
                         updateEEGStatus('Connection Lost - Auto-reconnect enabled', 'error');
-                        addMessageToUI('system', '⚠️ EEG connection lost unexpectedly - attempting to reconnect...');
+                        addMessageToUI('system', '⚠️ EEG connection lost unexpectedly - attempting to reconnect...', {autoFade: true});
                     } else {
                         updateEEGStatus('Disconnected', 'error');
                     }
@@ -9690,7 +9705,7 @@ Use this data to personalize your response. Comment on their current state when 
                     eegIntegration.reconnectAttempts = 0;
                     eegIntegration.reconnectDelay = config.eegReconnectDelay * 1000 || 3000;
 
-                    addMessageToUI('system', `❌ EEG auto-reconnection failed after ${attempts} attempts. Please manually reconnect your Muse device.`);
+                    addMessageToUI('system', `❌ EEG auto-reconnection failed after ${attempts} attempts. Please manually reconnect your Muse device.`, {autoFade: true});
                     showStatus(`❌ EEG auto-reconnect failed after ${attempts} attempts`, 'error');
                 });
                 eegIntegration.addEventListener('data', (event) => {

@@ -1487,6 +1487,7 @@
                     Export
                 </button>
             </div>
+            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v25</div>
             </div><!-- end sidebar-scroll -->
         </div>
 
@@ -8186,26 +8187,25 @@ Coherence: ${p.coherence}% | Focus: ${Math.round(m.focus * 100)}% | Meditation: 
 I Ching: #${p.hex} ${p.hexName}
 Use this data to personalize your response. Comment on their current state when relevant.`;
 
-                // Athena fNIRS + Heart Rate context
+                // Athena fNIRS + Heart Rate — compact data only (like Muse 2 EEG block)
                 const isAthena = eegIntegration && eegIntegration.lastConnectionMethod === 'athena';
                 if (isAthena) {
                     const fnirs = eegIntegration.athenaFNIRS;
                     const ppg = eegIntegration.athenaPPG;
-                    LOCAL_SYSTEM_PROMPT += `\n\nWhen the user is wearing a Muse S Athena, you have access to real-time hemodynamic data (fNIRS) from four optode positions on their frontal cortex (LI, RI, LO, RO). Each position reports HbO (oxygenated hemoglobin) and HbR (deoxygenated hemoglobin) in micromolar units, along with a signal quality indicator (SQI). fNIRS hemodynamic response typically follows neural activity by 2-5 seconds and indicates metabolic demand. Elevated HbO with depressed HbR suggests active neural engagement. If you notice strong shifts in the user's hemodynamic data during a reading, you may reference this naturally ("I notice your left frontal cortex lit up when that card appeared") but you do NOT diagnose or make medical claims. Treat fNIRS as another dimension of biofield awareness, not clinical measurement.`;
                     if (fnirs) {
-                        let fnirsCtx = '\n[LIVE HEMODYNAMIC DATA]';
+                        let fnirsCtx = '\n[fNIRS]';
                         for (const pos of ['LI', 'RI', 'LO', 'RO']) {
                             if (fnirs[pos]) {
                                 const d = fnirs[pos];
                                 const hbo = getFnirsCenter(d.hbo);
                                 const hbr = getFnirsCenter(d.hbr);
-                                fnirsCtx += `\n${pos}: HbO ${hbo >= 0 ? '+' : ''}${hbo.toFixed(2)}μM HbR ${hbr >= 0 ? '+' : ''}${hbr.toFixed(2)}μM (SQI: ${d.sqi.toFixed(2)})`;
+                                fnirsCtx += ` ${pos}:${hbo >= 0 ? '+' : ''}${hbo.toFixed(1)}/${hbr >= 0 ? '+' : ''}${hbr.toFixed(1)}`;
                             }
                         }
                         LOCAL_SYSTEM_PROMPT += fnirsCtx;
                     }
                     if (ppg && ppg.heartRate > 0) {
-                        LOCAL_SYSTEM_PROMPT += `\n[HEART RATE] ${ppg.heartRate} BPM (SQI: ${(ppg.sqi || 0).toFixed(2)})`;
+                        LOCAL_SYSTEM_PROMPT += `\nHR: ${ppg.heartRate} BPM`;
                     }
                 }
             }

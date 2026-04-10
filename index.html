@@ -1496,7 +1496,7 @@
                     Export
                 </button>
             </div>
-            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v27</div>
+            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v28</div>
             </div><!-- end sidebar-scroll -->
         </div>
 
@@ -8237,24 +8237,27 @@ Use this data to personalize your response. Comment on their current state when 
         }
 
         // ── Generation via worker (returns a Promise, never blocks main thread) ──
-        const LOCAL_GEN_TIMEOUT = 1800000; // 30 min timeout — WASM on mobile with Athena context is slow
+        const LOCAL_GEN_TIMEOUT = 0; // No timeout — WASM generation is slow, let it finish
 
         function workerGenerate(chatMessages, onToken) {
             return new Promise((resolve, reject) => {
-                const timer = setTimeout(() => {
-                    localInference._pending = null;
-                    reject(new Error('Local model generation timed out (30min). Try a shorter prompt or reduce max tokens.'));
-                }, LOCAL_GEN_TIMEOUT);
+                // No hard timeout — WASM is slow, let it finish.
+                // User can always send a new message or reload to cancel.
 
                 localInference._pending = {
-                    resolve: () => { clearTimeout(timer); resolve(); },
-                    reject: (err) => { clearTimeout(timer); reject(err); },
+                    resolve: () => { resolve(); },
+                    reject: (err) => { reject(err); },
                     onToken: onToken || (() => {}),
                 };
-                // Cap output tokens for large models on mobile to avoid OOM
+                // Cap output tokens based on device/model to keep generation reasonable
                 let maxTokens = config.maxTokens || getLocalMaxNewTokens();
                 if (selectedLocalModel === 'e4b' && maxTokens > 2048) {
                     maxTokens = 2048;
+                }
+                // WASM is ~1-3 tok/s — cap at 512 to avoid 30min+ waits
+                const isWasm = !localInference.webgpuAvailable || document.getElementById('forceWasm')?.checked;
+                if (isWasm && maxTokens > 512) {
+                    maxTokens = 512;
                 }
 
                 localInference.worker.postMessage({

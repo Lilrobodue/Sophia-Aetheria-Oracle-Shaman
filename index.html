@@ -8047,10 +8047,11 @@ self.onmessage = async (e) => {
                    errMsg.includes('GPUDevice was destroyed');
         }
 
-        // Silently reload the local model (returns a promise that resolves when ready)
+        // Silently reload the local model after WebGPU device loss.
+        // Forces WASM mode since the GPU instance is dead for this browser session.
         function reloadLocalModel() {
             return new Promise((resolve, reject) => {
-                console.log('🔮 [Recovery] Reloading local model after WebGPU device loss...');
+                console.log('🔮 [Recovery] Reloading local model in WASM mode after WebGPU device loss...');
                 // Terminate the old worker
                 if (localInference.worker) {
                     localInference.worker.terminate();
@@ -8061,17 +8062,27 @@ self.onmessage = async (e) => {
                 localInference.failed = false;
                 localInference.error = null;
 
-                updateInferenceBadge('loading', 'Recovering GPU...');
-                const statusEl = document.getElementById('localModelStatus');
-                if (statusEl) { statusEl.textContent = 'Recovering...'; statusEl.style.color = '#ffaa00'; }
+                // Mark WebGPU as unavailable — it's dead for this session
+                localInference.webgpuAvailable = false;
+                const wasmBox = document.getElementById('forceWasm');
+                if (wasmBox) wasmBox.checked = true;
 
-                // Spawn fresh worker
+                updateInferenceBadge('loading', 'Recovering (WASM)...');
+                const statusEl = document.getElementById('localModelStatus');
+                if (statusEl) { statusEl.textContent = 'Recovering via WASM...'; statusEl.style.color = '#ffaa00'; }
+                const webgpuEl = document.getElementById('webgpuStatus');
+                if (webgpuEl) {
+                    webgpuEl.textContent = '⚠️ WebGPU lost — using WASM fallback';
+                    webgpuEl.style.color = '#ffaa00';
+                }
+
+                // Spawn fresh worker — force WASM since GPU is gone
                 localInference.worker = spawnInferenceWorker();
                 const modelInfo = LOCAL_MODELS[selectedLocalModel];
-                const forceWasm = document.getElementById('forceWasm')?.checked;
-                const device = (localInference.webgpuAvailable && !forceWasm) ? 'webgpu' : 'wasm';
+                const device = 'wasm';
+                // q4/q4f16 dtypes need WebGPU — fall back to int8 quantized for WASM
                 let dtype = modelInfo.dtype;
-                if (device === 'wasm' && (dtype === 'q4' || dtype === 'q4f16')) {
+                if (dtype === 'q4' || dtype === 'q4f16') {
                     dtype = 'quantized';
                 }
 
@@ -8083,9 +8094,9 @@ self.onmessage = async (e) => {
                         localInference.ready = true;
                         localInference.loading = false;
                         localInference.worker.onmessage = origOnMessage;
-                        updateInferenceBadge('local', `Local (${device === 'webgpu' ? 'WebGPU' : 'WASM'})`);
-                        if (statusEl) { statusEl.textContent = 'Recovered'; statusEl.style.color = '#00ff88'; }
-                        console.log('🔮 [Recovery] Model reloaded successfully on', device);
+                        updateInferenceBadge('local', 'Local (WASM)');
+                        if (statusEl) { statusEl.textContent = 'Recovered (WASM)'; statusEl.style.color = '#00ff88'; }
+                        console.log('🔮 [Recovery] Model reloaded successfully on WASM');
                         resolve();
                         return;
                     }
@@ -8093,7 +8104,7 @@ self.onmessage = async (e) => {
                         localInference.loading = false;
                         localInference.failed = true;
                         localInference.worker.onmessage = origOnMessage;
-                        console.error('🔮 [Recovery] Reload failed:', payload);
+                        console.error('🔮 [Recovery] WASM reload also failed:', payload);
                         reject(new Error(payload));
                         return;
                     }
@@ -8101,7 +8112,7 @@ self.onmessage = async (e) => {
                     origOnMessage(e);
                 };
 
-                console.log(`🔮 [Recovery] Reloading ${modelInfo.name} on ${device} dtype=${dtype}`);
+                console.log(`🔮 [Recovery] Reloading ${modelInfo.name} on WASM dtype=${dtype}`);
                 localInference.worker.postMessage({
                     type: 'load',
                     payload: { modelId: modelInfo.id, modelType: modelInfo.type, dtype, device }

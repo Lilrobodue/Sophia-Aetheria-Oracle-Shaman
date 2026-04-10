@@ -2434,9 +2434,14 @@ return result;</textarea>
                 <button class="btn btn-small btn-secondary" onclick="resetEEGCalibration()" style="width: 100%; margin-bottom: 8px;">
                     🔄 Reset Calibration
                 </button>
-                <button class="btn btn-small btn-secondary" onclick="exportEEGData()" style="width: 100%;">
-                    📊 Export EEG Data
-                </button>
+                <div style="display: flex; gap: 6px;">
+                    <button class="btn btn-small btn-secondary" onclick="exportEEGData()" style="flex: 1;">
+                        📊 JSON
+                    </button>
+                    <button class="btn btn-small btn-secondary" onclick="exportEEGDataCSV()" style="flex: 1;">
+                        📋 CSV
+                    </button>
+                </div>
             </div>
 
             <button class="btn btn-primary" onclick="saveEEGSettings()" style="width: 100%; margin-top: 15px;">
@@ -9531,11 +9536,11 @@ Use this data to personalize your response. Comment on their current state when 
                     updateNeuroMiniDisplay();
                     updateAthenaPanel();
 
-                    // Sleep mode data accumulation
+                    // Sleep mode data accumulation (use summaries, not raw arrays)
                     if (sleepMode.active && event.detail.bandpowers) {
                         sleepMode.epochBandpowerAcc.push(event.detail.bandpowers);
-                        if (event.detail.fnirs) sleepMode.epochFnirsAcc.push(event.detail.fnirs);
-                        if (event.detail.ppg) sleepMode.epochPpgAcc.push(event.detail.ppg);
+                        if (event.detail.fnirs) sleepMode.epochFnirsAcc.push(summarizeFnirs(event.detail.fnirs));
+                        if (event.detail.ppg) sleepMode.epochPpgAcc.push({ heartRate: event.detail.ppg.heartRate, sqi: event.detail.ppg.sqi });
                     }
 
                     // Update real-time visualization
@@ -9645,6 +9650,22 @@ Use this data to personalize your response. Comment on their current state when 
             let sum = 0;
             for (let i = start; i < end; i++) sum += arr[i];
             return sum / (end - start);
+        }
+
+        // Summarize fNIRS data for export (strips huge raw arrays, keeps center values)
+        function summarizeFnirs(fnirs) {
+            if (!fnirs) return null;
+            const summary = {};
+            for (const pos of ['LI', 'RI', 'LO', 'RO']) {
+                if (fnirs[pos]) {
+                    summary[pos] = {
+                        hbo: getFnirsCenter(fnirs[pos].hbo),
+                        hbr: getFnirsCenter(fnirs[pos].hbr),
+                        sqi: fnirs[pos].sqi
+                    };
+                }
+            }
+            return Object.keys(summary).length > 0 ? summary : null;
         }
 
         function updateAthenaPanel() {
@@ -12666,11 +12687,7 @@ Use this data to personalize your response. Comment on their current state when 
             // Include Athena fNIRS/PPG snapshot in timeline if available
             if (eegIntegration && eegIntegration.lastConnectionMethod === 'athena') {
                 if (eegIntegration.athenaFNIRS) {
-                    timelineEntry.fnirs = {};
-                    for (const pos of ['LI', 'RI', 'LO', 'RO']) {
-                        const d = eegIntegration.athenaFNIRS[pos];
-                        if (d) timelineEntry.fnirs[pos] = { hbo: d.lastHbO, hbr: d.lastHbR, sqi: d.sqi };
-                    }
+                    timelineEntry.fnirs = summarizeFnirs(eegIntegration.athenaFNIRS);
                 }
                 if (eegIntegration.athenaPPG && eegIntegration.athenaPPG.heartRate > 0) {
                     timelineEntry.heartRate = eegIntegration.athenaPPG.heartRate;
@@ -12720,9 +12737,16 @@ Use this data to personalize your response. Comment on their current state when 
                     source: currentEEGData.source,
                 } : null,
                 athenaData: (eegIntegration && eegIntegration.lastConnectionMethod === 'athena') ? {
-                    fnirs: eegIntegration.athenaFNIRS || null,
-                    ppg: eegIntegration.athenaPPG || null,
-                    athenaExport: eegIntegration._athenaDevice ? eegIntegration._athenaDevice.getExportData() : null,
+                    fnirs: summarizeFnirs(eegIntegration.athenaFNIRS),
+                    ppg: eegIntegration.athenaPPG ? {
+                        heartRate: eegIntegration.athenaPPG.heartRate,
+                        sqi: eegIntegration.athenaPPG.sqi,
+                        nChannels: eegIntegration.athenaPPG.nChannels
+                    } : null,
+                    battery: eegIntegration._athenaDevice ? eegIntegration._athenaDevice.battery : null,
+                    firmware: eegIntegration._athenaDevice ? eegIntegration._athenaDevice.firmware : null,
+                    preset: eegIntegration._athenaDevice ? eegIntegration._athenaDevice.preset : null,
+                    bandPowers: eegIntegration._athenaDevice ? eegIntegration._athenaDevice.bandPowers : null,
                 } : undefined,
                 deviceType: eegIntegration?.lastConnectionMethod || 'unknown',
                 frequencyReference: AETHERIA_FREQUENCIES.map(f => ({
@@ -12746,9 +12770,95 @@ Use this data to personalize your response. Comment on their current state when 
                 URL.revokeObjectURL(url);
             }, 3000);
 
-            showStatus(`Exported ${aetheriaTimeline.length} Aetheria positions + brainwave data`, 'success');
+            showStatus(`Exported ${aetheriaTimeline.length} Aetheria positions + brainwave data (JSON)`, 'success');
         }
-        
+
+        function exportEEGDataCSV() {
+            if (!currentEEGData && aetheriaTimeline.length === 0) {
+                showStatus('No EEG data to export', 'error');
+                return;
+            }
+
+            // Build CSV header
+            const isAthena = eegIntegration?.lastConnectionMethod === 'athena';
+            let headers = ['timestamp', 'position', 'frequency_hz', 'regime', 'geometry', 'state', 'keyword',
+                           'i_ching_hex', 'i_ching_name', 'coherence_pct', 'focus_pct', 'meditation_pct',
+                           'delta_pct', 'theta_pct', 'alpha_pct', 'beta_pct', 'gamma_pct'];
+            if (isAthena) {
+                headers.push('heart_rate_bpm',
+                    'fnirs_LI_hbo', 'fnirs_LI_hbr', 'fnirs_LI_sqi',
+                    'fnirs_RI_hbo', 'fnirs_RI_hbr', 'fnirs_RI_sqi',
+                    'fnirs_LO_hbo', 'fnirs_LO_hbr', 'fnirs_LO_sqi',
+                    'fnirs_RO_hbo', 'fnirs_RO_hbr', 'fnirs_RO_sqi');
+            }
+
+            const rows = [headers.join(',')];
+
+            for (const e of aetheriaTimeline) {
+                const row = [
+                    e.t,
+                    e.pos, e.freq, e.regime, `"${e.geo}"`, `"${e.state}"`, e.keyword,
+                    e.hex, `"${e.hexName}"`, e.coherence, e.focus, e.meditation,
+                    e.delta, e.theta, e.alpha, e.beta, e.gamma
+                ];
+                if (isAthena) {
+                    row.push(e.heartRate || '');
+                    for (const pos of ['LI', 'RI', 'LO', 'RO']) {
+                        if (e.fnirs && e.fnirs[pos]) {
+                            row.push(e.fnirs[pos].hbo.toFixed(4), e.fnirs[pos].hbr.toFixed(4), e.fnirs[pos].sqi);
+                        } else {
+                            row.push('', '', '');
+                        }
+                    }
+                }
+                rows.push(row.join(','));
+            }
+
+            // Add a summary row with current snapshot
+            if (currentEEGData) {
+                const bp = currentEEGData.bandpowers;
+                const m = currentEEGData.metrics;
+                const pos = currentAetheriaPosition;
+                if (pos) {
+                    const summaryRow = [
+                        new Date().toISOString(),
+                        pos.pos, pos.freq, pos.regime, `"${pos.geo}"`, `"${pos.state}"`, pos.keyword,
+                        pos.hex, `"${pos.hexName}"`, pos.coherence,
+                        Math.round(m.focus * 100), Math.round(m.meditation * 100),
+                        Math.round(bp.delta), Math.round(bp.theta), Math.round(bp.alpha),
+                        Math.round(bp.beta), Math.round(bp.gamma)
+                    ];
+                    if (isAthena) {
+                        const ppg = eegIntegration?.athenaPPG;
+                        summaryRow.push(ppg?.heartRate || '');
+                        const fnirs = eegIntegration?.athenaFNIRS;
+                        for (const p of ['LI', 'RI', 'LO', 'RO']) {
+                            if (fnirs && fnirs[p]) {
+                                summaryRow.push(getFnirsCenter(fnirs[p].hbo).toFixed(4),
+                                                getFnirsCenter(fnirs[p].hbr).toFixed(4),
+                                                fnirs[p].sqi);
+                            } else {
+                                summaryRow.push('', '', '');
+                            }
+                        }
+                    }
+                    rows.push(summaryRow.join(','));
+                }
+            }
+
+            const csv = rows.join('\n');
+            const blob = new Blob([csv], { type: 'text/csv' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `sophia-aetheria-session-${new Date().toISOString().slice(0,19).replace(/:/g,'-')}.csv`;
+            document.body.appendChild(a);
+            a.click();
+            setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 3000);
+
+            showStatus(`Exported ${aetheriaTimeline.length + 1} rows as CSV`, 'success');
+        }
+
         // Reset EEG connection completely
         async function resetEEGConnection() {
             if (!eegIntegration) {
@@ -13910,8 +14020,8 @@ Use this data to personalize your response. Comment on their current state when 
                     const vals = sleepMode.epochFnirsAcc.filter(f => f && f[pos]).map(f => f[pos]);
                     if (vals.length > 0) {
                         fnirsAvg[pos] = {
-                            hbo: vals.reduce((s, v) => s + v.lastHbO, 0) / vals.length,
-                            hbr: vals.reduce((s, v) => s + v.lastHbR, 0) / vals.length
+                            hbo: vals.reduce((s, v) => s + v.hbo, 0) / vals.length,
+                            hbr: vals.reduce((s, v) => s + v.hbr, 0) / vals.length
                         };
                     }
                 }

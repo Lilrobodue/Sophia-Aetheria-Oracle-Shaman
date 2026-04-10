@@ -5779,7 +5779,22 @@ return result;</textarea>
                     config.contextLength = Math.min(config.contextLength, 4096);
                     config.maxTokens = Math.min(config.maxTokens, 256);
                 }
-                config.features.push('Mobile Optimized', 'Efficient Vision Processing');
+                // Mobile WebGPU is unstable — Android aggressively reclaims GPU
+                // after the first inference, causing [Device] is lost errors.
+                // Downgrade WebGPU-only models (E2B/E4B) to Gemma 3 1B which
+                // runs on WASM and is immune to GPU context loss.
+                const currentDtype = LOCAL_MODELS[selectedLocalModel]?.dtype;
+                if (currentDtype === 'q4f16' || currentDtype === 'q4') {
+                    console.log(`📱 Mobile: downgrading ${selectedLocalModel} → lite (WASM-safe, avoids WebGPU instability)`);
+                    selectedLocalModel = 'lite';
+                    config.contextLength = Math.min(config.contextLength, 8192);
+                    config.maxTokens = Math.min(config.maxTokens, 512);
+                    config.modelTier = 'lite';
+                    config.recommendedModel = 'Gemma 3 1B (Mobile — WASM safe)';
+                    config.memoryBudget = effectiveMemory + 'GB est. (Mobile WASM)';
+                    config.features = ['Text Only', 'Fast', 'Stable on Mobile'];
+                }
+                config.features.push('Mobile Optimized');
             }
             
             // Connection-based adjustments
@@ -8041,17 +8056,28 @@ self.onmessage = async (e) => {
         // Detect WebGPU device loss errors (GPU context invalidated)
         function isWebGPUDeviceLost(errMsg) {
             if (!errMsg) return false;
-            return errMsg.includes('Instance reference no longer exists') ||
-                   errMsg.includes('device was lost') ||
-                   errMsg.includes('Device is lost') ||
-                   errMsg.includes('GPUDevice was destroyed');
+            const lower = errMsg.toLowerCase();
+            return lower.includes('instance reference no longer exists') ||
+                   lower.includes('device is lost') ||
+                   lower.includes('device was lost') ||
+                   lower.includes('gpudevice was destroyed') ||
+                   lower.includes('mapasync') ||
+                   lower.includes('[device] is lost');
+        }
+
+        // Best WASM-compatible model for recovery fallback.
+        // Gemma 4 E2B/E4B use GatherBlockQuantized — a WebGPU-only ONNX op with
+        // no WASM kernel, so we must switch to a different model entirely.
+        function getBestWasmModel() {
+            // Prefer 'lite' (Gemma 3 1B) — good quality, WASM-safe int8
+            // Fall back to 'tiny' (Qwen 0.5B) if lite isn't defined
+            return LOCAL_MODELS['lite'] ? 'lite' : 'tiny';
         }
 
         // Silently reload the local model after WebGPU device loss.
-        // Forces WASM mode since the GPU instance is dead for this browser session.
+        // Forces WASM mode with a WASM-compatible model since the GPU is dead.
         function reloadLocalModel() {
             return new Promise((resolve, reject) => {
-                console.log('🔮 [Recovery] Reloading local model in WASM mode after WebGPU device loss...');
                 // Terminate the old worker
                 if (localInference.worker) {
                     localInference.worker.terminate();
@@ -8062,29 +8088,40 @@ self.onmessage = async (e) => {
                 localInference.failed = false;
                 localInference.error = null;
 
-                // Mark WebGPU as unavailable — it's dead for this session
+                // Mark WebGPU as unavailable for this session
                 localInference.webgpuAvailable = false;
                 const wasmBox = document.getElementById('forceWasm');
                 if (wasmBox) wasmBox.checked = true;
 
-                updateInferenceBadge('loading', 'Recovering (WASM)...');
+                // If the current model is WebGPU-only (q4f16), switch to a WASM-safe model
+                const currentModel = LOCAL_MODELS[selectedLocalModel];
+                const needsModelSwitch = currentModel.dtype === 'q4f16' || currentModel.dtype === 'q4';
+                const recoveryModelKey = needsModelSwitch ? getBestWasmModel() : selectedLocalModel;
+                const modelInfo = LOCAL_MODELS[recoveryModelKey];
+
+                if (needsModelSwitch) {
+                    selectedLocalModel = recoveryModelKey;
+                    // Update the picker UI to reflect the switch
+                    const picker = document.getElementById('localModelPicker');
+                    if (picker) picker.value = recoveryModelKey;
+                    const nameEl = document.getElementById('localModelName');
+                    if (nameEl) nameEl.textContent = modelInfo.name;
+                    console.log(`🔮 [Recovery] ${currentModel.name} is WebGPU-only → switching to ${modelInfo.name} for WASM`);
+                }
+
+                updateInferenceBadge('loading', `Recovering (${modelInfo.name})...`);
                 const statusEl = document.getElementById('localModelStatus');
-                if (statusEl) { statusEl.textContent = 'Recovering via WASM...'; statusEl.style.color = '#ffaa00'; }
+                if (statusEl) { statusEl.textContent = `Recovering → ${modelInfo.name} (WASM)...`; statusEl.style.color = '#ffaa00'; }
                 const webgpuEl = document.getElementById('webgpuStatus');
                 if (webgpuEl) {
                     webgpuEl.textContent = '⚠️ WebGPU lost — using WASM fallback';
                     webgpuEl.style.color = '#ffaa00';
                 }
 
-                // Spawn fresh worker — force WASM since GPU is gone
+                // Spawn fresh worker in WASM mode
                 localInference.worker = spawnInferenceWorker();
-                const modelInfo = LOCAL_MODELS[selectedLocalModel];
                 const device = 'wasm';
-                // q4/q4f16 dtypes need WebGPU — fall back to int8 quantized for WASM
-                let dtype = modelInfo.dtype;
-                if (dtype === 'q4' || dtype === 'q4f16') {
-                    dtype = 'quantized';
-                }
+                const dtype = modelInfo.dtype; // already 'quantized' for WASM-safe models
 
                 // Intercept the loaded/loadError messages for this reload
                 const origOnMessage = localInference.worker.onmessage;
@@ -8094,9 +8131,9 @@ self.onmessage = async (e) => {
                         localInference.ready = true;
                         localInference.loading = false;
                         localInference.worker.onmessage = origOnMessage;
-                        updateInferenceBadge('local', 'Local (WASM)');
-                        if (statusEl) { statusEl.textContent = 'Recovered (WASM)'; statusEl.style.color = '#00ff88'; }
-                        console.log('🔮 [Recovery] Model reloaded successfully on WASM');
+                        updateInferenceBadge('local', `Local (WASM — ${modelInfo.name})`);
+                        if (statusEl) { statusEl.textContent = `Recovered (${modelInfo.name} WASM)`; statusEl.style.color = '#00ff88'; }
+                        console.log(`🔮 [Recovery] ${modelInfo.name} loaded on WASM — ready`);
                         resolve();
                         return;
                     }
@@ -8104,7 +8141,7 @@ self.onmessage = async (e) => {
                         localInference.loading = false;
                         localInference.failed = true;
                         localInference.worker.onmessage = origOnMessage;
-                        console.error('🔮 [Recovery] WASM reload also failed:', payload);
+                        console.error('🔮 [Recovery] WASM reload failed:', payload);
                         reject(new Error(payload));
                         return;
                     }
@@ -8112,7 +8149,7 @@ self.onmessage = async (e) => {
                     origOnMessage(e);
                 };
 
-                console.log(`🔮 [Recovery] Reloading ${modelInfo.name} on WASM dtype=${dtype}`);
+                console.log(`🔮 [Recovery] Loading ${modelInfo.name} (${modelInfo.id}) on WASM dtype=${dtype}`);
                 localInference.worker.postMessage({
                     type: 'load',
                     payload: { modelId: modelInfo.id, modelType: modelInfo.type, dtype, device }
@@ -8280,13 +8317,29 @@ Use this data to personalize your response. Comment on their current state when 
         }
 
         async function initLocalInference() {
+            const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
             localInference.webgpuAvailable = await checkWebGPU();
+
+            // Mobile WebGPU is unstable — Android reclaims GPU between inferences.
+            // Force WASM on mobile even if WebGPU reports available.
+            if (isMobile && localInference.webgpuAvailable) {
+                console.log('📱 Mobile detected: disabling WebGPU (unstable on mobile), using WASM');
+                localInference.webgpuAvailable = false;
+                const wasmBox = document.getElementById('forceWasm');
+                if (wasmBox) wasmBox.checked = true;
+            }
+
             const webgpuEl = document.getElementById('webgpuStatus');
             if (webgpuEl) {
-                webgpuEl.textContent = localInference.webgpuAvailable
-                    ? '✅ WebGPU available — GPU acceleration'
-                    : '⚠️ WebGPU not available — will use WASM (slower)';
-                webgpuEl.style.color = localInference.webgpuAvailable ? '#00ff88' : '#ffaa00';
+                if (isMobile) {
+                    webgpuEl.textContent = '📱 Mobile — using WASM (stable)';
+                    webgpuEl.style.color = '#00ff88';
+                } else {
+                    webgpuEl.textContent = localInference.webgpuAvailable
+                        ? '✅ WebGPU available — GPU acceleration'
+                        : '⚠️ WebGPU not available — will use WASM (slower)';
+                    webgpuEl.style.color = localInference.webgpuAvailable ? '#00ff88' : '#ffaa00';
+                }
             }
             // Don't auto-load model on startup — user clicks "Load Model" when ready
             resolveInferenceBadge();

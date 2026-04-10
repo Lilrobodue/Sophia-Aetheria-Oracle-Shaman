@@ -1487,7 +1487,7 @@
                     Export
                 </button>
             </div>
-            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v25</div>
+            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v26</div>
             </div><!-- end sidebar-scroll -->
         </div>
 
@@ -8228,13 +8228,13 @@ Use this data to personalize your response. Comment on their current state when 
         }
 
         // ── Generation via worker (returns a Promise, never blocks main thread) ──
-        const LOCAL_GEN_TIMEOUT = 600000; // 10 min timeout — E4B on mobile needs time for long readings
+        const LOCAL_GEN_TIMEOUT = 900000; // 15 min timeout — WASM on mobile with Athena context needs time
 
         function workerGenerate(chatMessages, onToken) {
             return new Promise((resolve, reject) => {
                 const timer = setTimeout(() => {
                     localInference._pending = null;
-                    reject(new Error('Local model generation timed out (300s). Try a shorter prompt or reduce max tokens.'));
+                    reject(new Error('Local model generation timed out (15min). Try a shorter prompt or reduce max tokens.'));
                 }, LOCAL_GEN_TIMEOUT);
 
                 localInference._pending = {

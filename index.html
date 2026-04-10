@@ -187,13 +187,14 @@
             position: fixed;
             top: 0;
             right: 0;
-            width: 400px;
+            width: 420px;
             height: 100vh;
-            background: rgba(0, 0, 0, 0.95);
-            border-left: 2px solid #ff0055;
-            backdrop-filter: blur(10px);
+            background: linear-gradient(180deg, rgba(5,5,15,0.98) 0%, rgba(10,8,25,0.98) 100%);
+            border-left: 1px solid rgba(0,180,216,0.25);
+            box-shadow: -4px 0 30px rgba(0,180,216,0.08), inset 1px 0 0 rgba(0,180,216,0.1);
+            backdrop-filter: blur(20px);
             transform: translateX(100%);
-            transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            transition: transform 0.35s cubic-bezier(0.16, 1, 0.3, 1);
             z-index: 50;
             display: flex;
             flex-direction: column;
@@ -205,44 +206,60 @@
         }
 
         .main-content.with-panel {
-            margin-right: 400px;
+            margin-right: 420px;
         }
 
         .viz-panel-header {
-            padding: 15px;
-            border-bottom: 1px solid rgba(255, 0, 85, 0.3);
+            padding: 14px 18px;
+            border-bottom: 1px solid rgba(0,180,216,0.15);
             display: flex;
             justify-content: space-between;
             align-items: center;
-            background: rgba(255, 0, 85, 0.1);
+            background: linear-gradient(90deg, rgba(0,180,216,0.06) 0%, rgba(123,80,212,0.06) 100%);
         }
 
         .viz-panel-content {
             flex: 1;
             overflow-y: auto;
-            padding: 15px;
+            padding: 12px;
+            scrollbar-width: thin;
+            scrollbar-color: rgba(0,180,216,0.3) transparent;
         }
+        .viz-panel-content::-webkit-scrollbar { width: 4px; }
+        .viz-panel-content::-webkit-scrollbar-thumb { background: rgba(0,180,216,0.3); border-radius: 2px; }
 
         .viz-section {
-            margin-bottom: 20px;
-            background: rgba(255, 255, 255, 0.05);
-            border-radius: 8px;
-            border: 1px solid rgba(255, 0, 85, 0.2);
+            margin-bottom: 12px;
+            background: rgba(0,180,216,0.03);
+            border-radius: 10px;
+            border: 1px solid rgba(0,180,216,0.12);
+            overflow: hidden;
+            transition: border-color 0.3s;
+        }
+        .viz-section:hover {
+            border-color: rgba(0,180,216,0.25);
         }
 
         .viz-section-header {
-            padding: 10px 15px;
-            background: rgba(255, 0, 85, 0.2);
-            border-bottom: 1px solid rgba(255, 0, 85, 0.3);
+            padding: 10px 14px;
+            background: linear-gradient(90deg, rgba(0,180,216,0.08) 0%, rgba(123,80,212,0.08) 100%);
+            border-bottom: 1px solid rgba(0,180,216,0.1);
             display: flex;
             justify-content: space-between;
             align-items: center;
             cursor: pointer;
             user-select: none;
+            font-size: 0.85rem;
+            font-weight: 600;
+            letter-spacing: 0.3px;
+            color: #b0c4de;
+        }
+        .viz-section-header:hover {
+            background: linear-gradient(90deg, rgba(0,180,216,0.12) 0%, rgba(123,80,212,0.12) 100%);
         }
 
         .viz-section-content {
-            padding: 15px;
+            padding: 12px;
             overflow: hidden;
         }
 
@@ -252,34 +269,42 @@
 
         .waveform-canvas {
             width: 100%;
-            height: 150px;
-            background: rgba(0, 0, 0, 0.7);
-            border-radius: 6px;
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            margin-bottom: 10px;
+            height: 180px;
+            background: linear-gradient(180deg, rgba(0,0,0,0.6) 0%, rgba(0,10,20,0.8) 100%);
+            border-radius: 8px;
+            border: 1px solid rgba(0,180,216,0.15);
+            box-shadow: inset 0 0 20px rgba(0,0,0,0.5), 0 0 8px rgba(0,180,216,0.05);
+            margin-bottom: 8px;
         }
 
         .electrode-legend, .brainwave-legend {
             display: flex;
             flex-wrap: wrap;
-            gap: 8px;
-            margin-top: 10px;
-            font-size: 0.75rem;
+            gap: 5px;
+            margin-top: 8px;
+            font-size: 0.7rem;
         }
 
         .legend-item {
             display: flex;
             align-items: center;
             gap: 4px;
-            padding: 2px 6px;
-            background: rgba(255, 255, 255, 0.1);
-            border-radius: 4px;
+            padding: 3px 8px;
+            background: rgba(0,180,216,0.06);
+            border: 1px solid rgba(0,180,216,0.1);
+            border-radius: 20px;
+            color: #8899aa;
+            transition: background 0.2s;
+        }
+        .legend-item:hover {
+            background: rgba(0,180,216,0.12);
         }
 
         .legend-color {
-            width: 12px;
-            height: 12px;
-            border-radius: 2px;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            box-shadow: 0 0 4px currentColor;
         }
 
         .viz-toggle-btn {
@@ -287,37 +312,38 @@
             top: 50%;
             right: 10px;
             transform: translateY(-50%);
-            background: linear-gradient(135deg, #ff0055 0%, #ff6b00 100%);
-            border: none;
-            color: white;
+            background: linear-gradient(135deg, #0a1628 0%, #0d1f3c 100%);
+            border: 1px solid rgba(0,180,216,0.4);
+            color: #00b4d8;
             border-radius: 50%;
-            width: 50px;
-            height: 50px;
-            font-size: 1.2rem;
+            width: 46px;
+            height: 46px;
+            font-size: 1.1rem;
             cursor: pointer;
             z-index: 60;
             transition: all 0.3s;
-            box-shadow: 0 4px 15px rgba(255, 0, 85, 0.3);
+            box-shadow: 0 0 15px rgba(0,180,216,0.15), inset 0 0 10px rgba(0,180,216,0.05);
         }
 
         .viz-toggle-btn:hover {
             transform: translateY(-50%) scale(1.1);
-            box-shadow: 0 6px 20px rgba(255, 0, 85, 0.4);
+            box-shadow: 0 0 25px rgba(0,180,216,0.3);
+            border-color: rgba(0,180,216,0.7);
         }
 
         .viz-toggle-btn.open {
-            right: 410px;
+            right: 430px;
         }
 
         @media (max-width: 1200px) {
             .visualization-panel {
-                width: 350px;
+                width: 370px;
             }
             .main-content.with-panel {
-                margin-right: 350px;
+                margin-right: 370px;
             }
             .viz-toggle-btn.open {
-                right: 360px;
+                right: 380px;
             }
         }
 
@@ -332,6 +358,23 @@
                 right: 10px;
             }
         }
+
+        /* Sleep Mode */
+        .sleep-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.88); z-index: 9998; pointer-events: none; transition: opacity 0.8s; }
+        .sleep-status {
+            position: fixed; top: 20px; right: 20px; z-index: 9999;
+            background: rgba(10,5,30,0.95); border: 1px solid #6b3fa0; border-radius: 14px;
+            padding: 16px 24px; color: #c4a0ff; font-size: 0.85rem;
+            backdrop-filter: blur(12px); box-shadow: 0 0 30px rgba(107,63,160,0.25);
+            pointer-events: auto; min-width: 200px; text-align: center;
+        }
+        .sleep-status .stage { font-size: 1.4rem; font-weight: 700; margin: 6px 0 2px; }
+        .sleep-status .elapsed { color: #887; font-size: 0.75rem; }
+        .sleep-status .wake-btn {
+            margin-top: 10px; padding: 8px 16px; border-radius: 8px; border: 1px solid #c4a0ff;
+            background: transparent; color: #c4a0ff; cursor: pointer; font-size: 0.8rem; width: 100%;
+        }
+        .sleep-status .wake-btn:hover { background: rgba(196,160,255,0.1); }
 
         .header {
             background: rgba(0, 0, 0, 0.4);
@@ -1213,6 +1256,7 @@
             50% { opacity: 0.7; }
         }
     </style>
+    <script src="athena-core.js"></script>
 </head>
 <body>
     <!-- Disclaimer Modal — shows on every app load -->
@@ -1222,7 +1266,7 @@
         <div style="font-size:0.85rem;color:#ccc;line-height:1.6;">
           <p style="margin-bottom:10px;"><strong>Sophia — Aetheria Oracle Shaman</strong> is provided for <strong>entertainment, educational, and personal exploration purposes only</strong>.</p>
           <p style="margin-bottom:10px;">This application is <strong>NOT a medical device</strong>, diagnostic tool, or substitute for professional medical, psychological, or psychiatric advice, diagnosis, or treatment.</p>
-          <p style="margin-bottom:10px;"><strong>EEG/Brainwave features:</strong> Brainwave readings from the Muse 2 headset are approximations for personal exploration. They are NOT clinical-grade measurements and should NOT be used for medical decision-making.</p>
+          <p style="margin-bottom:10px;"><strong>EEG/Brainwave features:</strong> Brainwave readings from the Muse 2 or Muse S Athena headset are approximations for personal exploration. They are NOT clinical-grade measurements and should NOT be used for medical decision-making. fNIRS hemodynamic data (Muse S Athena only) is experimental and for personal exploration purposes. It is not a clinical measurement and should not be used for medical decision-making.</p>
           <p style="margin-bottom:10px;"><strong>Oracle readings:</strong> Tarot, numerology, I Ching, astrology, palmistry, and other esoteric readings are offered as tools for self-reflection. They do not predict the future and should not replace professional guidance.</p>
           <p style="margin-bottom:10px;"><strong>Frequency recommendations:</strong> Aetheria frequency suggestions are part of an experimental personal wellness exploration system. They are not FDA-evaluated and make no claims to treat, cure, or prevent any condition.</p>
           <p style="margin-bottom:10px;">If you are experiencing a medical or mental health emergency, please contact emergency services (911) or a qualified healthcare provider immediately.</p>
@@ -1292,10 +1336,19 @@
             <div class="sidebar-section">
                 <h3>🧠 EEG Brainwaves</h3>
                 <button class="btn btn-small btn-primary" onclick="connectEEG()" id="eegConnectBtn" style="width: 100%; margin-bottom: 8px;">
-                    🔌 Connect Muse 2
+                    🔌 Connect EEG
                 </button>
-                <div id="eegStatus" style="font-size: 0.85rem; color: #888; margin-bottom: 10px;">
+                <div id="eegStatus" style="font-size: 0.85rem; color: #888; margin-bottom: 4px;">
                     EEG device disconnected
+                </div>
+                <div id="eegBatteryBar" style="display: none; margin-bottom: 10px;">
+                    <div style="display: flex; align-items: center; gap: 6px; font-size: 0.75rem;">
+                        <span id="eegBatteryIcon">🔋</span>
+                        <div style="flex: 1; background: rgba(255,255,255,0.08); height: 6px; border-radius: 3px; overflow: hidden;">
+                            <div id="eegBatteryFill" style="height: 100%; border-radius: 3px; width: 0%; transition: width 0.5s, background 0.5s;"></div>
+                        </div>
+                        <span id="eegBatteryPct" style="color: #888; min-width: 32px; text-align: right;">—%</span>
+                    </div>
                 </div>
                 <div id="eegMetrics" style="display: none;">
                     <div style="background: rgba(0,0,0,0.3); padding: 8px; border-radius: 6px; margin-bottom: 8px;">
@@ -1348,6 +1401,32 @@
                     <button class="btn btn-small btn-secondary" id="voiceOracleBtn" onclick="toggleVoiceOracle()" style="flex: 1;" title="Sophia speaks about your brain state">
                         🔇 Voice Oracle
                     </button>
+                </div>
+                <div style="margin-top: 6px; display: flex; gap: 6px;">
+                    <button class="btn btn-small btn-secondary" id="sleepModeBtn" onclick="toggleSleepMode()" style="flex: 1; background: linear-gradient(135deg, #0a0520, #1a0a3e); border: 1px solid #6b3fa066;" disabled>
+                        🌙 Sleep Mode
+                    </button>
+                    <button class="btn btn-small btn-secondary" id="exportSleepBtn" onclick="exportSleepSession()" style="flex: 1; display: none;">
+                        📊 Sleep Export
+                    </button>
+                </div>
+            </div>
+
+            <!-- Athena fNIRS + Heart Rate Panel (visible only when Athena connected) -->
+            <div class="sidebar-section" id="athenaDataPanel" style="display: none;">
+                <h3>🩸 Hemodynamic Response</h3>
+                <div id="fnirsDisplay" style="background: rgba(0,0,0,0.3); padding: 8px; border-radius: 6px; font-size: 0.75rem; margin-bottom: 8px;">
+                    <div style="display: grid; grid-template-columns: auto 1fr auto; gap: 2px 8px; align-items: center;">
+                        <span>LI:</span> <span id="fnirsLI">HbO — HbR —</span> <span id="fnirsLISqi" style="font-size: 0.9rem;">●</span>
+                        <span>RI:</span> <span id="fnirsRI">HbO — HbR —</span> <span id="fnirsRISqi" style="font-size: 0.9rem;">●</span>
+                        <span>LO:</span> <span id="fnirsLO">HbO — HbR —</span> <span id="fnirsLOSqi" style="font-size: 0.9rem;">●</span>
+                        <span>RO:</span> <span id="fnirsRO">HbO — HbR —</span> <span id="fnirsROSqi" style="font-size: 0.9rem;">●</span>
+                    </div>
+                </div>
+                <div id="heartRateDisplay" style="background: rgba(0,0,0,0.3); padding: 8px; border-radius: 6px; font-size: 0.85rem; display: flex; align-items: center; gap: 8px;">
+                    <span style="font-size: 1.1rem;">❤️</span>
+                    <span id="heartRateValue" style="font-weight: 700; color: #ff6b9d;">— BPM</span>
+                    <span id="heartRateSqi" style="font-size: 0.9rem;">●</span>
                 </div>
             </div>
 
@@ -1458,7 +1537,7 @@
                             <li>🎵 <strong>Aetheria Frequencies</strong> - 27 healing frequencies (174-6336Hz)</li>
                             <li>💎 <strong>Crystal & Chakra</strong> - Healing recommendations & balancing</li>
                             <li>🌙 <strong>Dream Interpretation</strong> - Jungian archetypes & symbols</li>
-                            <li>🧬 <strong>EEG Integration</strong> - Live brainwave coherence (Muse 2)</li>
+                            <li>🧬 <strong>EEG Integration</strong> - Live brainwave coherence (Muse 2 / Muse S Athena)</li>
                             <li>🎤 <strong>Voice</strong> - Speak your questions, hear responses</li>
                             <li>🛠️ <strong>Custom Tools</strong> - Extensible JavaScript sandbox</li>
                             <li>📁 <strong>Knowledge Base</strong> - Upload documents for context</li>
@@ -1507,8 +1586,8 @@
     
     <div class="visualization-panel" id="visualizationPanel">
         <div class="viz-panel-header">
-            <h3 style="color: #ff6b9d; margin: 0;">🧠 Live Brainwave Visualization</h3>
-            <button class="btn btn-small btn-secondary" onclick="toggleVisualizationPanel()">✕</button>
+            <h3 style="color: #00b4d8; margin: 0; font-size: 0.95rem; font-weight: 600; letter-spacing: 0.5px;">NEURO<span style="color: #7B50D4;">SCOPE</span> <span style="font-weight: 300; color: #556;">LIVE</span></h3>
+            <button style="background: none; border: 1px solid rgba(0,180,216,0.3); color: #00b4d8; border-radius: 50%; width: 28px; height: 28px; cursor: pointer; font-size: 0.8rem; display: flex; align-items: center; justify-content: center;" onclick="toggleVisualizationPanel()">✕</button>
         </div>
         
         <div class="viz-panel-content">
@@ -1530,31 +1609,16 @@
             <!-- Muse 2 Electrodes Waveforms -->
             <div class="viz-section">
                 <div class="viz-section-header" onclick="toggleVizSection('electrodes')">
-                    <span>📊 Muse 2 Electrodes (Raw EEG)</span>
+                    <span id="vizElectrodeLabel">📊 Electrodes (Raw EEG)</span>
                     <span id="electrodesToggle">−</span>
                 </div>
                 <div class="viz-section-content" id="electrodesContent">
-                    <canvas class="waveform-canvas" id="electrodesCanvas" width="350" height="150"></canvas>
-                    <div class="electrode-legend">
-                        <div class="legend-item">
-                            <div class="legend-color" style="background: #ff0055;"></div>
-                            <span>TP9 (Left Ear)</span>
-                        </div>
-                        <div class="legend-item">
-                            <div class="legend-color" style="background: #00ff88;"></div>
-                            <span>AF7 (Left Forehead)</span>
-                        </div>
-                        <div class="legend-item">
-                            <div class="legend-color" style="background: #0088ff;"></div>
-                            <span>AF8 (Right Forehead)</span>
-                        </div>
-                        <div class="legend-item">
-                            <div class="legend-color" style="background: #ff6b00;"></div>
-                            <span>TP10 (Right Ear)</span>
-                        </div>
+                    <canvas class="waveform-canvas" id="electrodesCanvas" width="350" height="200" style="height: 180px;"></canvas>
+                    <div id="electrodeLegend" class="electrode-legend">
+                        <!-- Populated dynamically by updateElectrodeLegend() -->
                     </div>
-                    <div style="margin-top: 8px; font-size: 0.75rem; color: #888;">
-                        Scale: ±500μV | Time: 5s window
+                    <div style="margin-top: 8px; font-size: 0.7rem; color: #666;">
+                        Scale: Auto | Time: 5s window | Smooth interpolation
                     </div>
                 </div>
             </div>
@@ -1569,28 +1633,64 @@
                     <canvas class="waveform-canvas" id="brainwavesCanvas" width="350" height="150"></canvas>
                     <div class="brainwave-legend">
                         <div class="legend-item">
-                            <div class="legend-color" style="background: #4a1a4a;"></div>
+                            <div class="legend-color" style="background: #8B5CF6;"></div>
                             <span>Delta (0.5-4Hz)</span>
                         </div>
                         <div class="legend-item">
-                            <div class="legend-color" style="background: #1a4a9c;"></div>
+                            <div class="legend-color" style="background: #3B82F6;"></div>
                             <span>Theta (4-8Hz)</span>
                         </div>
                         <div class="legend-item">
-                            <div class="legend-color" style="background: #1a9c4a;"></div>
+                            <div class="legend-color" style="background: #10B981;"></div>
                             <span>Alpha (8-13Hz)</span>
                         </div>
                         <div class="legend-item">
-                            <div class="legend-color" style="background: #9c4a1a;"></div>
+                            <div class="legend-color" style="background: #F59E0B;"></div>
                             <span>Beta (13-30Hz)</span>
                         </div>
                         <div class="legend-item">
-                            <div class="legend-color" style="background: #9c1a9c;"></div>
+                            <div class="legend-color" style="background: #EC4899;"></div>
                             <span>Gamma (30-50Hz)</span>
                         </div>
                     </div>
-                    <div style="margin-top: 8px; font-size: 0.75rem; color: #888;">
+                    <div style="margin-top: 8px; font-size: 0.7rem; color: #556;">
                         Scale: 0-100% | Power Spectral Density
+                    </div>
+                </div>
+            </div>
+
+            <!-- Athena fNIRS + PPG (visible only with Athena) -->
+            <div class="viz-section" id="vizAthenaSection" style="display: none;">
+                <div class="viz-section-header" onclick="toggleVizSection('athenaViz')">
+                    <span>🌊 Athena — fNIRS + Heart Rate</span>
+                    <span id="athenaVizToggle">−</span>
+                </div>
+                <div class="viz-section-content" id="athenaVizContent">
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 0.8rem;">
+                        <div style="background: rgba(0,0,0,0.3); padding: 8px; border-radius: 4px;">
+                            <strong style="color: #ff6b9d;">LI (Left Inner)</strong><br>
+                            <span id="vizFnirsLI" style="color: #ccc;">HbO — / HbR —</span>
+                        </div>
+                        <div style="background: rgba(0,0,0,0.3); padding: 8px; border-radius: 4px;">
+                            <strong style="color: #ff6b9d;">RI (Right Inner)</strong><br>
+                            <span id="vizFnirsRI" style="color: #ccc;">HbO — / HbR —</span>
+                        </div>
+                        <div style="background: rgba(0,0,0,0.3); padding: 8px; border-radius: 4px;">
+                            <strong style="color: #ff6b9d;">LO (Left Outer)</strong><br>
+                            <span id="vizFnirsLO" style="color: #ccc;">HbO — / HbR —</span>
+                        </div>
+                        <div style="background: rgba(0,0,0,0.3); padding: 8px; border-radius: 4px;">
+                            <strong style="color: #ff6b9d;">RO (Right Outer)</strong><br>
+                            <span id="vizFnirsRO" style="color: #ccc;">HbO — / HbR —</span>
+                        </div>
+                    </div>
+                    <div style="background: rgba(0,0,0,0.3); padding: 10px; border-radius: 4px; margin-top: 8px; text-align: center;">
+                        <span style="font-size: 1.3em;">❤️</span>
+                        <span id="vizHeartRate" style="font-size: 1.4em; font-weight: 700; color: #ff6b9d; margin-left: 6px;">— BPM</span>
+                        <span id="vizPpgSqi" style="font-size: 0.8em; color: #888; margin-left: 8px;">SQI: —</span>
+                    </div>
+                    <div style="margin-top: 6px; font-size: 0.7rem; color: #666;">
+                        ℹ️ fNIRS values in μM (micromolar). Positive HbO + negative HbR = active neural engagement.
                     </div>
                 </div>
             </div>
@@ -1638,19 +1738,45 @@
                             ⏺️ Record
                         </button>
                     </div>
-                    <div style="font-size: 0.75rem; color: #888;">
+                    <div style="font-size: 0.75rem; color: #8899aa;">
                         <label style="display: flex; align-items: center; gap: 5px; margin-bottom: 5px;">
-                            <input type="checkbox" id="vizAutoScale" checked onchange="updateVizSettings()">
-                            Auto-scale waveforms
+                            Time Window:
+                            <select id="vizTimeScale" onchange="updateTimeScale()" style="flex:1; padding: 3px 4px; font-size: 0.75rem; background: #0a0a1a; color: #8899aa; border: 1px solid rgba(0,180,216,0.2); border-radius: 4px;">
+                                <option value="1000">1s</option>
+                                <option value="5000" selected>5s</option>
+                                <option value="10000">10s</option>
+                                <option value="30000">30s</option>
+                            </select>
+                        </label>
+                        <label style="display: flex; align-items: center; gap: 5px; margin-bottom: 5px;">
+                            Notch Filter:
+                            <select id="dspNotchSelect" onchange="updateDSPSettings()" style="flex:1; padding: 3px 4px; font-size: 0.75rem; background: #0a0a1a; color: #8899aa; border: 1px solid rgba(0,180,216,0.2); border-radius: 4px;">
+                                <option value="60">60 Hz</option>
+                                <option value="50">50 Hz</option>
+                                <option value="off">Off</option>
+                            </select>
+                        </label>
+                        <label style="display: flex; align-items: center; gap: 5px; margin-bottom: 5px;">
+                            <input type="checkbox" id="dspBandpass" checked onchange="updateDSPSettings()">
+                            Bandpass (0.5 – 45 Hz)
+                        </label>
+                        <label style="display: flex; align-items: center; gap: 5px; margin-bottom: 5px;">
+                            <input type="checkbox" id="dspArtifacts" checked onchange="updateDSPSettings()">
+                            Blink / Artifact Detection
                         </label>
                         <label style="display: flex; align-items: center; gap: 5px; margin-bottom: 5px;">
                             <input type="checkbox" id="vizShowGrid" checked onchange="updateVizSettings()">
-                            Show grid lines
+                            Grid lines
                         </label>
                         <label style="display: flex; align-items: center; gap: 5px;">
                             <input type="checkbox" id="vizSmoothLines" checked onchange="updateVizSettings()">
-                            Smooth line rendering
+                            Smooth rendering
                         </label>
+                    </div>
+                    <div style="margin-top: 8px;">
+                        <button class="btn btn-small btn-secondary" id="vizFreezeBtn" onclick="toggleVizFreeze()" style="width: 100%; border: 1px solid rgba(0,180,216,0.2);">
+                            ⏸ Freeze
+                        </button>
                     </div>
                 </div>
             </div>
@@ -2092,7 +2218,7 @@ return result;</textarea>
     <div class="modal" id="eegSettingsModal">
         <div class="modal-content">
             <div class="modal-header">
-                <h2>🧠 EEG Settings - Muse 2</h2>
+                <h2>🧠 EEG Settings</h2>
                 <button class="close-btn" onclick="closeEEGSettings()">✕</button>
             </div>
 
@@ -2423,16 +2549,14 @@ return result;</textarea>
                     sampleRate: 256 // Muse 2 samples at 256 Hz per channel
                 };
                 
-                // Off-head detection system
+                // Headset status (no automatic off-head detection — Muse 2 raw BLE
+                // doesn't provide reliable fit indicators. Use manual toggle instead.)
                 this.headsetStatus = {
                     isOnHead: true,
-                    lastOnHeadTime: Date.now(),
-                    offHeadThreshold: 3000, // 3 seconds of flat signal = off head
-                    flatSignalCount: 0,
-                    lastSignalCheck: Date.now(),
-                    electrodeContactQuality: { TP9: 1, AF7: 1, AF8: 1, TP10: 1 }, // 0-1 scale
+                    electrodeContactQuality: { TP9: 1, AF7: 1, AF8: 1, TP10: 1 },
                     averageContactQuality: 1
                 };
+                this._wasOnHead = true;
                 
                 // Muse 2 Bluetooth characteristic UUIDs
                 this.MUSE_CHARACTERISTICS = {
@@ -2499,6 +2623,12 @@ return result;</textarea>
                             await this.reconnectViaBluetooth();
                         } else {
                             await this.connectViaBluetooth();
+                        }
+                    } else if (connectionChoice === 'athena') {
+                        if (skipDialog && this._athenaDevice && this._athenaDevice._device) {
+                            await this.reconnectViaAthena();
+                        } else {
+                            await this.connectViaAthena();
                         }
                     } else if (connectionChoice === 'service') {
                         await this.connectToEEGService();
@@ -2605,17 +2735,28 @@ return result;</textarea>
                                         <small>Connect directly to your Muse headband via Web Bluetooth (REAL DATA)</small>
                                     </button>
                                     
+                                    <!-- Python EEG Service option hidden for now
                                     <button class="btn btn-secondary connection-option" data-choice="service" style="width: 100%; margin: 10px 0; padding: 15px;">
                                         <strong>🔗 Connect via EEG Service</strong><br>
                                         <small>Connect through Python EEG service (advanced)</small>
                                     </button>
+                                    -->
                                     
                                     <button class="btn btn-tertiary connection-option" data-choice="simulation" style="width: 100%; margin: 10px 0; padding: 15px;">
                                         <strong>🎭 Use Simulation Mode</strong><br>
                                         <small>Demo mode with simulated brainwave data</small>
                                     </button>
+
+                                    <button class="btn btn-primary connection-option" data-choice="athena" style="width: 100%; margin: 10px 0; padding: 15px; background: linear-gradient(135deg, #00b4d8, #7B50D4); border: 1px solid #00b4d8;">
+                                        <strong>🌊 Connect Muse S Athena (NEW)</strong><br>
+                                        <small>Full sensor suite: EEG + fNIRS + Heart Rate — Direct browser connection via Web Bluetooth</small>
+                                    </button>
                                 </div>
                                 
+                                <div style="background: rgba(0,180,216,0.15); padding: 10px 12px; border-radius: 6px; margin-top: 10px; font-size: 0.8em; border-left: 3px solid #00b4d8;">
+                                    <strong>ℹ️ About fNIRS:</strong> Functional near-infrared spectroscopy measures blood oxygenation in the frontal cortex, providing a hemodynamic window into neural activity. Sophia uses this data as an additional dimension of biofield awareness during readings.
+                                </div>
+
                                 <div class="connection-help" style="background: rgba(255,255,255,0.1); padding: 15px; border-radius: 8px; margin-top: 20px; font-size: 0.9em;">
                                     <strong>💡 Tips:</strong><br>
                                     • Make sure your Muse device is turned on and in pairing mode<br>
@@ -2660,6 +2801,178 @@ return result;</textarea>
                 });
             }
             
+            async connectViaAthena() {
+                console.log('🌊 Connecting via Muse S Athena...');
+
+                if (typeof AthenaDevice === 'undefined') {
+                    throw new Error('AthenaDevice library not loaded. Make sure athena-core.js is included.');
+                }
+
+                const self = this;
+
+                // Store latest Athena fNIRS/PPG data for later checkpoints
+                this.athenaFNIRS = null;
+                this.athenaPPG = null;
+
+                this._athenaDevice = new AthenaDevice({
+                    preset: 'p1041',
+                    dcOffset: false,
+
+                    onBandPowers: (bp) => {
+                        if (!bp) return;
+                        // Athena returns 0-1 ratios; Sophia expects 0-100 percentages
+                        const bandpowers = {
+                            delta: bp.delta * 100,
+                            theta: bp.theta * 100,
+                            alpha: bp.alpha * 100,
+                            beta:  bp.beta  * 100,
+                            gamma: bp.gamma * 100
+                        };
+
+                        const metrics = self.calculateMetricsFromRealData(bandpowers);
+
+                        const processedData = {
+                            bandpowers: bandpowers,
+                            metrics: metrics,
+                            raw_eeg: self._athenaLatestRaw || [0, 0, 0, 0, 0, 0, 0, 0],
+                            timestamp: Date.now(),
+                            source: 'athena_bluetooth',
+                            connected_electrodes: ['TP9', 'AF7', 'AF8', 'TP10', 'AUX1', 'AUX2', 'AUX3', 'AUX4'],
+                            dataQuality: 'GOOD',
+                            realDataConfidence: 0.9,
+                            fnirs: self.athenaFNIRS || null,
+                            ppg: self.athenaPPG || null
+                        };
+
+                        self._athenaLastData = processedData;
+                        self.dispatchEvent(new CustomEvent('data', { detail: processedData }));
+                    },
+
+                    onEEG: (data) => {
+                        // data.samples is an array of Float64Arrays (one per sample-per-packet)
+                        // Store latest 4 electrode values for raw display
+                        if (data && data.samples && data.samples.length > 0) {
+                            const latest = data.samples[data.samples.length - 1];
+                            self._athenaLatestRaw = Array.from(latest);
+                        }
+                    },
+
+                    onFNIRS: (data) => {
+                        self.athenaFNIRS = data;
+                    },
+
+                    onPPG: (data) => {
+                        self.athenaPPG = data;
+                    },
+
+                    onStatus: (status) => {
+                        console.log('🌊 Athena status:', status);
+                        if (status === 'disconnected' && self.connected) {
+                            self.connected = false;
+                            self.streaming = false;
+                            self.connectionLost = true;
+
+                            self.dispatchEvent(new CustomEvent('disconnected', {
+                                detail: { unexpected: true }
+                            }));
+
+                            // Trigger auto-reconnect if enabled
+                            if (self.autoReconnectEnabled &&
+                                self.reconnectAttempts < self.maxReconnectAttempts) {
+                                self.scheduleReconnect();
+                            }
+                        }
+                    },
+
+                    onBattery: (pct) => {
+                        console.log('🔋 Athena battery:', pct + '%');
+                        updateBatteryDisplay(pct);
+                    },
+
+                    onLog: (type, msg) => {
+                        if (type === 'error') console.error('🌊 Athena:', msg);
+                    }
+                });
+
+                // AthenaDevice.connect() triggers the Web Bluetooth picker
+                await this._athenaDevice.connect();
+
+                // Mark connected
+                this.connected = true;
+                this.simulationMode = false;
+                this.lastConnectionMethod = 'athena';
+                this.deviceInfo = {
+                    type: 'athena',
+                    name: this._athenaDevice.deviceName || 'Muse S Athena',
+                    firmware: this._athenaDevice.firmware
+                };
+
+                this.dispatchEvent(new CustomEvent('connected', {
+                    detail: { name: this._athenaDevice.deviceName || 'Muse S Athena' }
+                }));
+
+                // Start streaming
+                await this._athenaDevice.startStream();
+                this.streaming = true;
+                this._athenaLatestRaw = [0, 0, 0, 0, 0, 0, 0, 0];
+
+                console.log('🌊 Athena connected and streaming');
+            }
+
+            async reconnectViaAthena() {
+                console.log('🌊 Reconnecting to Athena via saved GATT reference...');
+
+                if (!this._athenaDevice || !this._athenaDevice._device) {
+                    throw new Error('No saved Athena device for reconnection');
+                }
+
+                const device = this._athenaDevice._device;
+                if (!device.gatt) {
+                    throw new Error('Athena device GATT not available');
+                }
+
+                // Reconnect GATT (no user gesture required)
+                this._athenaDevice._server = await device.gatt.connect();
+                console.log('🌊 Athena GATT reconnected');
+
+                // Re-subscribe to characteristics
+                const svc = await this._athenaDevice._server.getPrimaryService(0xfe8d);
+                const [ctl, eeg, other] = await Promise.all([
+                    svc.getCharacteristic('273e0001-4c4d-454d-96be-f03bac821358'),
+                    svc.getCharacteristic('273e0013-4c4d-454d-96be-f03bac821358'),
+                    svc.getCharacteristic('273e0014-4c4d-454d-96be-f03bac821358'),
+                ]);
+                this._athenaDevice._controlChar = ctl;
+                this._athenaDevice._eegChar = eeg;
+                this._athenaDevice._otherChar = other;
+
+                ctl.addEventListener('characteristicvaluechanged', this._athenaDevice._handleBLEControl);
+                await ctl.startNotifications();
+                eeg.addEventListener('characteristicvaluechanged', this._athenaDevice._handleBLEData);
+                await eeg.startNotifications();
+                other.addEventListener('characteristicvaluechanged', this._athenaDevice._handleBLEData);
+                await other.startNotifications();
+
+                // Mark connected
+                this.connected = true;
+                this.streaming = true;
+                this.simulationMode = false;
+                this.deviceInfo = {
+                    type: 'athena',
+                    name: device.name || 'Muse S Athena',
+                    firmware: this._athenaDevice.firmware
+                };
+
+                this.dispatchEvent(new CustomEvent('connected', {
+                    detail: { name: device.name || 'Muse S Athena' }
+                }));
+
+                // Restart streaming
+                await this._athenaDevice.startStream();
+
+                console.log('🌊 Athena reconnected and streaming');
+            }
+
             async connectViaBluetooth() {
                 console.log('🔵 Attempting Bluetooth connection to Muse...');
                 
@@ -2675,7 +2988,8 @@ return result;</textarea>
                             { namePrefix: 'MUSE' }
                         ],
                         optionalServices: [
-                            this.MUSE_CHARACTERISTICS.SERVICE
+                            this.MUSE_CHARACTERISTICS.SERVICE,
+                            'battery_service'
                         ]
                     });
                     
@@ -2716,7 +3030,10 @@ return result;</textarea>
                     
                     // Start REAL EEG data streaming
                     await this.startRealBluetoothEEGStreaming();
-                    
+
+                    // Read battery level (Muse 2 exposes standard BLE Battery Service)
+                    this._startMuseBatteryPolling(server);
+
                     console.log('✅ Real Bluetooth EEG connection established');
                     
                 } catch (error) {
@@ -3006,35 +3323,9 @@ return result;</textarea>
                 }
             }
             
-            // Update electrode contact quality for off-head detection
+            // Update electrode contact quality (informational only — no auto head detection)
             updateElectrodeContactQuality(electrode, samples, variance) {
-                if (!samples || samples.length === 0) {
-                    this.headsetStatus.electrodeContactQuality[electrode] = 0;
-                    return;
-                }
-                
-                let qualityScore = 0;
-                const maxScore = 4;
-                
-                // Check 1: Reasonable variance (not flat line)
-                if (variance > 10) qualityScore++;
-                
-                // Check 2: Signal amplitude within reasonable range
-                const maxAmplitude = Math.max(...samples.map(Math.abs));
-                const minAmplitude = Math.min(...samples.map(Math.abs));
-                if (maxAmplitude > 1 && maxAmplitude < 1000 && minAmplitude > 0.1) qualityScore++;
-                
-                // Check 3: Sample-to-sample variations (not digitally flat)
-                const hasVariation = samples.some((sample, i) => 
-                    i > 0 && Math.abs(sample - samples[i-1]) > 1);
-                if (hasVariation) qualityScore++;
-                
-                // Check 4: Not all samples identical (digital artifact check)
-                const uniqueValues = new Set(samples.map(s => Math.round(s * 10))).size;
-                if (uniqueValues > samples.length * 0.1) qualityScore++; // At least 10% unique values
-                
-                // Update quality (0-1 scale)
-                this.headsetStatus.electrodeContactQuality[electrode] = qualityScore / maxScore;
+                this.headsetStatus.electrodeContactQuality[electrode] = (samples && variance > 0.1) ? 1.0 : 0.0;
             }
             
             // Handle gyroscope data
@@ -3084,37 +3375,26 @@ return result;</textarea>
                 // Check if we have enough data from all connected electrodes
                 const electrodes = ['TP9', 'AF7', 'AF8', 'TP10'];
                 const connectedElectrodes = [];
-                const minSamples = 128; // Need at least 0.5 seconds of data at 256 Hz
-                
+                const minSamples = 128;
+
                 for (const electrode of electrodes) {
                     if (this.realEEGData[electrode] && this.realEEGData[electrode].length >= minSamples) {
                         connectedElectrodes.push(electrode);
                     }
                 }
-                
-                // Check if headset is on head
-                const isOnHead = this.checkHeadsetOnHead();
-                
-                if (connectedElectrodes.length === 0 || !isOnHead) {
-                    if (Math.random() < 0.05) {
-                        console.log(`⏳ Waiting for sufficient EEG data or headset off head...`);
-                    }
-                    return;
-                }
-                
+
+                if (connectedElectrodes.length === 0) return;
+
                 try {
                     // Calculate bandpowers for each connected electrode
                     const allBandpowers = {};
-                    
                     for (const electrode of connectedElectrodes) {
-                        const samples = this.realEEGData[electrode].slice(-256); // Last 1 second
+                        const samples = this.realEEGData[electrode].slice(-256);
                         const powers = this.calculateBandpowers(samples);
                         allBandpowers[electrode] = powers;
                     }
-                    
-                    // Average bandpowers across all electrodes
                     const avgBandpowers = this.averageBandpowers(allBandpowers);
-                    
+
                     // Calculate metrics from real data
                     const metrics = this.calculateMetricsFromRealData(avgBandpowers);
                     
@@ -3136,7 +3416,12 @@ return result;</textarea>
                         source: 'muse2_bluetooth_real',
                         connected_electrodes: connectedElectrodes,
                         dataQuality: this.assessDataQuality(connectedElectrodes),
-                        realDataConfidence: this.calculateRealDataConfidence(connectedElectrodes)
+                        realDataConfidence: this.calculateRealDataConfidence(connectedElectrodes),
+                        headsetStatus: {
+                            isOnHead: true,
+                            contactQuality: this.headsetStatus.averageContactQuality,
+                            electrodes: { ...this.headsetStatus.electrodeContactQuality }
+                        }
                     };
                     
                     // Emit real data event
@@ -3150,14 +3435,39 @@ return result;</textarea>
             }
             
             // Check if headset is still on head based on signal characteristics
+            // Battery polling for Muse 2 via standard BLE Battery Service
+            async _startMuseBatteryPolling(server) {
+                try {
+                    const battSvc = await server.getPrimaryService('battery_service');
+                    const battChar = await battSvc.getCharacteristic('battery_level');
+                    this._museBatteryChar = battChar;
+
+                    // Read once immediately
+                    const val = await battChar.readValue();
+                    const pct = val.getUint8(0);
+                    console.log('🔋 Muse 2 battery:', pct + '%');
+                    updateBatteryDisplay(pct);
+
+                    // Poll every 60 seconds
+                    this._batteryPollTimer = setInterval(async () => {
+                        try {
+                            if (!this.connected || !this._museBatteryChar) return;
+                            const v = await this._museBatteryChar.readValue();
+                            updateBatteryDisplay(v.getUint8(0));
+                        } catch (e) {
+                            console.warn('Battery poll failed:', e.message);
+                        }
+                    }, 60000);
+                } catch (e) {
+                    console.warn('🔋 Battery service not available:', e.message);
+                }
+            }
+
             checkHeadsetOnHead() {
-                const qualities = Object.values(this.headsetStatus.electrodeContactQuality);
-                this.headsetStatus.averageContactQuality = qualities.reduce((sum, q) => sum + q, 0) / qualities.length;
-                
-                // Simple check - if average contact quality is too low, assume off head
-                this.headsetStatus.isOnHead = this.headsetStatus.averageContactQuality > 0.3;
-                
-                return this.headsetStatus.isOnHead;
+                // Muse 2 raw BLE doesn't provide reliable off-head indicators
+                // (environmental noise mimics EEG spectral shape). Always returns true.
+                // Use the manual "Wearing" toggle in the sidebar for user-controlled status.
+                return true;
             }
             
             // Average bandpowers across electrodes
@@ -3621,7 +3931,14 @@ return result;</textarea>
                 
                 this.connected = false;
                 this.streaming = false;
-                
+
+                // Clear battery polling
+                if (this._batteryPollTimer) {
+                    clearInterval(this._batteryPollTimer);
+                    this._batteryPollTimer = null;
+                    this._museBatteryChar = null;
+                }
+
                 // Clear all intervals
                 if (this.simulationInterval) {
                     clearInterval(this.simulationInterval);
@@ -3633,6 +3950,28 @@ return result;</textarea>
                     this.dataProcessingInterval = null;
                 }
                 
+                // Disconnect Athena if connected
+                if (this._athenaDevice) {
+                    if (manual) {
+                        // Full cleanup on manual disconnect
+                        try {
+                            await this._athenaDevice.disconnect();
+                            console.log('🌊 Athena device disconnected');
+                        } catch (error) {
+                            console.warn('⚠️ Error disconnecting Athena:', error);
+                        }
+                        this._athenaDevice = null;
+                        this.athenaFNIRS = null;
+                        this.athenaPPG = null;
+                        this._athenaLatestRaw = null;
+                    } else {
+                        // Keep device reference for auto-reconnect
+                        console.log('🌊 Athena disconnected (keeping device ref for reconnect)');
+                        this.athenaFNIRS = null;
+                        this.athenaPPG = null;
+                    }
+                }
+
                 // Disconnect Bluetooth if connected
                 if (this.deviceInfo && this.deviceInfo.type === 'bluetooth' && this.deviceInfo.server) {
                     try {
@@ -3777,13 +4116,18 @@ return result;</textarea>
                 if (this.simulationMode) {
                     return this.simulationData;
                 }
-                
-                // Return processed real data if available
+
+                // Athena path: data flows via events into _athenaLastData
+                if (this.connected && this.streaming && this._athenaDevice && this._athenaLastData) {
+                    return this._athenaLastData;
+                }
+
+                // Muse 2 Bluetooth path: process from raw electrode buffers
                 if (this.connected && this.streaming) {
                     const electrodes = ['TP9', 'AF7', 'AF8', 'TP10'];
-                    const connectedElectrodes = electrodes.filter(e => 
+                    const connectedElectrodes = electrodes.filter(e =>
                         this.realEEGData[e] && this.realEEGData[e].length > 0);
-                    
+
                     if (connectedElectrodes.length > 0) {
                         return {
                             bandpowers: this.calculateBandpowers(this.realEEGData[connectedElectrodes[0]].slice(-128)),
@@ -3796,7 +4140,7 @@ return result;</textarea>
                         };
                     }
                 }
-                
+
                 return null;
             }
             
@@ -3862,7 +4206,8 @@ return result;</textarea>
         // Visualization State
         let visualizationOpen = false;
         let electrodesData = {
-            TP9: [], AF7: [], AF8: [], TP10: []
+            TP9: [], AF7: [], AF8: [], TP10: [],
+            AUX1: [], AUX2: [], AUX3: [], AUX4: []  // Athena 8ch extra electrodes
         };
         let brainwaveHistory = {
             delta: [], theta: [], alpha: [], beta: [], gamma: []
@@ -3876,7 +4221,39 @@ return result;</textarea>
             recording: false
         };
         let vizCanvasContexts = {};
+        // Stable per-electrode scale: tracks a smoothed center & amplitude
+        let electrodeScale = {};
         let vizAnimationFrame = null;
+
+        // ── DSP Pipeline State ──
+        let dspFilterState = {};  // per-electrode IIR filter state
+        let dspSettings = {
+            notchEnabled: true, notchFreq: 60,
+            bandpassEnabled: true, bpLow: 0.5, bpHigh: 45,
+            artifactDetection: true
+        };
+        let dspEventMarkers = [];  // { timestamp, type: 'blink'|'clench', channel }
+        let dspBlinkDebounce = {}; // per-electrode last blink time
+        let dspClenchDebounce = {};
+        let dspClenchBuf = {};     // per-electrode ring buffer for zero-crossing detection
+
+        // ── Sleep Mode State ──
+        let sleepMode = {
+            active: false,
+            sessionId: null,
+            startTime: null,
+            epochBandpowerAcc: [],
+            epochFnirsAcc: [],
+            epochPpgAcc: [],
+            epochIndex: 0,
+            hypnogram: [],
+            currentStage: 'Wake',
+            epochTimer: null,
+            statusTimer: null,
+            statusElement: null,
+            dimOverlay: null,
+            wakeUpBtn: null
+        };
 
         // Configuration
         let config = {
@@ -4275,6 +4652,24 @@ return result;</textarea>
                         tags: ['frequency', 'aetheria'],
                         source: 'auto',
                     });
+                }
+
+                // Athena hemodynamic observations — save notable fNIRS shifts during readings
+                if (eegIntegration && eegIntegration.lastConnectionMethod === 'athena' && eegIntegration.athenaFNIRS) {
+                    const fnirs = eegIntegration.athenaFNIRS;
+                    for (const pos of ['LI', 'RI', 'LO', 'RO']) {
+                        const hboCenter = fnirs[pos] ? getFnirsCenter(fnirs[pos].hbo) : 0;
+                        if (fnirs[pos] && Math.abs(hboCenter) > 0.5 && fnirs[pos].sqi > 0.3) {
+                            const posNames = { LI: 'left inner frontal', RI: 'right inner frontal', LO: 'left outer frontal', RO: 'right outer frontal' };
+                            await saveMemory({
+                                type: 'observation',
+                                content: `During this exchange, ${posNames[pos]} cortex showed strong HbO elevation (${hboCenter.toFixed(2)}μM), suggesting active neural engagement`,
+                                tags: ['fnirs', 'hemodynamic', 'athena'],
+                                source: 'auto',
+                            });
+                            break; // one hemodynamic observation per message
+                        }
+                    }
                 }
 
                 // Session summary — save every 5 exchanges
@@ -7666,6 +8061,29 @@ Bands: Delta ${Math.round(bp.delta)}% | Theta ${Math.round(bp.theta)}% | Alpha $
 Coherence: ${p.coherence}% | Focus: ${Math.round(m.focus * 100)}% | Meditation: ${Math.round(m.meditation * 100)}%
 I Ching: #${p.hex} ${p.hexName}
 Use this data to personalize your response. Comment on their current state when relevant.`;
+
+                // Athena fNIRS + Heart Rate context
+                const isAthena = eegIntegration && eegIntegration.lastConnectionMethod === 'athena';
+                if (isAthena) {
+                    const fnirs = eegIntegration.athenaFNIRS;
+                    const ppg = eegIntegration.athenaPPG;
+                    LOCAL_SYSTEM_PROMPT += `\n\nWhen the user is wearing a Muse S Athena, you have access to real-time hemodynamic data (fNIRS) from four optode positions on their frontal cortex (LI, RI, LO, RO). Each position reports HbO (oxygenated hemoglobin) and HbR (deoxygenated hemoglobin) in micromolar units, along with a signal quality indicator (SQI). fNIRS hemodynamic response typically follows neural activity by 2-5 seconds and indicates metabolic demand. Elevated HbO with depressed HbR suggests active neural engagement. If you notice strong shifts in the user's hemodynamic data during a reading, you may reference this naturally ("I notice your left frontal cortex lit up when that card appeared") but you do NOT diagnose or make medical claims. Treat fNIRS as another dimension of biofield awareness, not clinical measurement.`;
+                    if (fnirs) {
+                        let fnirsCtx = '\n[LIVE HEMODYNAMIC DATA]';
+                        for (const pos of ['LI', 'RI', 'LO', 'RO']) {
+                            if (fnirs[pos]) {
+                                const d = fnirs[pos];
+                                const hbo = getFnirsCenter(d.hbo);
+                                const hbr = getFnirsCenter(d.hbr);
+                                fnirsCtx += `\n${pos}: HbO ${hbo >= 0 ? '+' : ''}${hbo.toFixed(2)}μM HbR ${hbr >= 0 ? '+' : ''}${hbr.toFixed(2)}μM (SQI: ${d.sqi.toFixed(2)})`;
+                            }
+                        }
+                        LOCAL_SYSTEM_PROMPT += fnirsCtx;
+                    }
+                    if (ppg && ppg.heartRate > 0) {
+                        LOCAL_SYSTEM_PROMPT += `\n[HEART RATE] ${ppg.heartRate} BPM (SQI: ${(ppg.sqi || 0).toFixed(2)})`;
+                    }
+                }
             }
 
             const trimmed = [{ role: 'system', content: LOCAL_SYSTEM_PROMPT }];
@@ -8987,18 +9405,23 @@ Use this data to personalize your response. Comment on their current state when 
                 // Set up event listeners
                 eegIntegration.addEventListener('connected', (event) => {
                     eegConnected = true;
-                    updateEEGStatus('Connected: ' + (event.detail?.name || 'Unknown Device'), 'success');
+                    const devName = event.detail?.name || 'Unknown Device';
+                    const isAthena = eegIntegration.lastConnectionMethod === 'athena';
+                    updateEEGStatus('Connected: ' + devName, 'success');
                     updateEEGHeaderIndicator(true, false);
-                    
+
                     // Reset button state and enable disconnect
                     const connectBtn = document.getElementById('eegConnectBtn');
                     connectBtn.textContent = '🔌 Disconnect';
                     connectBtn.disabled = false;
                     
                     document.getElementById('eegMetrics').style.display = 'block';
-                    
+                    const sleepBtn = document.getElementById('sleepModeBtn');
+                    if (sleepBtn) sleepBtn.disabled = false;
+
                     if (config.eegContextIntegration) {
-                        addMessageToUI('system', '🧠 EEG device connected - brainwave data now available in conversation context');
+                        const athenaMsg = isAthena ? ' (Athena: EEG + fNIRS + Heart Rate)' : '';
+                        addMessageToUI('system', `🧠 EEG device connected${athenaMsg} - brainwave data now available in conversation context`);
                     }
                     
                     // Initialize Adaptive Solfeggio System
@@ -9017,6 +9440,11 @@ Use this data to personalize your response. Comment on their current state when 
                     eegConnected = false;
                     eegStreaming = false;
                     currentEEGData = null;
+
+                    // Hide battery + Athena panel on disconnect
+                    hideBatteryDisplay();
+                    const athPanel = document.getElementById('athenaDataPanel');
+                    if (athPanel) athPanel.style.display = 'none';
                     
                     const wasUnexpected = event.detail?.unexpected || false;
                     const wasManual = event.detail?.manual !== false;
@@ -9032,13 +9460,15 @@ Use this data to personalize your response. Comment on their current state when 
                     
                     // Reset button state
                     const connectBtn = document.getElementById('eegConnectBtn');
-                    connectBtn.textContent = '🔌 Connect Muse 2';
+                    connectBtn.textContent = '🔌 Connect EEG';
                     connectBtn.disabled = false; // Ensure button is always clickable
-                    
+
                     document.getElementById('eegMetrics').style.display = 'none';
+                    const sleepBtnDc = document.getElementById('sleepModeBtn');
+                    if (sleepBtnDc && !sleepMode.active) sleepBtnDc.disabled = true;
                     resetEEGMetrics();
                     updateNeuroMiniDisplay();
-                    
+
                     // Stop Solfeggio system
                     if (solfeggioSettings.adaptationTimer) {
                         clearInterval(solfeggioSettings.adaptationTimer);
@@ -9064,10 +9494,23 @@ Use this data to personalize your response. Comment on their current state when 
                 // Add reconnection failed event handler
                 eegIntegration.addEventListener('reconnectionFailed', (event) => {
                     const { attempts } = event.detail;
+
+                    // During sleep mode: reset and keep trying indefinitely
+                    if (sleepMode.active) {
+                        console.log('🌙 Sleep mode: resetting reconnect counter, will retry in 30s');
+                        eegIntegration.autoReconnectEnabled = true;
+                        eegIntegration.reconnectAttempts = 0;
+                        eegIntegration.reconnectDelay = 30000;
+                        setTimeout(() => {
+                            if (sleepMode.active) eegIntegration.scheduleReconnect();
+                        }, 30000);
+                        return;
+                    }
+
                     updateEEGStatus('Auto-reconnect failed - Manual connection required', 'error');
 
                     const connectBtn = document.getElementById('eegConnectBtn');
-                    connectBtn.textContent = '🔌 Connect Muse 2';
+                    connectBtn.textContent = '🔌 Connect EEG';
                     connectBtn.disabled = false;
 
                     // Re-enable auto-reconnect so future disconnections can still
@@ -9079,7 +9522,6 @@ Use this data to personalize your response. Comment on their current state when 
                     addMessageToUI('system', `❌ EEG auto-reconnection failed after ${attempts} attempts. Please manually reconnect your Muse device.`);
                     showStatus(`❌ EEG auto-reconnect failed after ${attempts} attempts`, 'error');
                 });
-                
                 eegIntegration.addEventListener('data', (event) => {
                     eegStreaming = true;
                     currentEEGData = event.detail;
@@ -9087,7 +9529,15 @@ Use this data to personalize your response. Comment on their current state when 
                     updateEEGQualityDisplay(event.detail);
                     updateEEGHeaderIndicator(true, true);
                     updateNeuroMiniDisplay();
-                    
+                    updateAthenaPanel();
+
+                    // Sleep mode data accumulation
+                    if (sleepMode.active && event.detail.bandpowers) {
+                        sleepMode.epochBandpowerAcc.push(event.detail.bandpowers);
+                        if (event.detail.fnirs) sleepMode.epochFnirsAcc.push(event.detail.fnirs);
+                        if (event.detail.ppg) sleepMode.epochPpgAcc.push(event.detail.ppg);
+                    }
+
                     // Update real-time visualization
                     handleEEGVisualizationData(event.detail);
                     
@@ -9164,7 +9614,7 @@ Use this data to personalize your response. Comment on their current state when 
                 // Reset button state
                 const connectBtn = document.getElementById('eegConnectBtn');
                 connectBtn.disabled = false;
-                connectBtn.textContent = '🔌 Connect Muse 2';
+                connectBtn.textContent = '🔌 Connect EEG';
                 updateEEGStatus('Connection failed', 'error');
                 
                 // Only show error if it's not a user cancellation
@@ -9179,6 +9629,113 @@ Use this data to personalize your response. Comment on their current state when 
         // Helper function to force reconnect
         async function forceReconnectEEG() {
             await connectEEG(true);
+        }
+
+        // ── Athena fNIRS + Heart Rate Panel Updates ──
+
+        // Extract a representative fNIRS value from the center of the buffer.
+        // filtfilt edge effects drive the first and last ~20% of samples toward zero.
+        // Reading the center 60% gives the actual hemodynamic signal.
+        function getFnirsCenter(arr) {
+            if (!arr || arr.length === 0) return 0;
+            const n = arr.length;
+            const start = Math.floor(n * 0.3);
+            const end = Math.floor(n * 0.7);
+            if (end <= start) return arr[Math.floor(n / 2)];
+            let sum = 0;
+            for (let i = start; i < end; i++) sum += arr[i];
+            return sum / (end - start);
+        }
+
+        function updateAthenaPanel() {
+            const panel = document.getElementById('athenaDataPanel');
+            if (!panel) return;
+
+            const isAthena = eegIntegration && eegIntegration.lastConnectionMethod === 'athena' && eegConnected;
+            panel.style.display = isAthena ? 'block' : 'none';
+            if (!isAthena) return;
+
+            // Update fNIRS display
+            // Note: lastHbO/lastHbR from athena-core are always near zero due to
+            // filtfilt edge effects (0.01Hz HPF on 10s buffer). Read the center
+            // of the full hbo/hbr arrays instead for a representative value.
+            const fnirs = eegIntegration.athenaFNIRS;
+            if (fnirs) {
+                for (const pos of ['LI', 'RI', 'LO', 'RO']) {
+                    const el = document.getElementById('fnirs' + pos);
+                    const sqiEl = document.getElementById('fnirs' + pos + 'Sqi');
+                    if (el && fnirs[pos]) {
+                        const d = fnirs[pos];
+                        const hboVal = getFnirsCenter(d.hbo);
+                        const hbrVal = getFnirsCenter(d.hbr);
+                        el.textContent = `HbO ${hboVal >= 0 ? '+' : ''}${hboVal.toFixed(3)} HbR ${hbrVal >= 0 ? '+' : ''}${hbrVal.toFixed(3)}`;
+                        el.style.opacity = '1';
+                    } else if (el) {
+                        el.textContent = 'warming up...';
+                        el.style.opacity = '0.5';
+                    }
+                    if (sqiEl && fnirs[pos]) {
+                        const sqi = fnirs[pos].sqi;
+                        sqiEl.style.color = sqi > 0.5 ? '#00ff88' : sqi > 0.2 ? '#ffaa00' : '#ff0055';
+                    }
+                }
+            } else {
+                for (const pos of ['LI', 'RI', 'LO', 'RO']) {
+                    const el = document.getElementById('fnirs' + pos);
+                    if (el) { el.textContent = 'warming up (~10s)...'; el.style.opacity = '0.5'; }
+                }
+            }
+
+            // Update heart rate display
+            const ppg = eegIntegration.athenaPPG;
+            const hrEl = document.getElementById('heartRateValue');
+            const hrSqi = document.getElementById('heartRateSqi');
+            if (hrEl && ppg) {
+                hrEl.textContent = ppg.heartRate > 0 ? ppg.heartRate + ' BPM' : '— BPM';
+                if (hrSqi) {
+                    const sqi = ppg.sqi || 0;
+                    hrSqi.style.color = sqi > 0.5 ? '#00ff88' : sqi > 0.2 ? '#ffaa00' : '#ff0055';
+                }
+            }
+        }
+
+        // ── Battery Display ──
+        let lastBatteryPct = null;
+
+        function updateBatteryDisplay(pct) {
+            if (pct == null || pct === lastBatteryPct) return;
+            lastBatteryPct = pct;
+            const bar = document.getElementById('eegBatteryBar');
+            const fill = document.getElementById('eegBatteryFill');
+            const pctEl = document.getElementById('eegBatteryPct');
+            const icon = document.getElementById('eegBatteryIcon');
+            if (!bar || !fill || !pctEl) return;
+
+            bar.style.display = 'block';
+            const p = Math.round(Math.max(0, Math.min(100, pct)));
+            fill.style.width = p + '%';
+            pctEl.textContent = p + '%';
+
+            // Color coding
+            if (p > 50) {
+                fill.style.background = '#00ff88';
+                pctEl.style.color = '#00ff88';
+                icon.textContent = '🔋';
+            } else if (p > 20) {
+                fill.style.background = '#ffaa00';
+                pctEl.style.color = '#ffaa00';
+                icon.textContent = '🔋';
+            } else {
+                fill.style.background = '#ff0055';
+                pctEl.style.color = '#ff0055';
+                icon.textContent = '🪫';
+            }
+        }
+
+        function hideBatteryDisplay() {
+            const bar = document.getElementById('eegBatteryBar');
+            if (bar) bar.style.display = 'none';
+            lastBatteryPct = null;
         }
 
         function updateEEGStatus(message, type) {
@@ -10275,7 +10832,7 @@ Use this data to personalize your response. Comment on their current state when 
                 return;
             }
 
-            const currentData = eegIntegration.getCurrentData();
+            const currentData = eegIntegration.getCurrentData() || currentEEGData;
             if (!currentData || !currentData.bandpowers) return;
 
             const currentTime = Date.now();
@@ -10457,7 +11014,7 @@ Use this data to personalize your response. Comment on their current state when 
                 return;
             }
 
-            const currentData = eegIntegration.getCurrentData();
+            const currentData = eegIntegration.getCurrentData() || currentEEGData;
             if (!currentData || !currentData.bandpowers) return;
 
             // Enhanced brain state analysis with confidence tracking
@@ -12087,7 +12644,7 @@ Use this data to personalize your response. Comment on their current state when 
             const bp = currentEEGData.bandpowers;
             const m = currentEEGData.metrics;
             const p = currentAetheriaPosition;
-            aetheriaTimeline.push({
+            const timelineEntry = {
                 t: new Date().toISOString(),
                 pos: p.pos,
                 freq: p.freq,
@@ -12105,7 +12662,21 @@ Use this data to personalize your response. Comment on their current state when 
                 alpha: Math.round(bp.alpha),
                 beta: Math.round(bp.beta),
                 gamma: Math.round(bp.gamma),
-            });
+            };
+            // Include Athena fNIRS/PPG snapshot in timeline if available
+            if (eegIntegration && eegIntegration.lastConnectionMethod === 'athena') {
+                if (eegIntegration.athenaFNIRS) {
+                    timelineEntry.fnirs = {};
+                    for (const pos of ['LI', 'RI', 'LO', 'RO']) {
+                        const d = eegIntegration.athenaFNIRS[pos];
+                        if (d) timelineEntry.fnirs[pos] = { hbo: d.lastHbO, hbr: d.lastHbR, sqi: d.sqi };
+                    }
+                }
+                if (eegIntegration.athenaPPG && eegIntegration.athenaPPG.heartRate > 0) {
+                    timelineEntry.heartRate = eegIntegration.athenaPPG.heartRate;
+                }
+            }
+            aetheriaTimeline.push(timelineEntry);
             if (aetheriaTimeline.length > AETHERIA_TIMELINE_MAX) {
                 aetheriaTimeline = aetheriaTimeline.slice(-AETHERIA_TIMELINE_MAX);
             }
@@ -12148,6 +12719,12 @@ Use this data to personalize your response. Comment on their current state when 
                     metrics: currentEEGData.metrics,
                     source: currentEEGData.source,
                 } : null,
+                athenaData: (eegIntegration && eegIntegration.lastConnectionMethod === 'athena') ? {
+                    fnirs: eegIntegration.athenaFNIRS || null,
+                    ppg: eegIntegration.athenaPPG || null,
+                    athenaExport: eegIntegration._athenaDevice ? eegIntegration._athenaDevice.getExportData() : null,
+                } : undefined,
+                deviceType: eegIntegration?.lastConnectionMethod || 'unknown',
                 frequencyReference: AETHERIA_FREQUENCIES.map(f => ({
                     pos: f.pos, freq: f.freq, regime: f.regime,
                     geo: f.geo, state: f.state, keyword: f.keyword,
@@ -12188,7 +12765,7 @@ Use this data to personalize your response. Comment on their current state when 
                 // Reset UI state
                 const connectBtn = document.getElementById('eegConnectBtn');
                 connectBtn.disabled = false;
-                connectBtn.textContent = '🔌 Connect Muse 2';
+                connectBtn.textContent = '🔌 Connect EEG';
                 
                 updateEEGStatus('Connection reset - Ready to connect', 'info');
                 updateEEGHeaderIndicator(false, false);
@@ -12255,6 +12832,22 @@ Use this data to personalize your response. Comment on their current state when 
                     context += ` | Contact: ${Math.round(data.headsetStatus.contactQuality * 100)}%`;
                 }
                 context += ']\n';
+            }
+
+            // Athena fNIRS + Heart Rate context for cloud/API models
+            if (eegIntegration && eegIntegration.lastConnectionMethod === 'athena') {
+                const fnirs = eegIntegration.athenaFNIRS;
+                const ppg = eegIntegration.athenaPPG;
+                if (fnirs) {
+                    context += '[fNIRS: ';
+                    for (const p of ['LI', 'RI', 'LO', 'RO']) {
+                        if (fnirs[p]) { const ho = getFnirsCenter(fnirs[p].hbo), hr = getFnirsCenter(fnirs[p].hbr); context += `${p} HbO${ho >= 0 ? '+' : ''}${ho.toFixed(2)} HbR${hr >= 0 ? '+' : ''}${hr.toFixed(2)} `; }
+                    }
+                    context += ']\n';
+                }
+                if (ppg && ppg.heartRate > 0) {
+                    context += `[Heart Rate: ${ppg.heartRate} BPM]\n`;
+                }
             }
 
             return context;
@@ -12363,6 +12956,119 @@ Use this data to personalize your response. Comment on their current state when 
         }
 
         // Real-time Brainwave Visualization Functions
+        // ══════════════════════════════════════════════════════════
+        // DSP PIPELINE — Notch filter, Bandpass, Artifact Detection
+        // ══════════════════════════════════════════════════════════
+
+        function designNotch(freq, fs, Q) {
+            Q = Q || 30;
+            const w0 = 2 * Math.PI * freq / fs;
+            const alpha = Math.sin(w0) / (2 * Q);
+            const cosw = Math.cos(w0);
+            const a0 = 1 + alpha;
+            return { b0: 1/a0, b1: (-2*cosw)/a0, b2: 1/a0, a1: (-2*cosw)/a0, a2: (1-alpha)/a0 };
+        }
+
+        function designHP(freq, fs) {
+            const w0 = 2 * Math.PI * freq / fs;
+            const alpha = Math.sin(w0) / (2 * Math.SQRT1_2);
+            const cosw = Math.cos(w0);
+            const a0 = 1 + alpha;
+            return { b0: ((1+cosw)/2)/a0, b1: (-(1+cosw))/a0, b2: ((1+cosw)/2)/a0, a1: (-2*cosw)/a0, a2: (1-alpha)/a0 };
+        }
+
+        function designLP(freq, fs) {
+            const w0 = 2 * Math.PI * freq / fs;
+            const alpha = Math.sin(w0) / (2 * Math.SQRT1_2);
+            const cosw = Math.cos(w0);
+            const a0 = 1 + alpha;
+            return { b0: ((1-cosw)/2)/a0, b1: (1-cosw)/a0, b2: ((1-cosw)/2)/a0, a1: (-2*cosw)/a0, a2: (1-alpha)/a0 };
+        }
+
+        function applyBiquad(sample, c, s) {
+            const out = c.b0 * sample + s.z1;
+            s.z1 = c.b1 * sample - c.a1 * out + s.z2;
+            s.z2 = c.b2 * sample - c.a2 * out;
+            return out;
+        }
+
+        // Cached filter coefficients (rebuilt when settings change)
+        let dspCoeffs = null;
+        function getDSPCoeffs() {
+            if (dspCoeffs) return dspCoeffs;
+            const fs = 256; // Muse sample rate
+            dspCoeffs = {
+                notch: designNotch(dspSettings.notchFreq, fs, 30),
+                hp: designHP(dspSettings.bpLow, fs),
+                lp: designLP(dspSettings.bpHigh, fs)
+            };
+            return dspCoeffs;
+        }
+
+        function dspFilterSample(electrode, rawValue) {
+            // Lazy-init per-electrode filter state
+            if (!dspFilterState[electrode]) {
+                dspFilterState[electrode] = {
+                    notch: { z1: 0, z2: 0 },
+                    hp: { z1: 0, z2: 0 },
+                    lp: { z1: 0, z2: 0 }
+                };
+            }
+            const st = dspFilterState[electrode];
+            const c = getDSPCoeffs();
+            let v = rawValue;
+            if (dspSettings.notchEnabled) v = applyBiquad(v, c.notch, st.notch);
+            if (dspSettings.bandpassEnabled) {
+                v = applyBiquad(v, c.hp, st.hp);
+                v = applyBiquad(v, c.lp, st.lp);
+            }
+            return v;
+        }
+
+        function resetDSPState() {
+            dspFilterState = {};
+            dspCoeffs = null;
+            dspEventMarkers = [];
+            dspBlinkDebounce = {};
+            dspClenchDebounce = {};
+            dspClenchBuf = {};
+        }
+
+        // Blink detection: large deflection on ear electrodes
+        function detectBlink(electrode, filteredVal, ts) {
+            if (electrode !== 'TP9' && electrode !== 'TP10') return;
+            if (Math.abs(filteredVal) < 100) return; // threshold μV
+            if (dspBlinkDebounce[electrode] && ts - dspBlinkDebounce[electrode] < 300) return;
+            dspBlinkDebounce[electrode] = ts;
+            dspEventMarkers.push({ timestamp: ts, type: 'blink', channel: electrode });
+        }
+
+        // Jaw clench detection: high zero-crossing rate on frontal channels
+        function detectClench(electrode, rawVal, ts) {
+            if (electrode !== 'AF7' && electrode !== 'AF8') return;
+            if (!dspClenchBuf[electrode]) dspClenchBuf[electrode] = [];
+            const buf = dspClenchBuf[electrode];
+            buf.push(rawVal);
+            if (buf.length > 32) buf.shift();
+            if (buf.length < 32) return;
+            // Count zero crossings
+            let crossings = 0;
+            for (let i = 1; i < buf.length; i++) {
+                if ((buf[i] >= 0 && buf[i-1] < 0) || (buf[i] < 0 && buf[i-1] >= 0)) crossings++;
+            }
+            if (crossings < 18) return;
+            if (dspClenchDebounce[electrode] && ts - dspClenchDebounce[electrode] < 500) return;
+            dspClenchDebounce[electrode] = ts;
+            dspEventMarkers.push({ timestamp: ts, type: 'clench', channel: electrode });
+        }
+
+        function pruneEventMarkers() {
+            const cutoff = Date.now() - vizSettings.timeWindow;
+            if (dspEventMarkers.length > 0 && dspEventMarkers[0].timestamp < cutoff) {
+                dspEventMarkers = dspEventMarkers.filter(m => m.timestamp >= cutoff);
+            }
+        }
+
         function initializeVisualization() {
             // Get canvas contexts
             const electrodesCanvas = document.getElementById('electrodesCanvas');
@@ -12409,7 +13115,10 @@ Use this data to personalize your response. Comment on their current state when 
                 toggleBtn.textContent = '✕';
                 
                 // Initialize visualization when opened for the first time
-                setTimeout(() => initializeVisualization(), 100);
+                setTimeout(() => {
+                    initializeVisualization();
+                    updateElectrodeLegend();
+                }, 100);
             } else {
                 panel.classList.remove('open');
                 mainContent.classList.remove('with-panel');
@@ -12432,29 +13141,43 @@ Use this data to personalize your response. Comment on their current state when 
         }
 
         function updateVisualizationData(eegData) {
-            if (!visualizationOpen || !eegData) return;
-            
+            if (!eegData) return;
+            if (vizSettings.frozen && visualizationOpen) return; // Freeze mode: stop updating
+
             const timestamp = Date.now();
-            
-            // Update electrode data
+
+            // Update electrode data — supports 4ch (Muse 2) or 8ch (Athena)
             if (eegData.raw_eeg && eegData.raw_eeg.length >= 4) {
-                const electrodes = ['TP9', 'AF7', 'AF8', 'TP10'];
+                const electrodes = eegData.raw_eeg.length >= 8
+                    ? ['TP9', 'AF7', 'AF8', 'TP10', 'AUX1', 'AUX2', 'AUX3', 'AUX4']
+                    : ['TP9', 'AF7', 'AF8', 'TP10'];
                 electrodes.forEach((electrode, index) => {
                     if (eegData.raw_eeg[index] !== undefined) {
+                        if (!electrodesData[electrode]) electrodesData[electrode] = [];
+                        const rawVal = eegData.raw_eeg[index];
+                        const filteredVal = dspFilterSample(electrode, rawVal);
+
                         electrodesData[electrode].push({
-                            value: eegData.raw_eeg[index],
+                            value: filteredVal,
                             timestamp: timestamp
                         });
-                        
+
+                        // Artifact detection
+                        if (dspSettings.artifactDetection) {
+                            detectBlink(electrode, filteredVal, timestamp);
+                            detectClench(electrode, rawVal, timestamp);
+                        }
+
                         // Keep only recent data
                         const cutoff = timestamp - vizSettings.timeWindow;
                         electrodesData[electrode] = electrodesData[electrode].filter(d => d.timestamp > cutoff);
-                        
+
                         if (electrodesData[electrode].length > vizSettings.maxDataPoints) {
                             electrodesData[electrode] = electrodesData[electrode].slice(-vizSettings.maxDataPoints);
                         }
                     }
                 });
+                pruneEventMarkers();
             }
             
             // Update brainwave band data
@@ -12494,9 +13217,16 @@ Use this data to personalize your response. Comment on their current state when 
             if (eegConnected && eegStreaming) {
                 statusText.textContent = 'Connected & Streaming';
                 statusText.style.color = '#00ff88';
-                
-                deviceName.textContent = eegIntegration?.getDeviceInfo()?.name || 'Muse Device';
-                dataRate.textContent = '10 Hz'; // Update rate
+
+                const isAthena = eegIntegration?.lastConnectionMethod === 'athena';
+                const devLabel = eegIntegration?.getDeviceInfo()?.name || (isAthena ? 'Muse S Athena' : 'Muse 2');
+                deviceName.textContent = devLabel;
+                dataRate.textContent = isAthena ? '256 Hz EEG / 64 Hz Optics' : '10 Hz';
+
+                // Update electrode section label + legend
+                const elLabel = document.getElementById('vizElectrodeLabel');
+                if (elLabel) elLabel.textContent = isAthena ? '📊 Athena Electrodes (Raw EEG — 8ch)' : '📊 Muse 2 Electrodes (Raw EEG)';
+                updateElectrodeLegend();
                 
                 if (eegData.dataQuality) {
                     dataQuality.textContent = eegData.dataQuality;
@@ -12512,7 +13242,7 @@ Use this data to personalize your response. Comment on their current state when 
             } else if (eegConnected) {
                 statusText.textContent = 'Connected';
                 statusText.style.color = '#ff6b00';
-                deviceName.textContent = eegIntegration?.getDeviceInfo()?.name || 'Muse Device';
+                deviceName.textContent = eegIntegration?.getDeviceInfo()?.name || 'EEG Device';
                 dataRate.textContent = '0 Hz';
                 dataQuality.textContent = 'No Data';
                 dataQuality.style.color = '#888';
@@ -12556,85 +13286,227 @@ Use this data to personalize your response. Comment on their current state when 
             const ctx = vizCanvasContexts.electrodes;
             const width = canvas.offsetWidth;
             const height = canvas.offsetHeight;
-            
+
             // Clear canvas
             ctx.clearRect(0, 0, width, height);
-            
-            // Draw grid if enabled
+
+            // Background grid
             if (vizSettings.showGrid) {
                 drawGrid(ctx, width, height, '#333');
             }
-            
+
             // Colors for each electrode
             const colors = {
-                TP9: '#ff0055',   // Pink/Red - Left ear
-                AF7: '#00ff88',   // Green - Left forehead
-                AF8: '#0088ff',   // Blue - Right forehead
-                TP10: '#ff6b00'   // Orange - Right ear
+                TP9:  '#ff0055',  AF7:  '#00ff88',  AF8:  '#0088ff',  TP10: '#ff6b00',
+                AUX1: '#c4a0ff',  AUX2: '#00e5ff',  AUX3: '#ffdd00',  AUX4: '#ff88cc'
             };
-            
+
             const currentTime = Date.now();
             const timeWindow = vizSettings.timeWindow;
-            
-            // Draw each electrode waveform
-            Object.keys(electrodesData).forEach(electrode => {
+
+            // Only draw electrodes that have data
+            const activeElectrodes = Object.keys(electrodesData).filter(e => electrodesData[e].length >= 2);
+            const numCh = activeElectrodes.length;
+            if (numCh === 0) {
+                ctx.fillStyle = '#334';
+                ctx.font = '12px Arial';
+                ctx.textAlign = 'center';
+                ctx.fillText('Waiting for EEG data...', width / 2, height / 2);
+                ctx.textAlign = 'left';
+                return;
+            }
+
+            // Each electrode gets its own horizontal lane
+            const laneH = height / numCh;
+            const labelW = 32; // left margin for channel labels
+
+            activeElectrodes.forEach((electrode, chIdx) => {
                 const data = electrodesData[electrode];
-                if (data.length < 2) return;
-                
-                ctx.strokeStyle = colors[electrode];
-                ctx.lineWidth = 2;
-                ctx.globalAlpha = 0.8;
+                const color = colors[electrode] || '#ffffff';
+                const laneTop = chIdx * laneH;
+                const laneMid = laneTop + laneH / 2;
+
+                // Lane separator line
+                if (chIdx > 0) {
+                    ctx.strokeStyle = 'rgba(0,180,216,0.08)';
+                    ctx.lineWidth = 0.5;
+                    ctx.beginPath();
+                    ctx.moveTo(0, laneTop);
+                    ctx.lineTo(width, laneTop);
+                    ctx.stroke();
+                }
+
+                // Center baseline for this lane
+                ctx.strokeStyle = 'rgba(0,180,216,0.06)';
+                ctx.lineWidth = 0.5;
                 ctx.beginPath();
-                
-                // Auto-scale if enabled
-                let minValue = -500, maxValue = 500; // Default μV range
-                if (vizSettings.autoScale && data.length > 10) {
-                    const values = data.map(d => d.value);
-                    minValue = Math.min(...values);
-                    maxValue = Math.max(...values);
-                    const padding = (maxValue - minValue) * 0.1;
-                    minValue -= padding;
-                    maxValue += padding;
-                    if (Math.abs(maxValue - minValue) < 10) {
-                        minValue -= 5;
-                        maxValue += 5;
+                ctx.moveTo(labelW, laneMid);
+                ctx.lineTo(width, laneMid);
+                ctx.stroke();
+
+                // Channel label
+                ctx.fillStyle = color;
+                ctx.globalAlpha = 0.5;
+                ctx.font = '9px Arial';
+                ctx.fillText(electrode, 3, laneMid + 3);
+                ctx.globalAlpha = 1;
+
+                // Stable scaling: center on running mean, slowly adapt amplitude
+                const values = data.map(d => d.value);
+                const instantMean = values.reduce((a, b) => a + b, 0) / values.length;
+                let instantAmp = 0;
+                for (let i = 0; i < values.length; i++) {
+                    const dev = Math.abs(values[i] - instantMean);
+                    if (dev > instantAmp) instantAmp = dev;
+                }
+                instantAmp = Math.max(instantAmp, 5); // floor so flat signals don't blow up
+
+                // Initialize or smoothly adapt per-electrode scale
+                if (!electrodeScale[electrode]) {
+                    electrodeScale[electrode] = { mean: instantMean, amp: instantAmp };
+                }
+                const sc = electrodeScale[electrode];
+                // Exponential smoothing: mean tracks faster, amplitude tracks slower
+                sc.mean += (instantMean - sc.mean) * 0.08;
+                // Amplitude grows fast (to avoid clipping) but shrinks slowly
+                if (instantAmp > sc.amp) {
+                    sc.amp += (instantAmp - sc.amp) * 0.3;
+                } else {
+                    sc.amp += (instantAmp - sc.amp) * 0.02;
+                }
+
+                const halfRange = sc.amp * 1.2; // 20% padding
+
+                // Build raw time→value pairs for this channel
+                const rawPts = [];
+                const pad = 2;
+                const tStart = currentTime - timeWindow;
+                for (let i = 0; i < data.length; i++) {
+                    const t = data[i].timestamp;
+                    if (t < tStart) continue;
+                    const norm = (data[i].value - sc.mean) / (halfRange * 2) + 0.5;
+                    const clamped = Math.max(0, Math.min(1, norm));
+                    rawPts.push({ t, v: clamped });
+                }
+                if (rawPts.length < 2) return;
+
+                // Resample to uniform pixel grid via linear interpolation → smooth scrolling
+                const drawW = width - labelW;
+                const pts = new Float32Array(drawW);
+                let ri = 0;
+                for (let px = 0; px < drawW; px++) {
+                    const t = tStart + ((px + 0.5) / drawW) * timeWindow;
+                    // Advance to bracketing points
+                    while (ri < rawPts.length - 2 && rawPts[ri + 1].t < t) ri++;
+                    const a = rawPts[ri], b = rawPts[Math.min(ri + 1, rawPts.length - 1)];
+                    const dt = b.t - a.t;
+                    const frac = dt > 0 ? Math.max(0, Math.min(1, (t - a.t) / dt)) : 0;
+                    pts[px] = a.v + (b.v - a.v) * frac;
+                }
+
+                // Map normalized values to y-coordinates
+                const yPts = new Float32Array(drawW);
+                for (let px = 0; px < drawW; px++) {
+                    yPts[px] = laneTop + laneH - pad - pts[px] * (laneH - pad * 2);
+                }
+
+                // Clip to this lane
+                ctx.save();
+                ctx.beginPath();
+                ctx.rect(labelW, laneTop, drawW, laneH);
+                ctx.clip();
+
+                // Helper: stroke the resampled path
+                const strokePath = () => {
+                    ctx.beginPath();
+                    ctx.moveTo(labelW, yPts[0]);
+                    for (let px = 1; px < drawW; px++) {
+                        ctx.lineTo(labelW + px, yPts[px]);
+                    }
+                    ctx.stroke();
+                };
+
+                // Glow layer
+                ctx.strokeStyle = color;
+                ctx.lineWidth = 4;
+                ctx.globalAlpha = 0.1;
+                ctx.shadowColor = color;
+                ctx.shadowBlur = 6;
+                strokePath();
+
+                // Main waveform line
+                ctx.shadowBlur = 0;
+                ctx.lineWidth = 1.2;
+                ctx.globalAlpha = 0.9;
+                strokePath();
+
+                ctx.restore(); // remove clip
+            });
+
+            // Artifact event markers (triangles at top)
+            dspEventMarkers.forEach(marker => {
+                const mx = ((marker.timestamp - (currentTime - timeWindow)) / timeWindow) * width;
+                if (mx < labelW || mx > width) return;
+                const mColor = marker.type === 'blink' ? '#ffdd00' : '#ff4444';
+                ctx.save();
+                ctx.fillStyle = mColor;
+                ctx.globalAlpha = 0.85;
+                ctx.beginPath();
+                ctx.moveTo(mx, 1);
+                ctx.lineTo(mx - 4, 9);
+                ctx.lineTo(mx + 4, 9);
+                ctx.closePath();
+                ctx.fill();
+                // Label
+                ctx.font = '7px Arial';
+                ctx.fillText(marker.type === 'blink' ? 'B' : 'C', mx - 2, 17);
+                ctx.restore();
+            });
+
+            // Time label
+            ctx.globalAlpha = 1;
+            ctx.fillStyle = '#445';
+            ctx.font = '9px Arial';
+            ctx.fillText((vizSettings.timeWindow / 1000) + 's', width - 20, height - 4);
+        }
+
+        function updateElectrodeLegend() {
+            const container = document.getElementById('electrodeLegend');
+            if (!container) return;
+
+            const isAthena = eegIntegration?.lastConnectionMethod === 'athena' && eegConnected;
+
+            // Resize electrode canvas: taller for 8ch Athena
+            const eCanvas = document.getElementById('electrodesCanvas');
+            if (eCanvas) {
+                const targetH = isAthena ? 300 : 180;
+                if (parseInt(eCanvas.style.height) !== targetH) {
+                    eCanvas.style.height = targetH + 'px';
+                    // Re-init HiDPI scaling
+                    if (vizCanvasContexts.electrodes) {
+                        setupHighDPICanvas(eCanvas, vizCanvasContexts.electrodes);
                     }
                 }
-                
-                let firstPoint = true;
-                data.forEach((point, index) => {
-                    const x = ((point.timestamp - (currentTime - timeWindow)) / timeWindow) * width;
-                    const y = height - ((point.value - minValue) / (maxValue - minValue)) * height;
-                    
-                    if (x >= 0 && x <= width) {
-                        if (firstPoint) {
-                            ctx.moveTo(x, y);
-                            firstPoint = false;
-                        } else {
-                            if (vizSettings.smoothLines) {
-                                // Smooth curve
-                                if (index > 0) {
-                                    const prevPoint = data[index - 1];
-                                    const prevX = ((prevPoint.timestamp - (currentTime - timeWindow)) / timeWindow) * width;
-                                    const prevY = height - ((prevPoint.value - minValue) / (maxValue - minValue)) * height;
-                                    const cpX = (prevX + x) / 2;
-                                    ctx.quadraticCurveTo(cpX, prevY, x, y);
-                                }
-                            } else {
-                                ctx.lineTo(x, y);
-                            }
-                        }
-                    }
-                });
-                
-                ctx.stroke();
-            });
-            
-            // Draw labels
-            ctx.fillStyle = '#fff';
-            ctx.font = '10px Arial';
-            ctx.fillText('Electrodes (μV)', 5, 15);
-            ctx.fillText('5s', width - 20, height - 5);
+            }
+            const electrodeInfo = isAthena ? [
+                { name: 'TP9',  label: 'Left Ear',       color: '#ff0055' },
+                { name: 'AF7',  label: 'Left Forehead',  color: '#00ff88' },
+                { name: 'AF8',  label: 'Right Forehead', color: '#0088ff' },
+                { name: 'TP10', label: 'Right Ear',      color: '#ff6b00' },
+                { name: 'AUX1', label: 'Aux 1',          color: '#c4a0ff' },
+                { name: 'AUX2', label: 'Aux 2',          color: '#00e5ff' },
+                { name: 'AUX3', label: 'Aux 3',          color: '#ffdd00' },
+                { name: 'AUX4', label: 'Aux 4',          color: '#ff88cc' },
+            ] : [
+                { name: 'TP9',  label: 'Left Ear',       color: '#ff0055' },
+                { name: 'AF7',  label: 'Left Forehead',  color: '#00ff88' },
+                { name: 'AF8',  label: 'Right Forehead', color: '#0088ff' },
+                { name: 'TP10', label: 'Right Ear',      color: '#ff6b00' },
+            ];
+
+            container.innerHTML = electrodeInfo.map(e =>
+                `<div class="legend-item"><div class="legend-color" style="background:${e.color};"></div><span>${e.name} (${e.label})</span></div>`
+            ).join('');
         }
 
         function drawBrainwaveBands() {
@@ -12651,110 +13523,132 @@ Use this data to personalize your response. Comment on their current state when 
                 drawGrid(ctx, width, height, '#333');
             }
             
-            // Colors for each brainwave band
+            // Brighter, more vibrant band colors
             const colors = {
-                delta: '#4a1a4a',   // Dark purple
-                theta: '#1a4a9c',   // Dark blue
-                alpha: '#1a9c4a',   // Dark green
-                beta: '#9c4a1a',    // Dark orange
-                gamma: '#9c1a9c'    // Dark magenta
+                delta: '#8B5CF6',   // Vivid purple
+                theta: '#3B82F6',   // Vivid blue
+                alpha: '#10B981',   // Vivid green
+                beta:  '#F59E0B',   // Vivid amber
+                gamma: '#EC4899'    // Vivid pink
             };
-            
+
             const currentTime = Date.now();
             const timeWindow = vizSettings.timeWindow;
-            
-            // Draw each brainwave band
+
+            // Scale markers
+            [0.25, 0.5, 0.75].forEach(percent => {
+                const y = height - (percent * height);
+                ctx.strokeStyle = 'rgba(0,180,216,0.08)';
+                ctx.lineWidth = 1;
+                ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(width, y); ctx.stroke();
+                ctx.fillStyle = 'rgba(0,180,216,0.3)';
+                ctx.font = '9px Arial';
+                ctx.fillText(Math.round(percent * 100) + '%', 3, y - 3);
+            });
+
+            // Draw each brainwave band with glow — resampled for smooth scrolling
+            const tStart = currentTime - timeWindow;
             Object.keys(brainwaveHistory).forEach(band => {
                 const data = brainwaveHistory[band];
                 if (data.length < 2) return;
-                
-                ctx.strokeStyle = colors[band];
-                ctx.lineWidth = 2;
-                ctx.globalAlpha = 0.8;
-                ctx.beginPath();
-                
-                let firstPoint = true;
-                data.forEach((point, index) => {
-                    const x = ((point.timestamp - (currentTime - timeWindow)) / timeWindow) * width;
-                    const y = height - ((point.value / 100) * height); // 0-100% scale
-                    
-                    if (x >= 0 && x <= width) {
-                        if (firstPoint) {
-                            ctx.moveTo(x, y);
-                            firstPoint = false;
-                        } else {
-                            if (vizSettings.smoothLines) {
-                                // Smooth curve
-                                if (index > 0) {
-                                    const prevPoint = data[index - 1];
-                                    const prevX = ((prevPoint.timestamp - (currentTime - timeWindow)) / timeWindow) * width;
-                                    const prevY = height - ((prevPoint.value / 100) * height);
-                                    const cpX = (prevX + x) / 2;
-                                    ctx.quadraticCurveTo(cpX, prevY, x, y);
-                                }
-                            } else {
-                                ctx.lineTo(x, y);
-                            }
-                        }
-                    }
-                });
-                
-                ctx.stroke();
-            });
-            
-            // Draw scale lines
-            ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
-            ctx.lineWidth = 1;
-            ctx.globalAlpha = 0.5;
-            
-            // 25%, 50%, 75% lines
-            [0.25, 0.5, 0.75].forEach(percent => {
-                const y = height - (percent * height);
-                ctx.beginPath();
-                ctx.moveTo(0, y);
-                ctx.lineTo(width, y);
-                ctx.stroke();
-                
-                // Label
-                ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
-                ctx.font = '9px Arial';
-                ctx.fillText(Math.round(percent * 100) + '%', 2, y - 2);
+                const color = colors[band];
+
+                // Raw time→value pairs (0-100%)
+                const raw = [];
+                for (let i = 0; i < data.length; i++) {
+                    if (data[i].timestamp >= tStart) raw.push({ t: data[i].timestamp, v: data[i].value / 100 });
+                }
+                if (raw.length < 2) return;
+
+                // Resample to pixel grid
+                const yArr = new Float32Array(width);
+                let ri = 0;
+                for (let px = 0; px < width; px++) {
+                    const t = tStart + ((px + 0.5) / width) * timeWindow;
+                    while (ri < raw.length - 2 && raw[ri + 1].t < t) ri++;
+                    const a = raw[ri], b = raw[Math.min(ri + 1, raw.length - 1)];
+                    const dt = b.t - a.t;
+                    const frac = dt > 0 ? Math.max(0, Math.min(1, (t - a.t) / dt)) : 0;
+                    yArr[px] = height - (a.v + (b.v - a.v) * frac) * height;
+                }
+
+                const strokeResampled = () => {
+                    ctx.beginPath();
+                    ctx.moveTo(0, yArr[0]);
+                    for (let px = 1; px < width; px++) ctx.lineTo(px, yArr[px]);
+                    ctx.stroke();
+                };
+
+                // Glow layer
+                ctx.save();
+                ctx.strokeStyle = color;
+                ctx.lineWidth = 4;
+                ctx.globalAlpha = 0.1;
+                ctx.shadowColor = color;
+                ctx.shadowBlur = 8;
+                strokeResampled();
+                ctx.restore();
+
+                // Main line
+                ctx.save();
+                ctx.strokeStyle = color;
+                ctx.lineWidth = 1.8;
+                ctx.globalAlpha = 0.85;
+                strokeResampled();
+                ctx.restore();
             });
             
             // Draw labels
-            ctx.fillStyle = '#fff';
+            ctx.fillStyle = '#556';
             ctx.font = '10px Arial';
             ctx.globalAlpha = 1;
-            ctx.fillText('Brainwave Bands (%)', 5, 15);
-            ctx.fillText('5s', width - 20, height - 5);
+            ctx.fillText('PSD Bands (%)', 5, 12);
+            ctx.fillText((vizSettings.timeWindow / 1000) + 's', width - 20, height - 5);
         }
 
         function drawGrid(ctx, width, height, color) {
-            ctx.strokeStyle = color;
+            // Fine sub-grid
+            ctx.strokeStyle = 'rgba(0,180,216,0.04)';
             ctx.lineWidth = 0.5;
-            ctx.globalAlpha = 0.3;
-            
-            // Vertical lines
-            const vLines = 10;
+            ctx.globalAlpha = 1;
+            const subV = 20, subH = 12;
+            for (let i = 0; i <= subV; i++) {
+                const x = (i / subV) * width;
+                ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, height); ctx.stroke();
+            }
+            for (let i = 0; i <= subH; i++) {
+                const y = (i / subH) * height;
+                ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(width, y); ctx.stroke();
+            }
+
+            // Major grid
+            ctx.strokeStyle = 'rgba(0,180,216,0.1)';
+            ctx.lineWidth = 0.5;
+            const vLines = 5, hLines = 4;
             for (let i = 0; i <= vLines; i++) {
                 const x = (i / vLines) * width;
-                ctx.beginPath();
-                ctx.moveTo(x, 0);
-                ctx.lineTo(x, height);
-                ctx.stroke();
+                ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, height); ctx.stroke();
             }
-            
-            // Horizontal lines
-            const hLines = 6;
             for (let i = 0; i <= hLines; i++) {
                 const y = (i / hLines) * height;
-                ctx.beginPath();
-                ctx.moveTo(0, y);
-                ctx.lineTo(width, y);
-                ctx.stroke();
+                ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(width, y); ctx.stroke();
             }
-            
-            ctx.globalAlpha = 1;
+
+            // Center line glow
+            ctx.strokeStyle = 'rgba(0,180,216,0.15)';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(0, height / 2);
+            ctx.lineTo(width, height / 2);
+            ctx.stroke();
+
+            // Scanline gradient overlay (subtle CRT effect)
+            const grad = ctx.createLinearGradient(0, 0, 0, height);
+            grad.addColorStop(0, 'rgba(0,180,216,0.02)');
+            grad.addColorStop(0.5, 'rgba(0,0,0,0)');
+            grad.addColorStop(1, 'rgba(0,180,216,0.02)');
+            ctx.fillStyle = grad;
+            ctx.fillRect(0, 0, width, height);
         }
 
         function resetVisualization() {
@@ -12765,7 +13659,8 @@ Use this data to personalize your response. Comment on their current state when 
             Object.keys(brainwaveHistory).forEach(band => {
                 brainwaveHistory[band] = [];
             });
-            
+            electrodeScale = {};
+
             showStatus('Visualization data cleared', 'success');
         }
 
@@ -12819,7 +13714,485 @@ Use this data to personalize your response. Comment on their current state when 
             if (visualizationOpen) {
                 updateVisualizationData(eegData);
             }
+            // Update Athena viz section (fNIRS + HR) regardless of panel open state
+            updateAthenaVizSection();
         }
+
+        function updateAthenaVizSection() {
+            const section = document.getElementById('vizAthenaSection');
+            if (!section) return;
+
+            const isAthena = eegIntegration && eegIntegration.lastConnectionMethod === 'athena' && eegConnected;
+            section.style.display = isAthena ? 'block' : 'none';
+            if (!isAthena) return;
+
+            const fnirs2 = eegIntegration.athenaFNIRS;
+            if (fnirs2) {
+                for (const pos of ['LI', 'RI', 'LO', 'RO']) {
+                    const el = document.getElementById('vizFnirs' + pos);
+                    if (el && fnirs2[pos]) {
+                        const d = fnirs2[pos];
+                        const hboVal = getFnirsCenter(d.hbo);
+                        const hbrVal = getFnirsCenter(d.hbr);
+                        el.textContent = `HbO ${hboVal >= 0 ? '+' : ''}${hboVal.toFixed(3)} / HbR ${hbrVal >= 0 ? '+' : ''}${hbrVal.toFixed(3)}`;
+                        el.style.color = d.sqi > 0.5 ? '#00ff88' : d.sqi > 0.2 ? '#ffaa00' : '#ff6666';
+                    } else if (el) {
+                        el.textContent = 'warming up...';
+                        el.style.color = '#556';
+                    }
+                }
+            } else {
+                for (const pos of ['LI', 'RI', 'LO', 'RO']) {
+                    const el = document.getElementById('vizFnirs' + pos);
+                    if (el) { el.textContent = 'waiting for data (~10s)'; el.style.color = '#445'; }
+                }
+            }
+
+            const ppg = eegIntegration.athenaPPG;
+            const hrEl = document.getElementById('vizHeartRate');
+            const sqiEl = document.getElementById('vizPpgSqi');
+            if (hrEl && ppg) {
+                hrEl.textContent = ppg.heartRate > 0 ? ppg.heartRate + ' BPM' : '— BPM';
+            }
+            if (sqiEl && ppg) {
+                sqiEl.textContent = 'SQI: ' + (ppg.sqi || 0).toFixed(2);
+            }
+        }
+        // ══════════════════════════════════════════════════════════
+        // OSCILLOSCOPE CONTROL FUNCTIONS
+        // ══════════════════════════════════════════════════════════
+
+        function updateTimeScale() {
+            const val = parseInt(document.getElementById('vizTimeScale').value);
+            vizSettings.timeWindow = val;
+            vizSettings.maxDataPoints = Math.max(500, val / 10);
+            electrodeScale = {}; // reset smoothed scales
+        }
+
+        function updateDSPSettings() {
+            const notchVal = document.getElementById('dspNotchSelect').value;
+            dspSettings.notchEnabled = notchVal !== 'off';
+            dspSettings.notchFreq = notchVal === '50' ? 50 : 60;
+            dspSettings.bandpassEnabled = document.getElementById('dspBandpass').checked;
+            dspSettings.artifactDetection = document.getElementById('dspArtifacts').checked;
+            resetDSPState(); // clear filter memory on settings change
+        }
+
+        function toggleVizFreeze() {
+            vizSettings.frozen = !vizSettings.frozen;
+            const btn = document.getElementById('vizFreezeBtn');
+            if (btn) btn.textContent = vizSettings.frozen ? '▶ Resume' : '⏸ Freeze';
+        }
+
+        // ══════════════════════════════════════════════════════════
+        // SLEEP MODE ENGINE
+        // ══════════════════════════════════════════════════════════
+
+        function toggleSleepMode() {
+            if (sleepMode.active) {
+                endSleepMode();
+            } else {
+                startSleepMode();
+            }
+        }
+
+        function startSleepMode() {
+            if (!eegConnected) {
+                showStatus('Connect an EEG device before entering Sleep Mode', 'error');
+                return;
+            }
+
+            sleepMode.active = true;
+            sleepMode.sessionId = 'sleep_' + Date.now();
+            sleepMode.startTime = Date.now();
+            sleepMode.epochIndex = 0;
+            sleepMode.hypnogram = [];
+            sleepMode.epochBandpowerAcc = [];
+            sleepMode.epochFnirsAcc = [];
+            sleepMode.epochPpgAcc = [];
+            sleepMode.currentStage = 'Wake';
+
+            // Dim overlay
+            const overlay = document.createElement('div');
+            overlay.className = 'sleep-overlay';
+            document.body.appendChild(overlay);
+            sleepMode.dimOverlay = overlay;
+
+            // Floating status
+            const status = document.createElement('div');
+            status.className = 'sleep-status';
+            status.innerHTML = `
+                <div style="font-size: 0.7rem; letter-spacing: 2px; color: #6b3fa0;">SLEEP MODE</div>
+                <div class="stage" id="sleepStageDisplay">Wake</div>
+                <div class="elapsed" id="sleepElapsed">00:00</div>
+                <button class="wake-btn" onclick="endSleepMode()">Wake Up</button>
+            `;
+            document.body.appendChild(status);
+            sleepMode.statusElement = status;
+
+            // Epoch timer: process every 30 seconds
+            sleepMode.epochTimer = setInterval(processAndStoreSleepEpoch, 30000);
+
+            // Status display timer: update every second
+            sleepMode.statusTimer = setInterval(updateSleepStatusDisplay, 1000);
+
+            // Increase reconnect tolerance during sleep
+            if (eegIntegration) {
+                eegIntegration.maxReconnectAttempts = 20;
+            }
+
+            // Update sidebar
+            const btn = document.getElementById('sleepModeBtn');
+            if (btn) { btn.textContent = '☀️ Wake Up'; btn.style.borderColor = '#c4a0ff'; }
+
+            addMessageToUI('system', '🌙 Sleep Mode activated. Recording EEG epochs every 30 seconds. Sweet dreams...');
+            console.log('🌙 Sleep Mode started:', sleepMode.sessionId);
+        }
+
+        function endSleepMode() {
+            // Process any remaining data
+            if (sleepMode.epochBandpowerAcc.length > 0) {
+                processAndStoreSleepEpoch();
+            }
+
+            clearInterval(sleepMode.epochTimer);
+            clearInterval(sleepMode.statusTimer);
+            sleepMode.epochTimer = null;
+            sleepMode.statusTimer = null;
+
+            // Remove overlay + status
+            if (sleepMode.dimOverlay) { sleepMode.dimOverlay.remove(); sleepMode.dimOverlay = null; }
+            if (sleepMode.statusElement) { sleepMode.statusElement.remove(); sleepMode.statusElement = null; }
+
+            // Restore reconnect settings
+            if (eegIntegration) {
+                eegIntegration.maxReconnectAttempts = 5;
+            }
+
+            // Update sidebar
+            const btn = document.getElementById('sleepModeBtn');
+            if (btn) { btn.textContent = '🌙 Sleep Mode'; btn.style.borderColor = '#6b3fa066'; }
+
+            const exportBtn = document.getElementById('exportSleepBtn');
+            if (exportBtn) exportBtn.style.display = 'block';
+
+            sleepMode.active = false;
+
+            addMessageToUI('system', `☀️ Sleep session complete — ${sleepMode.hypnogram.length} epochs recorded over ${formatSleepDuration(Date.now() - sleepMode.startTime)}`);
+
+            // Generate morning report
+            if (sleepMode.hypnogram.length >= 2) {
+                generateMorningReport();
+            }
+        }
+
+        function processAndStoreSleepEpoch() {
+            if (sleepMode.epochBandpowerAcc.length === 0) return;
+
+            // Average bandpowers across the epoch
+            const avg = { delta: 0, theta: 0, alpha: 0, beta: 0, gamma: 0 };
+            const n = sleepMode.epochBandpowerAcc.length;
+            for (const bp of sleepMode.epochBandpowerAcc) {
+                avg.delta += bp.delta; avg.theta += bp.theta; avg.alpha += bp.alpha;
+                avg.beta += bp.beta; avg.gamma += bp.gamma;
+            }
+            avg.delta /= n; avg.theta /= n; avg.alpha /= n; avg.beta /= n; avg.gamma /= n;
+
+            // Classify sleep stage
+            const stage = classifySleepStage(avg);
+            sleepMode.currentStage = stage;
+
+            // Average fNIRS/PPG if available
+            let fnirsAvg = null;
+            if (sleepMode.epochFnirsAcc.length > 0) {
+                fnirsAvg = {};
+                for (const pos of ['LI', 'RI', 'LO', 'RO']) {
+                    const vals = sleepMode.epochFnirsAcc.filter(f => f && f[pos]).map(f => f[pos]);
+                    if (vals.length > 0) {
+                        fnirsAvg[pos] = {
+                            hbo: vals.reduce((s, v) => s + v.lastHbO, 0) / vals.length,
+                            hbr: vals.reduce((s, v) => s + v.lastHbR, 0) / vals.length
+                        };
+                    }
+                }
+            }
+            let hrAvg = null;
+            if (sleepMode.epochPpgAcc.length > 0) {
+                const hrs = sleepMode.epochPpgAcc.filter(p => p && p.heartRate > 0).map(p => p.heartRate);
+                if (hrs.length > 0) hrAvg = Math.round(hrs.reduce((a, b) => a + b, 0) / hrs.length);
+            }
+
+            const epoch = {
+                epochIndex: sleepMode.epochIndex,
+                timestamp: Date.now(),
+                bandpowers: avg,
+                stage: stage,
+                heartRate: hrAvg,
+                fnirs: fnirsAvg
+            };
+
+            sleepMode.hypnogram.push(epoch);
+            sleepMode.epochIndex++;
+
+            // Reset accumulators
+            sleepMode.epochBandpowerAcc = [];
+            sleepMode.epochFnirsAcc = [];
+            sleepMode.epochPpgAcc = [];
+
+            console.log(`🌙 Epoch ${epoch.epochIndex}: ${stage} | δ${avg.delta.toFixed(0)} θ${avg.theta.toFixed(0)} α${avg.alpha.toFixed(0)} β${avg.beta.toFixed(0)} γ${avg.gamma.toFixed(0)}${hrAvg ? ' | HR:' + hrAvg : ''}`);
+        }
+
+        function updateSleepStatusDisplay() {
+            if (!sleepMode.active) return;
+            const elapsed = Date.now() - sleepMode.startTime;
+            const elEl = document.getElementById('sleepElapsed');
+            const stEl = document.getElementById('sleepStageDisplay');
+            if (elEl) elEl.textContent = formatSleepDuration(elapsed);
+            if (stEl) {
+                const stageColors = { Wake: '#ff6b00', N1: '#3B82F6', N2: '#8B5CF6', N3: '#1a1a4a', REM: '#10B981' };
+                stEl.textContent = sleepMode.currentStage;
+                stEl.style.color = stageColors[sleepMode.currentStage] || '#c4a0ff';
+            }
+        }
+
+        function formatSleepDuration(ms) {
+            const h = Math.floor(ms / 3600000);
+            const m = Math.floor((ms % 3600000) / 60000);
+            return (h > 0 ? h + 'h ' : '') + m + 'm';
+        }
+
+        // ══════════════════════════════════════════════════════════
+        // SLEEP STAGING ALGORITHM
+        // ══════════════════════════════════════════════════════════
+
+        function classifySleepStage(bandpowers) {
+            const { delta, theta, alpha, beta, gamma } = bandpowers;
+            const total = delta + theta + alpha + beta + gamma;
+            if (total === 0) return 'Wake';
+
+            const dP = (delta / total) * 100;
+            const tP = (theta / total) * 100;
+            const aP = (alpha / total) * 100;
+            const bP = (beta / total) * 100;
+            const gP = (gamma / total) * 100;
+
+            // N3 (deep/slow-wave sleep): delta dominant > 50%
+            if (dP > 50) return 'N3';
+            // Wake: strong alpha OR strong beta+gamma
+            if (aP > 25 || (bP + gP) > 40) return 'Wake';
+            // REM: low delta, mixed pattern, alpha not dominant
+            if (dP < 30 && tP > 15 && aP > 10 && aP <= 25 && bP > 10) return 'REM';
+            // N2: moderate delta + theta
+            if (dP >= 20 && dP <= 50 && tP > 15) return 'N2';
+            // N1: theta rising, alpha dropping
+            if (tP > 20 && aP < 20 && dP < 30) return 'N1';
+            // Fallback
+            return dP > 30 ? 'N2' : 'Wake';
+        }
+
+        // ══════════════════════════════════════════════════════════
+        // MORNING REPORT + HYPNOGRAM
+        // ══════════════════════════════════════════════════════════
+
+        function calculateSleepStats(hypnogram, startTime) {
+            const totalEpochs = hypnogram.length;
+            const epochDuration = 30; // seconds
+            const totalTime = totalEpochs * epochDuration;
+
+            const stageCounts = { Wake: 0, N1: 0, N2: 0, N3: 0, REM: 0 };
+            for (const e of hypnogram) stageCounts[e.stage] = (stageCounts[e.stage] || 0) + 1;
+
+            const sleepEpochs = totalEpochs - (stageCounts.Wake || 0);
+            const totalSleepSec = sleepEpochs * epochDuration;
+            const efficiency = totalEpochs > 0 ? Math.round((sleepEpochs / totalEpochs) * 100) : 0;
+
+            // Sleep latency: time to first non-Wake epoch
+            let latencyEpochs = 0;
+            for (const e of hypnogram) { if (e.stage === 'Wake') latencyEpochs++; else break; }
+
+            // WASO: Wake epochs after first sleep
+            let waso = 0;
+            let firstSleep = false;
+            for (const e of hypnogram) {
+                if (!firstSleep && e.stage !== 'Wake') firstSleep = true;
+                else if (firstSleep && e.stage === 'Wake') waso++;
+            }
+
+            // Approximate cycles: count N3→REM transitions
+            let cycles = 0;
+            let inDeep = false;
+            for (const e of hypnogram) {
+                if (e.stage === 'N3') inDeep = true;
+                else if (inDeep && e.stage === 'REM') { cycles++; inDeep = false; }
+                else if (e.stage !== 'N2') inDeep = false;
+            }
+
+            // Average heart rate
+            const hrs = hypnogram.filter(e => e.heartRate).map(e => e.heartRate);
+            const avgHR = hrs.length > 0 ? Math.round(hrs.reduce((a, b) => a + b, 0) / hrs.length) : null;
+
+            return {
+                totalTimeMin: Math.round(totalTime / 60),
+                totalSleepMin: Math.round(totalSleepSec / 60),
+                efficiency,
+                latencyMin: Math.round((latencyEpochs * epochDuration) / 60),
+                wasoMin: Math.round((waso * epochDuration) / 60),
+                cycles: Math.max(cycles, 1),
+                stageMinutes: {
+                    Wake: Math.round((stageCounts.Wake * epochDuration) / 60),
+                    N1: Math.round((stageCounts.N1 * epochDuration) / 60),
+                    N2: Math.round((stageCounts.N2 * epochDuration) / 60),
+                    N3: Math.round((stageCounts.N3 * epochDuration) / 60),
+                    REM: Math.round((stageCounts.REM * epochDuration) / 60),
+                },
+                avgHeartRate: avgHR,
+                totalEpochs
+            };
+        }
+
+        function renderHypnogram(hypnogram) {
+            const canvas = document.createElement('canvas');
+            canvas.width = 600;
+            canvas.height = 180;
+            canvas.style.width = '100%';
+            canvas.style.maxWidth = '600px';
+            canvas.style.borderRadius = '8px';
+            canvas.style.border = '1px solid rgba(0,180,216,0.15)';
+            const ctx = canvas.getContext('2d');
+
+            // Background
+            ctx.fillStyle = '#060610';
+            ctx.fillRect(0, 0, 600, 180);
+
+            const stages = ['Wake', 'REM', 'N1', 'N2', 'N3'];
+            const stageY = { Wake: 20, REM: 50, N1: 80, N2: 110, N3: 140 };
+            const stageColors = { Wake: '#ff6b00', REM: '#10B981', N1: '#3B82F6', N2: '#8B5CF6', N3: '#4a1a6a' };
+
+            // Grid + labels
+            ctx.font = '10px Arial';
+            for (const s of stages) {
+                const y = stageY[s];
+                ctx.strokeStyle = 'rgba(0,180,216,0.06)';
+                ctx.beginPath(); ctx.moveTo(45, y); ctx.lineTo(590, y); ctx.stroke();
+                ctx.fillStyle = stageColors[s];
+                ctx.fillText(s, 5, y + 4);
+            }
+
+            if (hypnogram.length === 0) return canvas;
+
+            // Draw step-plot
+            const n = hypnogram.length;
+            const barW = Math.max(1, (590 - 50) / n);
+
+            for (let i = 0; i < n; i++) {
+                const e = hypnogram[i];
+                const x = 50 + i * barW;
+                const y = stageY[e.stage] || stageY.Wake;
+                const color = stageColors[e.stage] || '#888';
+
+                ctx.fillStyle = color;
+                ctx.globalAlpha = 0.7;
+                ctx.fillRect(x, y - 8, barW + 0.5, 16);
+
+                // Connect to next epoch
+                if (i < n - 1) {
+                    const nextY = stageY[hypnogram[i + 1].stage] || stageY.Wake;
+                    if (nextY !== y) {
+                        ctx.strokeStyle = 'rgba(196,160,255,0.3)';
+                        ctx.lineWidth = 1;
+                        ctx.beginPath();
+                        ctx.moveTo(x + barW, y);
+                        ctx.lineTo(x + barW, nextY);
+                        ctx.stroke();
+                    }
+                }
+            }
+            ctx.globalAlpha = 1;
+
+            // Time axis
+            ctx.fillStyle = '#556';
+            ctx.font = '9px Arial';
+            const hoursTotal = (n * 30) / 3600;
+            for (let h = 0; h <= hoursTotal; h++) {
+                const x = 50 + (h * 3600 / 30) * barW;
+                if (x > 590) break;
+                ctx.fillText(h + 'h', x, 172);
+            }
+
+            return canvas;
+        }
+
+        function generateMorningReport() {
+            const stats = calculateSleepStats(sleepMode.hypnogram, sleepMode.startTime);
+
+            // Render hypnogram into chat
+            const hypnoCanvas = renderHypnogram(sleepMode.hypnogram);
+            addMessageToUI('system', `☀️ Good morning! Sleep session: ${stats.totalSleepMin}m sleep, ${stats.efficiency}% efficiency, ${stats.cycles} cycle(s)`);
+
+            // Inject hypnogram canvas into chat
+            const chatContainer = document.getElementById('chatContainer');
+            if (chatContainer) {
+                const wrapper = document.createElement('div');
+                wrapper.style.cssText = 'padding: 10px 15px; display: flex; justify-content: center;';
+                wrapper.appendChild(hypnoCanvas);
+                chatContainer.appendChild(wrapper);
+                chatContainer.scrollTop = chatContainer.scrollHeight;
+            }
+
+            // Build report prompt for Sophia
+            const stageSeq = sleepMode.hypnogram.map(e => e.stage).join(', ');
+            const prompt = `I just completed a sleep session tracked with EEG. Here is my data:
+
+Total time in bed: ${stats.totalTimeMin} minutes
+Total sleep: ${stats.totalSleepMin} minutes
+Sleep efficiency: ${stats.efficiency}%
+Sleep latency: ${stats.latencyMin} minutes
+Wake after sleep onset: ${stats.wasoMin} minutes
+Sleep cycles: ${stats.cycles}
+Stages — Wake: ${stats.stageMinutes.Wake}m, N1: ${stats.stageMinutes.N1}m, N2: ${stats.stageMinutes.N2}m, N3 (deep): ${stats.stageMinutes.N3}m, REM: ${stats.stageMinutes.REM}m
+${stats.avgHeartRate ? 'Average heart rate: ' + stats.avgHeartRate + ' BPM' : ''}
+Hypnogram sequence: [${stageSeq}]
+
+Please give me a natural, warm sleep report with insights about my sleep quality, patterns, and any recommendations.`;
+
+            // Auto-send to Sophia
+            const input = document.getElementById('messageInput');
+            if (input) {
+                input.value = prompt;
+                if (typeof sendMessage === 'function') sendMessage();
+            }
+        }
+
+        function exportSleepSession() {
+            if (!sleepMode.hypnogram || sleepMode.hypnogram.length === 0) {
+                showStatus('No sleep data to export', 'error');
+                return;
+            }
+
+            const stats = calculateSleepStats(sleepMode.hypnogram, sleepMode.startTime);
+            const exportData = {
+                sessionId: sleepMode.sessionId,
+                startTime: new Date(sleepMode.startTime).toISOString(),
+                endTime: new Date().toISOString(),
+                stats: stats,
+                hypnogram: sleepMode.hypnogram,
+                device: eegIntegration?.getDeviceInfo()?.name || 'Unknown',
+                deviceType: eegIntegration?.lastConnectionMethod || 'unknown'
+            };
+
+            const json = JSON.stringify(exportData, null, 2);
+            const blob = new Blob([json], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `sleep-session-${new Date().toISOString().slice(0, 10)}.json`;
+            document.body.appendChild(a);
+            a.click();
+            setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 3000);
+
+            showStatus(`Exported sleep session: ${sleepMode.hypnogram.length} epochs`, 'success');
+        }
+
     </script>
 </body>
 </html>

@@ -8038,6 +8038,77 @@ self.onmessage = async (e) => {
 
         function loadLocalModelManual() { loadLocalModel(); }
 
+        // Detect WebGPU device loss errors (GPU context invalidated)
+        function isWebGPUDeviceLost(errMsg) {
+            if (!errMsg) return false;
+            return errMsg.includes('Instance reference no longer exists') ||
+                   errMsg.includes('device was lost') ||
+                   errMsg.includes('Device is lost') ||
+                   errMsg.includes('GPUDevice was destroyed');
+        }
+
+        // Silently reload the local model (returns a promise that resolves when ready)
+        function reloadLocalModel() {
+            return new Promise((resolve, reject) => {
+                console.log('🔮 [Recovery] Reloading local model after WebGPU device loss...');
+                // Terminate the old worker
+                if (localInference.worker) {
+                    localInference.worker.terminate();
+                    localInference.worker = null;
+                }
+                localInference.ready = false;
+                localInference.loading = true;
+                localInference.failed = false;
+                localInference.error = null;
+
+                updateInferenceBadge('loading', 'Recovering GPU...');
+                const statusEl = document.getElementById('localModelStatus');
+                if (statusEl) { statusEl.textContent = 'Recovering...'; statusEl.style.color = '#ffaa00'; }
+
+                // Spawn fresh worker
+                localInference.worker = spawnInferenceWorker();
+                const modelInfo = LOCAL_MODELS[selectedLocalModel];
+                const forceWasm = document.getElementById('forceWasm')?.checked;
+                const device = (localInference.webgpuAvailable && !forceWasm) ? 'webgpu' : 'wasm';
+                let dtype = modelInfo.dtype;
+                if (device === 'wasm' && (dtype === 'q4' || dtype === 'q4f16')) {
+                    dtype = 'quantized';
+                }
+
+                // Intercept the loaded/loadError messages for this reload
+                const origOnMessage = localInference.worker.onmessage;
+                localInference.worker.onmessage = (e) => {
+                    const { type, payload } = e.data;
+                    if (type === 'loaded') {
+                        localInference.ready = true;
+                        localInference.loading = false;
+                        localInference.worker.onmessage = origOnMessage;
+                        updateInferenceBadge('local', `Local (${device === 'webgpu' ? 'WebGPU' : 'WASM'})`);
+                        if (statusEl) { statusEl.textContent = 'Recovered'; statusEl.style.color = '#00ff88'; }
+                        console.log('🔮 [Recovery] Model reloaded successfully on', device);
+                        resolve();
+                        return;
+                    }
+                    if (type === 'loadError') {
+                        localInference.loading = false;
+                        localInference.failed = true;
+                        localInference.worker.onmessage = origOnMessage;
+                        console.error('🔮 [Recovery] Reload failed:', payload);
+                        reject(new Error(payload));
+                        return;
+                    }
+                    // Forward progress etc. to normal handler
+                    origOnMessage(e);
+                };
+
+                console.log(`🔮 [Recovery] Reloading ${modelInfo.name} on ${device} dtype=${dtype}`);
+                localInference.worker.postMessage({
+                    type: 'load',
+                    payload: { modelId: modelInfo.id, modelType: modelInfo.type, dtype, device }
+                });
+            });
+        }
+
         // Prepare messages for local model (preserves image data for Gemma 4 vision)
         function prepareLocalMessages(messages) {
             if (config.fullPromptLocal) {
@@ -8415,6 +8486,24 @@ Use this data to personalize your response. Comment on their current state when 
                     const partial = document.getElementById('streaming-message');
                     if (partial) partial.remove();
 
+                    // WebGPU device lost — auto-reload and retry once
+                    if (isWebGPUDeviceLost(localErr.message)) {
+                        try {
+                            showStatus('GPU context lost — reloading model...', 'warning');
+                            await reloadLocalModel();
+                            showStatus('Model recovered — retrying...', 'success');
+                            const retryMsgId = addStreamingMessage();
+                            fullResponse = await generateLocalStreamingResponse(messages, retryMsgId);
+                            finalizeStreamingMessage(retryMsgId);
+                            await processResponse(fullResponse);
+                            return;
+                        } catch (retryErr) {
+                            console.warn('🔮 [Dispatch] Retry after reload also failed:', retryErr.message);
+                            const retryPartial = document.getElementById('streaming-message');
+                            if (retryPartial) retryPartial.remove();
+                        }
+                    }
+
                     if (config.inferenceMode === 'local') throw localErr;
                     showStatus('Local model error — falling back to remote API...', 'warning');
                     updateInferenceBadge('remote', 'Remote (API)');
@@ -8440,6 +8529,19 @@ Use this data to personalize your response. Comment on their current state when 
                     return await generateLocalResponse(messages);
                 } catch (localErr) {
                     console.warn('🔮 [Dispatch] Local failed:', localErr.message, '→ falling back to remote');
+
+                    // WebGPU device lost — auto-reload and retry once
+                    if (isWebGPUDeviceLost(localErr.message)) {
+                        try {
+                            showStatus('GPU context lost — reloading model...', 'warning');
+                            await reloadLocalModel();
+                            showStatus('Model recovered — retrying...', 'success');
+                            return await generateLocalResponse(messages);
+                        } catch (retryErr) {
+                            console.warn('🔮 [Dispatch] Retry after reload also failed:', retryErr.message);
+                        }
+                    }
+
                     if (config.inferenceMode === 'local') throw localErr;
                     showStatus('Local model error — falling back to remote API...', 'warning');
                     updateInferenceBadge('remote', 'Remote (API)');

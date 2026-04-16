@@ -6754,19 +6754,25 @@ return result;</textarea>
                                 };
                             }
 
+                            // Octave-shift frequencies above 963Hz down to sub-bass range (20-60Hz)
+                            function toSubBass(freq) {
+                                if (freq <= 963) return freq;
+                                let f = freq;
+                                while (f > 60) f /= 2;
+                                while (f < 20) f *= 2;
+                                return f;
+                            }
+
                             function playFrequency(context, freq, dur, wave) {
                                 try {
                                     const oscillator = context.createOscillator();
                                     const gainNode = context.createGain();
 
                                     oscillator.type = wave;
-                                    oscillator.frequency.value = freq;
+                                    // Frequencies above 963Hz play as sub-bass octave equivalents
+                                    oscillator.frequency.value = toSubBass(freq);
 
-                                    // Frequencies above 963Hz are felt, not heard — heavy attenuation
-                                    let playVol = 0.003; // 1% default starting volume
-                                    if (freq > 963) {
-                                        playVol = playVol * 0.05; // ~5% of already-low volume
-                                    }
+                                    let playVol = 0.01;
 
                                     // Smooth envelope
                                     gainNode.gain.setValueAtTime(0, context.currentTime);
@@ -6793,11 +6799,10 @@ return result;</textarea>
                                     const gainNode = offlineContext.createGain();
 
                                     oscillator.type = wave;
-                                    oscillator.frequency.value = freq;
+                                    // Frequencies above 963Hz play as sub-bass octave equivalents
+                                    oscillator.frequency.value = toSubBass(freq);
 
-                                    // Frequencies above 963Hz are felt, not heard
-                                    let dlVol = 0.003;
-                                    if (freq > 963) dlVol = dlVol * 0.05;
+                                    let dlVol = 0.01;
 
                                     gainNode.gain.setValueAtTime(0, 0);
                                     gainNode.gain.linearRampToValueAtTime(dlVol, 0.1);
@@ -10279,7 +10284,7 @@ Use this data to personalize your response. Comment on their current state when 
             testGainNode: null,      // For volume testing
             userInteracted: false,   // Mobile browser compatibility
             adaptationActive: false, // Current adaptation status
-            totalVolume: 0.5,       // Calculated total volume
+            totalVolume: 0.01,      // Calculated total volume (1% default)
             intelligentAdaptation: true, // Enhanced AI-driven adaptation
             frequencyLock: null,     // Lock specific frequency for focused sessions
             sessionStartTime: null,  // Track session duration for personalization
@@ -10448,7 +10453,7 @@ Use this data to personalize your response. Comment on their current state when 
                 solfeggioSettings.testOscillator.frequency.setValueAtTime(528, solfeggioSettings.audioContext.currentTime);
 
                 // Apply current volume settings with safe fallback
-                const testVolume = solfeggioSettings.totalVolume || 0.3; // 30% fallback volume
+                const testVolume = solfeggioSettings.totalVolume || 0.01; // 1% fallback volume
                 solfeggioSettings.testGainNode.gain.setValueAtTime(0, solfeggioSettings.audioContext.currentTime);
                 solfeggioSettings.testGainNode.gain.linearRampToValueAtTime(
                     testVolume, 
@@ -11709,7 +11714,7 @@ Use this data to personalize your response. Comment on their current state when 
                 
                 // Set volume
                 const currentTime = solfeggioSettings.audioContext.currentTime;
-                let volume = solfeggioSettings.totalVolume || 0.003;
+                let volume = solfeggioSettings.totalVolume || 0.01;
                 // Frequencies above 963Hz are felt, not heard
                 if (frequency > 963) volume = volume * 0.05;
 
@@ -12082,15 +12087,14 @@ Use this data to personalize your response. Comment on their current state when 
                 
                 // Configure the new oscillator
                 solfeggioSettings.pendingOscillator.type = 'sine';
-                solfeggioSettings.pendingOscillator.frequency.setValueAtTime(newFrequency, currentTime);
-                
+                // Frequencies above 963Hz play as sub-bass octave equivalents
+                solfeggioSettings.pendingOscillator.frequency.setValueAtTime(toSubBass(newFrequency), currentTime);
+
                 // Connect new audio chain
                 solfeggioSettings.pendingOscillator.connect(solfeggioSettings.pendingGainNode);
                 solfeggioSettings.pendingGainNode.connect(solfeggioSettings.audioContext.destination);
-                
-                // Frequencies above 963Hz are felt, not heard — apply heavy attenuation
-                let crossfadeVolume = solfeggioSettings.totalVolume || 0.003;
-                if (newFrequency > 963) crossfadeVolume = crossfadeVolume * 0.05;
+
+                let crossfadeVolume = solfeggioSettings.totalVolume || 0.01;
 
                 // Set up crossfade envelope
                 // New frequency starts at 0 and fades in
@@ -12244,31 +12248,27 @@ Use this data to personalize your response. Comment on their current state when 
                 // Create oscillator for the solfeggio frequency
                 solfeggioSettings.oscillator = solfeggioSettings.audioContext.createOscillator();
                 solfeggioSettings.oscillator.type = 'sine'; // Pure sine wave for cleaner, more therapeutic tones
-                solfeggioSettings.oscillator.frequency.setValueAtTime(frequency, solfeggioSettings.audioContext.currentTime);
-                
+                // Frequencies above 963Hz play as sub-bass octave equivalents
+                solfeggioSettings.oscillator.frequency.setValueAtTime(toSubBass(frequency), solfeggioSettings.audioContext.currentTime);
+
                 // Apply enhanced volume control with smooth fade-in/fade-out
                 const currentTime = solfeggioSettings.audioContext.currentTime;
                 const fadeTime = 0.5; // 0.5 second fade
                 const playbackDuration = duration / 1000; // Convert to seconds
                 const sustainTime = playbackDuration - (fadeTime * 2);
-                
-                // Ensure gain node is properly initialized - THIS IS THE FIX
+
+                // Ensure gain node is properly initialized
                 if (!solfeggioSettings.gainNode || !solfeggioSettings.gainNode.gain) {
                     console.warn('⚠️ Gain node is null, reinitializing audio system...');
                     initializeSolfeggioSystem();
-                    
+
                     // Double check after re-initialization
                     if (!solfeggioSettings.gainNode || !solfeggioSettings.gainNode.gain) {
                         throw new Error('Failed to initialize gain node - audio system may not be supported');
                     }
                 }
-                
-                // Frequencies above 963Hz are "felt not heard" — apply heavy attenuation
-                let effectiveVolume = solfeggioSettings.totalVolume || 0.003;
-                if (frequency > 963) {
-                    // Scale down to ~5% of user volume for supra-Solfeggio Aetheria frequencies
-                    effectiveVolume = effectiveVolume * 0.05;
-                }
+
+                let effectiveVolume = solfeggioSettings.totalVolume || 0.01;
 
                 // Set up gain envelope for smooth playback
                 solfeggioSettings.gainNode.gain.setValueAtTime(0, currentTime);
@@ -12313,7 +12313,7 @@ Use this data to personalize your response. Comment on their current state when 
                 updateNeuroMiniDisplay();
                 
                 // User feedback
-                const volumePercent = Math.round((solfeggioSettings.totalVolume || 0.3) * 100);
+                const volumePercent = Math.round((solfeggioSettings.totalVolume || 0.01) * 100);
                 const durationSec = duration / 1000;
                 
                 console.log(`🎵 Playing solfeggio: ${frequency}Hz (${solfeggioSettings.currentFrequencyName}) at ${volumePercent}% for ${durationSec}s`);
@@ -12541,7 +12541,7 @@ Use this data to personalize your response. Comment on their current state when 
                 const currentTime = solfeggioSettings.audioContext.currentTime;
                 const fadeTime = 0.5;
                 const playbackDuration = duration / 1000;
-                const targetVolume = solfeggioSettings.totalVolume || 0.3;
+                const targetVolume = solfeggioSettings.totalVolume || 0.01;
                 
                 try {
                     solfeggioSettings.gainNode.gain.cancelScheduledValues(currentTime);

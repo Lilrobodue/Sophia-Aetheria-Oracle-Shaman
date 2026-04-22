@@ -1536,7 +1536,7 @@
                     Export
                 </button>
             </div>
-            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v44</div>
+            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v45</div>
             </div><!-- end sidebar-scroll -->
         </div>
 
@@ -9080,11 +9080,13 @@ self.onmessage = async (e) => {
                     return msg;
                 });
             }
-            let LOCAL_SYSTEM_PROMPT = `You are Sophia, the Aetheria Oracle Shaman — a warm, wise spiritual guide. You know tarot (78 cards), numerology, I Ching (64 hexagrams), palmistry, astrology, runes (Elder Futhark), crystals, chakras, dream interpretation, and the Aetheria 27-frequency healing system (174-6336Hz across GUT/HEART/HEAD regimes, all 432Hz-based).
+            let LOCAL_SYSTEM_PROMPT = `[Roles in this conversation: Sophia is the assistant. The human is the user. Sophia speaks in the first person as "I". Sophia addresses the user as "you". Sophia never refers to the user as Sophia, and never takes on the user's identity. If the user asks for a reading, Sophia gives one — Sophia is not the one being read.]
 
-For palmistry: analyze the palm image carefully. Identify the heart line, head line, life line, fate line, and any minor lines. Note the hand shape (earth, air, water, fire), finger proportions, mounts (Jupiter, Saturn, Apollo, Mercury, Venus, Luna, Mars), and skin texture. Give a thorough, accurate reading connecting what you see to the person's potential strengths, challenges, and path.
+I am Sophia, the Aetheria Oracle Shaman — a warm, wise spiritual guide. I know tarot (78 cards), numerology, I Ching (64 hexagrams), palmistry, astrology, runes (Elder Futhark), crystals, chakras, dream interpretation, and the Aetheria 27-frequency healing system (174-6336Hz across GUT/HEART/HEAD regimes, all 432Hz-based).
 
-Be warm, conversational, and grounded. Ask follow-up questions. Connect different systems when patterns emerge. Deliver truth with compassion. You're a wise friend by a fire, not a database.`;
+For palmistry: I analyze the palm image carefully. I identify the heart line, head line, life line, fate line, and any minor lines. I note the hand shape (earth, air, water, fire), finger proportions, mounts (Jupiter, Saturn, Apollo, Mercury, Venus, Luna, Mars), and skin texture. I give a thorough, accurate reading connecting what I see to your potential strengths, challenges, and path.
+
+I am warm, conversational, and grounded. I ask follow-up questions. I connect different systems when patterns emerge. I deliver truth with compassion. I am a wise friend by a fire, not a database.`;
 
             // Inject live brainwave data into system prompt so Sophia can respond to it
             if (currentAetheriaPosition && currentEEGData && eegStreaming) {
@@ -9176,15 +9178,27 @@ Use this data to personalize your response. Comment on their current state when 
             });
         }
 
+        // LFM2.5 reasoning models (and sometimes Instruct) emit <think>...</think>
+        // blocks of internal chain-of-thought before the actual answer. They're
+        // useful for debugging but shouldn't bleed into the visible response or
+        // get replayed into the next turn's context. This strips them in both
+        // the mid-stream (partial, unclosed) and final (closed) forms.
+        function stripThinkBlocks(text) {
+            return text
+                .replace(/<think>[\s\S]*?<\/think>\s*/g, '')  // completed blocks
+                .replace(/<think>[\s\S]*$/, '');              // unclosed tail during streaming
+        }
+
         async function generateLocalResponse(messages) {
             if (!localInference.ready || !localInference.worker) throw new Error('Local model not loaded');
             const chatMessages = prepareLocalMessages(messages);
             let fullResponse = '';
             await workerGenerate(chatMessages, (token) => { fullResponse += token; });
-            if (!fullResponse.trim()) {
+            const stripped = stripThinkBlocks(fullResponse);
+            if (!stripped.trim()) {
                 throw new Error('Model returned empty response — may be out of GPU memory. Try a shorter question or switch to a smaller model.');
             }
-            return fullResponse;
+            return stripped;
         }
 
         async function generateLocalStreamingResponse(messages, streamingMessageId) {
@@ -9193,12 +9207,14 @@ Use this data to personalize your response. Comment on their current state when 
             let fullResponse = '';
             await workerGenerate(chatMessages, (token) => {
                 fullResponse += token;
-                updateStreamingMessage(streamingMessageId, fullResponse);
+                // Display with think blocks hidden — reasoning is for the model, not the UI.
+                updateStreamingMessage(streamingMessageId, stripThinkBlocks(fullResponse));
             });
-            if (!fullResponse.trim()) {
+            const stripped = stripThinkBlocks(fullResponse);
+            if (!stripped.trim()) {
                 throw new Error('Model returned empty response — may be out of GPU memory. Try a shorter question or switch to a smaller model.');
             }
-            return fullResponse;
+            return stripped;
         }
 
         function shouldUseLocal() {

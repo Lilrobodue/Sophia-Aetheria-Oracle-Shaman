@@ -1536,7 +1536,7 @@
                     Export
                 </button>
             </div>
-            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v37</div>
+            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v38</div>
             </div><!-- end sidebar-scroll -->
         </div>
 
@@ -7895,12 +7895,19 @@ self.onmessage = async (e) => {
                 self.postMessage({ type: 'loaded' });
             } else if (modelType === 'lfm2-vision') {
                 // ── LFM2.5-VL via AutoModelForImageTextToText ──
-                // Accepts structured dtype like { embed_tokens: 'q4', vision_encoder: 'fp16', decoder_model_merged: 'q4' }
+                // Accepts structured dtype like { embed_tokens: 'fp16', vision_encoder: 'fp16', decoder_model_merged: 'q4' }.
+                // use_external_data_format is required: each variant we load (_fp16, _q4)
+                // ships its weights in a .onnx_data sidecar (the .onnx file holds only the
+                // graph). Without this flag Transformers.js skips the prefetch/mount step
+                // and ORT-Web throws "Module.MountedFiles is not available" at session
+                // deserialization. Value true = 1 chunk per component; our preset uses
+                // one data file per component.
                 self.postMessage({ type: 'progress', payload: { status: 'progress', name: 'processor', progress: 0 } });
                 processor = await AutoProcessor.from_pretrained(payload.modelId);
                 model = await AutoModelForImageTextToText.from_pretrained(payload.modelId, {
                     dtype: payload.dtype,
                     device: payload.device,
+                    use_external_data_format: true,
                     progress_callback: (p) => self.postMessage({ type: 'progress', payload: p }),
                 });
                 self.postMessage({ type: 'loaded' });

@@ -1536,7 +1536,7 @@
                     Export
                 </button>
             </div>
-            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v39</div>
+            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v40</div>
             </div><!-- end sidebar-scroll -->
         </div>
 
@@ -1861,7 +1861,7 @@
                                 </optgroup>
                                 <optgroup label="🔧 Agent Mode — Tools & Structured Work">
                                     <option value="agent-lite">LFM2.5-1.2B-Instruct — Agent Lite (~0.8 GB, any device)</option>
-                                    <option value="agent-vision">LFM2.5-VL-1.6B — Agent + Vision (~2.3 GB, 8GB+ RAM)</option>
+                                    <option value="agent-vision">LFM2.5-VL-1.6B — Agent + Vision (~1.8 GB, 6GB+ RAM)</option>
                                 </optgroup>
                                 <optgroup label="🧠 Reasoning Mode — Analysis & Logic">
                                     <option value="reason-lite">LFM2.5-1.2B-Thinking — Transparent Reasoning (~0.8 GB, any device)</option>
@@ -7716,17 +7716,18 @@ return result;</textarea>
                 id: 'LiquidAI/LFM2.5-VL-1.6B-ONNX',
                 name: 'LFM2.5-VL-1.6B — Agent + Vision',
                 params: '~1.6B',
-                download: '~2.3 GB',
-                minMemory: 8,
+                download: '~1.8 GB',
+                minMemory: 6,
                 speed: 'Fast',
                 quality: 'Vision + Tools',
                 type: 'lfm2-vision',
-                // This model uses a custom 3-session ORT-Web loader (Transformers.js's
-                // Llava architecture can't load it — repo filenames diverge from TJs's
-                // convention). Keys match Liquid's own config: 'embedImages' + 'decoder'.
-                // embed_tokens is always loaded as fp16 (no quantized variant in the repo).
-                // This matches Liquid's "Vision FP16, Decoder Q4" default preset (~2.3 GB).
-                dtype: { embedImages: 'fp16', decoder: 'q4' },
+                // Custom 3-session ORT-Web loader (Transformers.js's Llava architecture
+                // can't load this model — repo filenames diverge from TJs's convention).
+                // Keys match Liquid's own config: embedImages + decoder. embed_tokens
+                // is always loaded as fp16 (no quantized variant exists in the repo).
+                // Using Liquid's "Vision Q4, Decoder Q4" preset (~1.8 GB) — smaller than
+                // the FP16-Decoder-Q4 variant and more likely to fit tighter GPU memory.
+                dtype: { embedImages: 'q4', decoder: 'q4' },
                 category: 'agent',
                 family: 'lfm25',
             },
@@ -8116,10 +8117,17 @@ class VLModel {
 
         // --- Three sessions ---
         // embed_tokens only ships as default or _fp16 (no q4/q8 variant).
-        const embedTokensQuant = quantization.decoder ? 'fp16' : null;
-        this.embedTokensSession = await loadSession('embed_tokens', embedTokensQuant);
-        this.embedImagesSession = await loadSession('embed_images', quantization.embedImages || null);
-        this.decoderSession     = await loadSession('decoder',     quantization.decoder     || null);
+        // Release partially loaded sessions on any failure so a retry starts
+        // with a clean WebGPU state instead of inheriting a dead GPU context.
+        try {
+            const embedTokensQuant = quantization.decoder ? 'fp16' : null;
+            this.embedTokensSession = await loadSession('embed_tokens', embedTokensQuant);
+            this.embedImagesSession = await loadSession('embed_images', quantization.embedImages || null);
+            this.decoderSession     = await loadSession('decoder',     quantization.decoder     || null);
+        } catch (err) {
+            await this.dispose();
+            throw err;
+        }
     }
 
     async getTextEmbeddings(ids) {
@@ -8192,6 +8200,14 @@ class VLModel {
 
     async generate(messages, opts) {
         const { images = [], messageImageMap = new Map(), maxNewTokens = 256, onToken } = opts;
+        console.log('[VL] generate() start —',
+            messages.length, 'messages,',
+            images.length, 'images, max_new_tokens=', maxNewTokens);
+        console.log('[VL] special tokens:',
+            'image=', this.imageTokenId,
+            'image_start=', this.imageStartTokenId,
+            'image_end=', this.imageEndTokenId,
+            'eos=', this.eosTokenId);
 
         // 1. Process images → embeddings
         let imgEmb = null, tokensPerImage = [];
@@ -8199,6 +8215,10 @@ class VLModel {
             const r = await this.getImageEmbeddings(images);
             imgEmb = r.embeddings;
             tokensPerImage = r.tokensPerImage;
+            console.log('[VL] image embeddings:',
+                r.numTokens, 'total tokens,',
+                'tokens/image=[' + tokensPerImage.join(',') + ']',
+                ', embedding length=', imgEmb.length);
         }
 
         // 2. Insert <image> placeholders into user messages
@@ -8219,7 +8239,9 @@ class VLModel {
             add_generation_prompt: true,
             tokenize: false,
         });
+        console.log('[VL] prompt (first 300 chars):', String(prompt).slice(0, 300));
         let inputIds = [...this.tokenizer.encode(prompt)];
+        const preExpandLen = inputIds.length;
         if (images.length > 0 && this.imageTokenId !== null) {
             const expanded = [];
             let imgIdx = 0;
@@ -8235,6 +8257,8 @@ class VLModel {
                 }
             }
             inputIds = expanded;
+            console.log('[VL] token expansion: pre=', preExpandLen, ' post=', inputIds.length,
+                ' (imgIdx used=', imgIdx, '/', tokensPerImage.length, ')');
         }
 
         // 4. Build initial embeddings (text + image substitutions)
@@ -8242,15 +8266,23 @@ class VLModel {
         let currentEmbeds = images.length > 0
             ? this.buildCombinedEmbeddings(inputIds, textEmb, imgEmb)
             : textEmb;
+        console.log('[VL] initial embeds dims:', currentEmbeds.dims);
 
         // 5. Greedy decoder loop
         const cache = this.initializeCache();
+        console.log('[VL] cache keys:', Object.keys(cache).length, '—', Object.keys(cache).slice(0, 4).join(', '), '…');
         let curLen = currentEmbeds.dims[1];
         const generated = [];
         for (let step = 0; step < maxNewTokens; step++) {
             const am = new ort.Tensor('int64', new BigInt64Array(curLen).fill(1n), [1, curLen]);
             const feeds = { inputs_embeds: currentEmbeds, attention_mask: am, ...cache };
-            const outputs = await this.decoderSession.run(feeds);
+            let outputs;
+            try {
+                outputs = await this.decoderSession.run(feeds);
+            } catch (err) {
+                console.error('[VL] decoder.run failed at step', step, ':', err);
+                throw err;
+            }
             const logits = outputs.logits;
             const vocab = logits.dims[2];
             const lastStart = (logits.dims[1] - 1) * vocab;
@@ -8258,16 +8290,18 @@ class VLModel {
             let maxIdx = 0, maxVal = lastLogits[0];
             for (let i = 1; i < vocab; i++) if (lastLogits[i] > maxVal) { maxVal = lastLogits[i]; maxIdx = i; }
             generated.push(maxIdx);
+            if (step < 3) console.log('[VL] step', step, 'token=', maxIdx, 'logits dims=', logits.dims);
             if (onToken) {
                 const txt = this.tokenizer.decode([maxIdx]);
-                if (onToken(txt, maxIdx)) break;
+                if (onToken(txt, maxIdx)) { console.log('[VL] onToken requested stop at step', step); break; }
             }
-            if (maxIdx === this.eosTokenId) break;
+            if (maxIdx === this.eosTokenId) { console.log('[VL] EOS at step', step); break; }
             this.updateCache(cache, outputs);
             const next = await this.getTextEmbeddings([maxIdx]);
             currentEmbeds = next;
             curLen++;
         }
+        console.log('[VL] generate() done — produced', generated.length, 'tokens');
         return this.tokenizer.decode(generated, { skip_special_tokens: true });
     }
 
@@ -8376,9 +8410,14 @@ self.onmessage = async (e) => {
                         allImageUrls.push(...m.images);
                     }
                 });
+                console.log('[VL-worker] generate branch: messages=', plainMessages.length,
+                    'image urls=', allImageUrls.length,
+                    'messageImageMap size=', messageImageMap.size);
 
                 // Load image bitmaps (Worker-compatible)
                 const bitmaps = await Promise.all(allImageUrls.map(u => vlLoadImageBitmap(u)));
+                console.log('[VL-worker] bitmaps loaded:',
+                    bitmaps.map(b => b.width + 'x' + b.height).join(', '));
 
                 await vlModel.generate(plainMessages, {
                     images: bitmaps,
@@ -8391,6 +8430,7 @@ self.onmessage = async (e) => {
                 self.postMessage({ type: 'genDone' });
             } catch (err) {
                 const msg = (err && err.message) ? err.message : String(err);
+                console.error('[VL-worker] generate failed:', err);
                 self.postMessage({ type: 'genError', payload: msg });
             }
             return;
@@ -8652,6 +8692,13 @@ self.onmessage = async (e) => {
             if (statusEl) { statusEl.textContent = 'Loading...'; statusEl.style.color = '#ffaa00'; }
 
             try {
+                // Terminate any leftover worker from a previous failed load.
+                // Without this, its WebGPU resources may linger and cause
+                // "external Instance reference no longer exists" on the retry.
+                if (localInference.worker) {
+                    try { localInference.worker.terminate(); } catch (e) {}
+                    localInference.worker = null;
+                }
                 localInference.worker = spawnInferenceWorker();
                 const modelInfo = LOCAL_MODELS[selectedLocalModel];
                 const forceWasm = document.getElementById('forceWasm')?.checked;

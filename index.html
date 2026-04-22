@@ -1854,13 +1854,27 @@
                         <label style="font-weight: normal; font-size: 0.8rem; color: #00ff88;">
                             Model Size:
                             <select id="localModelPicker" onchange="onLocalModelChange()" style="margin-left: 6px; padding: 2px 4px; font-size: 0.8rem; background: #1a1a2e; color: #fff; border: 1px solid #333; border-radius: 4px;">
-                                <option value="tiny">Qwen 0.5B — Tiny (~0.3 GB, any device)</option>
-                                <option value="lite">Gemma 3 1B — Lite (~0.6 GB, 6GB+ RAM)</option>
-                                <option value="e2b">Gemma 4 E2B — Vision (~3.2 GB, 10GB+ RAM)</option>
-                                <option value="e4b">Gemma 4 E4B — Best (~5.1 GB, 16GB+ RAM)</option>
+                                <optgroup label="🌸 Warm Voice — Oracle & Heart">
+                                    <option value="lite">Gemma 3 1B — Warm Lite (~0.6 GB, any device)</option>
+                                    <option value="e2b">Gemma 4 E2B — Warm + Vision + Tools (~3.2 GB, 10GB+ RAM)</option>
+                                    <option value="e4b">Gemma 4 E4B — Warm Deep (~5.1 GB, 16GB+ RAM)</option>
+                                </optgroup>
+                                <optgroup label="🔧 Agent Mode — Tools & Structured Work">
+                                    <option value="agent-lite">LFM2.5-1.2B-Instruct — Agent Lite (~0.8 GB, any device)</option>
+                                    <option value="agent-vision">LFM2.5-VL-1.6B — Agent + Vision (~1.2 GB, 6GB+ RAM)</option>
+                                </optgroup>
+                                <optgroup label="🧠 Reasoning Mode — Analysis & Logic">
+                                    <option value="reason-lite">LFM2.5-1.2B-Thinking — Transparent Reasoning (~0.8 GB, any device)</option>
+                                    <option value="reason-bonsai-4b">Ternary-Bonsai-4B — Compressed Power (~1–2 GB, 4GB+ RAM)</option>
+                                    <option value="reason-bonsai-8b">Ternary-Bonsai-8B — Max Intelligence (~2 GB, 6GB+ RAM)</option>
+                                </optgroup>
+                                <optgroup label="⚡ Tiny Fallback">
+                                    <option value="tiny">Qwen 0.5B — Spark (~0.3 GB, any device)</option>
+                                </optgroup>
                             </select>
                         </label>
                         <div id="modelPickerHint" style="font-size: 0.7rem; color: #888; margin-top: 2px;">Auto-selected based on device memory</div>
+                        <div id="modelCategoryHint" style="font-size: 0.75rem; color: #ff99bb; font-style: italic; margin-top: 4px;">Sophia's softest voice — oracle work, emotional reflection, metaphysical conversation.</div>
                     </div>
                     <div style="margin-top: 6px;">
                         <span>Status: </span><span id="localModelStatus" style="color: #ffaa00;">Not loaded</span>
@@ -5776,51 +5790,52 @@ return result;</textarea>
                 effectiveMemory = Math.min(32, deviceInfo.cores * 2);
             }
 
+            // Defaults by RAM tier — intent-organized:
+            //   <4GB  → Spark (Qwen 0.5B)
+            //   4–6   → Agent Lite (LFM2.5-1.2B-Instruct)
+            //   6–10  → Warm Lite (Gemma 3 1B, preferred over Agent at this tier)
+            //   10–16 → Warm + Vision (Gemma 4 E2B) ← overall default
+            //   16+   → Warm Deep (Gemma 4 E4B)
             if (effectiveMemory >= 16) {
-                // Premium: use E4B for maximum quality
                 selectedLocalModel = 'e4b';
                 config.contextLength = 32768;
                 config.maxTokens = 4096;
                 config.modelTier = 'premium';
-                config.recommendedModel = 'Gemma 4 E4B (Premium — ~5.1 GB)';
+                config.recommendedModel = 'Gemma 4 E4B — Warm Deep (~5.1 GB)';
                 config.memoryBudget = effectiveMemory + 'GB est. (Premium)';
-                config.features = ['Vision + Audio', 'E4B Quality', 'Ultra Streaming', 'Full Context', 'Maximum Performance'];
-            } else if (effectiveMemory >= 12) {
-                // High: E2B — E4B is too tight on 12GB mobile
-                selectedLocalModel = 'e2b';
-                config.contextLength = 24576;
-                config.maxTokens = 2048;
-                config.modelTier = 'high';
-                config.recommendedModel = 'Gemma 4 E2B (High — ~3.2 GB)';
-                config.memoryBudget = effectiveMemory + 'GB est. (High Performance)';
-                config.features = ['Vision + Audio', 'E2B Quality', 'Fast Streaming', 'Extended Context', 'Image Analysis'];
+                config.features = ['Warm Voice', 'Vision + Audio', 'E4B Quality', 'Ultra Streaming', 'Full Context'];
             } else if (effectiveMemory >= 10) {
-                // Standard: E2B is feasible with 10GB+
                 selectedLocalModel = 'e2b';
-                config.contextLength = 16384;
-                config.maxTokens = 1024;
-                config.modelTier = 'standard';
-                config.recommendedModel = 'Gemma 4 E2B (Standard — ~3.2 GB)';
-                config.memoryBudget = effectiveMemory + 'GB est. (Standard)';
-                config.features = ['Vision + Audio', 'E2B Fast', 'Smart Streaming', 'Standard Context'];
+                config.contextLength = effectiveMemory >= 12 ? 24576 : 16384;
+                config.maxTokens = effectiveMemory >= 12 ? 2048 : 1024;
+                config.modelTier = effectiveMemory >= 12 ? 'high' : 'standard';
+                config.recommendedModel = 'Gemma 4 E2B — Warm + Vision + Tools (~3.2 GB)';
+                config.memoryBudget = effectiveMemory + 'GB est.';
+                config.features = ['Warm Voice', 'Vision + Audio', 'E2B Quality', 'Image Analysis'];
             } else if (effectiveMemory >= 6) {
-                // Lite: Gemma 3 1B — fits in ~600MB
                 selectedLocalModel = 'lite';
                 config.contextLength = 8192;
                 config.maxTokens = 512;
                 config.modelTier = 'lite';
-                config.recommendedModel = 'Gemma 3 1B (Lite — ~0.6 GB)';
+                config.recommendedModel = 'Gemma 3 1B — Warm Lite (~0.6 GB)';
                 config.memoryBudget = effectiveMemory + 'GB est. (Lite)';
-                config.features = ['Text Only', 'Fast', 'Compact'];
+                config.features = ['Warm Voice', 'Text', 'Fast', 'Compact'];
+            } else if (effectiveMemory >= 4) {
+                selectedLocalModel = 'agent-lite';
+                config.contextLength = 4096;
+                config.maxTokens = 512;
+                config.modelTier = 'agent-lite';
+                config.recommendedModel = 'LFM2.5-1.2B-Instruct — Agent Lite (~0.8 GB)';
+                config.memoryBudget = effectiveMemory + 'GB est. (Agent)';
+                config.features = ['Agent Mode', 'Tool Calling', 'Structured'];
             } else {
-                // Tiny: Qwen 0.5B — runs on almost anything
                 selectedLocalModel = 'tiny';
                 config.contextLength = 4096;
                 config.maxTokens = 256;
                 config.modelTier = 'tiny';
-                config.recommendedModel = 'Qwen 0.5B (Tiny — ~0.3 GB)';
-                config.memoryBudget = effectiveMemory + 'GB est. (Tiny)';
-                config.features = ['Text Only', 'Instant', 'Ultra-Compact'];
+                config.recommendedModel = 'Qwen 0.5B — Spark (~0.3 GB)';
+                config.memoryBudget = effectiveMemory + 'GB est. (Spark)';
+                config.features = ['Spark', 'Instant', 'Ultra-Compact'];
             }
 
             // Mobile adjustments
@@ -5831,10 +5846,13 @@ return result;</textarea>
                 }
                 // Mobile WebGPU is unstable — Android aggressively reclaims GPU
                 // after the first inference, causing [Device] is lost errors.
-                // Downgrade WebGPU-only models (E2B/E4B) to Gemma 3 1B which
+                // Downgrade WebGPU-only models (E2B/E4B/LFM2-VL) to Gemma 3 1B which
                 // runs on WASM and is immune to GPU context loss.
                 const currentDtype = LOCAL_MODELS[selectedLocalModel]?.dtype;
-                if (currentDtype === 'q4f16' || currentDtype === 'q4') {
+                const isWebGPUOnly = currentDtype === 'q4f16'
+                    || currentDtype === 'q4'
+                    || (typeof currentDtype === 'object' && currentDtype !== null);
+                if (isWebGPUOnly) {
                     console.log(`📱 Mobile: downgrading ${selectedLocalModel} → lite (WASM-safe, avoids WebGPU instability)`);
                     selectedLocalModel = 'lite';
                     config.contextLength = Math.min(config.contextLength, 8192);
@@ -7629,52 +7647,135 @@ return result;</textarea>
         // LOCAL INFERENCE ENGINE — Web Worker (non-blocking)
         // ═══════════════════════════════════════════════════
 
-        // Smart model picker — selects E2B or E4B based on device capabilities
+        // Smart model picker — organized by intent (Warm / Agent / Reasoning / Spark).
+        // `category` drives the dropdown optgroup and the italic helper line.
+        // `family` selects tool-call formatting (lfm25 uses <|tool_list_start|>).
         const LOCAL_MODELS = {
             'tiny': {
                 id: 'onnx-community/Qwen2.5-0.5B-Instruct',
-                name: 'Qwen 0.5B',
+                name: 'Qwen 0.5B — Spark',
                 params: '~0.5B',
-                download: '~0.5 GB',
-                minMemory: 2,   // GB — runs on almost anything
+                download: '~0.3 GB',
+                minMemory: 2,
                 speed: 'Instant',
                 quality: 'Basic',
                 type: 'text-generation',
-                dtype: 'quantized',  // standard ONNX int8 — works on both WebGPU and WASM
+                dtype: 'quantized',
+                category: 'tiny',
             },
             'lite': {
                 id: 'onnx-community/gemma-3-1b-it-ONNX',
-                name: 'Gemma 3 1B',
+                name: 'Gemma 3 1B — Warm Lite',
                 params: '~1B',
-                download: '~1 GB',
-                minMemory: 6,   // GB
+                download: '~0.6 GB',
+                minMemory: 6,
                 speed: 'Very fast',
                 quality: 'Good',
                 type: 'text-generation',
-                dtype: 'quantized',  // standard ONNX int8 — works on both WebGPU and WASM
+                dtype: 'quantized',
+                category: 'warm',
             },
             'e2b': {
                 id: 'onnx-community/gemma-4-E2B-it-ONNX',
-                name: 'Gemma 4 E2B',
+                name: 'Gemma 4 E2B — Warm + Vision + Tools',
                 params: '~2B effective',
                 download: '~3.2 GB',
-                minMemory: 10,  // GB — needs ~6GB free after OS/browser
+                minMemory: 10,
                 speed: 'Fast',
                 quality: 'Good',
-                type: 'gemma4-vision',  // uses Gemma4ForConditionalGeneration — vision + audio
+                type: 'gemma4-vision',
                 dtype: 'q4f16',
+                category: 'warm',
             },
             'e4b': {
                 id: 'onnx-community/gemma-4-E4B-it-ONNX',
-                name: 'Gemma 4 E4B',
+                name: 'Gemma 4 E4B — Warm Deep',
                 params: '~4.5B effective',
                 download: '~5.1 GB',
-                minMemory: 12,  // GB
+                minMemory: 12,
                 speed: 'Moderate',
                 quality: 'Excellent',
                 type: 'gemma4-vision',
                 dtype: 'q4f16',
+                category: 'warm',
             },
+            'agent-lite': {
+                id: 'LiquidAI/LFM2.5-1.2B-Instruct-ONNX',
+                name: 'LFM2.5-1.2B-Instruct — Agent Lite',
+                params: '~1.2B',
+                download: '~0.8 GB',
+                minMemory: 4,
+                speed: 'Very fast',
+                quality: 'Structured',
+                type: 'text-generation',
+                dtype: 'q4',
+                category: 'agent',
+                family: 'lfm25',
+            },
+            'agent-vision': {
+                id: 'LiquidAI/LFM2.5-VL-1.6B-ONNX',
+                name: 'LFM2.5-VL-1.6B — Agent + Vision',
+                params: '~1.6B',
+                download: '~2.3 GB',
+                minMemory: 8,
+                speed: 'Fast',
+                quality: 'Vision + Tools',
+                type: 'lfm2-vision',
+                // Per-component quant matches Liquid's "Vision FP16, Decoder Q4" default preset.
+                // Keys mirror Transformers.js ONNX component names — adjust if repo uses different filenames.
+                dtype: { embed_tokens: 'q4', vision_encoder: 'fp16', decoder_model_merged: 'q4' },
+                category: 'agent',
+                family: 'lfm25',
+            },
+            'reason-lite': {
+                id: 'LiquidAI/LFM2.5-1.2B-Thinking-ONNX',
+                name: 'LFM2.5-1.2B-Thinking — Transparent Reasoning',
+                params: '~1.2B',
+                download: '~0.8 GB',
+                minMemory: 2,
+                speed: 'Fast',
+                quality: 'Transparent reasoning',
+                type: 'text-generation',
+                dtype: 'q4',
+                category: 'reason',
+                family: 'lfm25',
+            },
+            'reason-bonsai-4b': {
+                // Size is an estimate — Bonsai's 1.58-bit native compression may not
+                // fully survive ONNX Q4 packing. Update after reading model_q4.onnx_data.
+                id: 'onnx-community/Ternary-Bonsai-4B-ONNX',
+                name: 'Ternary-Bonsai-4B — Compressed Power',
+                params: '~4B',
+                download: '~1–2 GB',
+                minMemory: 4,
+                speed: 'Fast',
+                quality: 'Compressed power',
+                type: 'text-generation',
+                dtype: 'q4',
+                category: 'reason',
+                family: 'bonsai',
+            },
+            'reason-bonsai-8b': {
+                id: 'onnx-community/Ternary-Bonsai-8B-ONNX',
+                name: 'Ternary-Bonsai-8B — Max Intelligence',
+                params: '~8B',
+                download: '~2 GB',
+                minMemory: 6,
+                speed: 'Moderate',
+                quality: 'Max intelligence',
+                type: 'text-generation',
+                dtype: 'q4',
+                category: 'reason',
+                family: 'bonsai',
+            },
+        };
+
+        // Italic helper line shown under the dropdown — keyed by model category.
+        const MODEL_CATEGORY_HINTS = {
+            warm:  "Sophia's softest voice — oracle work, emotional reflection, metaphysical conversation.",
+            agent: "Sophia focused — tool calling, structured tasks, data extraction.",
+            reason:"Sophia sharpening — step-by-step analysis and logical problem-solving.",
+            tiny:  "Sophia whispering — runs anywhere, for when you just need a spark.",
         };
 
         // Active model selection — set by device detection, overridable by user
@@ -7702,14 +7803,16 @@ return result;</textarea>
         };
 
         // ── Build inline Web Worker source ──
-        // Supports two modes:
-        //   'gemma4-vision' → Gemma4ForConditionalGeneration + AutoProcessor (vision/audio/text)
+        // Supports three modes:
+        //   'gemma4-vision'   → Gemma4ForConditionalGeneration + AutoProcessor (vision/audio/text)
+        //   'lfm2-vision'     → AutoModelForImageTextToText + AutoProcessor (LFM2.5-VL tile-based vision)
         //   'text-generation' → pipeline('text-generation') for small text-only models
         function createInferenceWorkerSource() {
             return `
 import {
     pipeline,
     AutoProcessor,
+    AutoModelForImageTextToText,
     Gemma4ForConditionalGeneration,
     TextStreamer,
     RawImage,
@@ -7722,7 +7825,7 @@ env.useBrowserCache = true;
 let processor = null;
 let model = null;
 let pipe = null;       // for text-generation pipeline mode
-let modelType = null;  // 'gemma4-vision' or 'text-generation'
+let modelType = null;  // 'gemma4-vision' | 'lfm2-vision' | 'text-generation'
 
 self.onmessage = async (e) => {
     const { type, payload } = e.data;
@@ -7733,6 +7836,17 @@ self.onmessage = async (e) => {
             if (modelType === 'text-generation') {
                 // ── Small text-only model via pipeline ──
                 pipe = await pipeline('text-generation', payload.modelId, {
+                    dtype: payload.dtype,
+                    device: payload.device,
+                    progress_callback: (p) => self.postMessage({ type: 'progress', payload: p }),
+                });
+                self.postMessage({ type: 'loaded' });
+            } else if (modelType === 'lfm2-vision') {
+                // ── LFM2.5-VL via AutoModelForImageTextToText ──
+                // Accepts structured dtype like { embed_tokens: 'q4', vision_encoder: 'fp16', decoder_model_merged: 'q4' }
+                self.postMessage({ type: 'progress', payload: { status: 'progress', name: 'processor', progress: 0 } });
+                processor = await AutoProcessor.from_pretrained(payload.modelId);
+                model = await AutoModelForImageTextToText.from_pretrained(payload.modelId, {
                     dtype: payload.dtype,
                     device: payload.device,
                     progress_callback: (p) => self.postMessage({ type: 'progress', payload: p }),
@@ -7779,6 +7893,66 @@ self.onmessage = async (e) => {
                     do_sample: payload.temperature > 0,
                     streamer,
                     return_full_text: false,
+                });
+                self.postMessage({ type: 'genDone' });
+            } catch (err) {
+                const msg = (err && err.message) ? err.message : String(err);
+                self.postMessage({ type: 'genError', payload: msg });
+            }
+            return;
+        }
+
+        // ── LFM2.5-VL vision mode ──
+        if (modelType === 'lfm2-vision') {
+            if (!model || !processor) {
+                self.postMessage({ type: 'genError', payload: 'Model not loaded' });
+                return;
+            }
+            try {
+                const messages = payload.messages.map(m => {
+                    const hasImages = m.images && m.images.length > 0;
+                    if (hasImages) {
+                        const content = [];
+                        for (let i = 0; i < m.images.length; i++) content.push({ type: 'image' });
+                        content.push({ type: 'text', text: m.content });
+                        return { role: m.role, content };
+                    }
+                    return { role: m.role, content: m.content };
+                });
+
+                const imageDataUrls = [];
+                for (const m of payload.messages) {
+                    if (m.images) imageDataUrls.push(...m.images);
+                }
+                let imageInputs = null;
+                if (imageDataUrls.length > 0) {
+                    const loaded = await Promise.all(imageDataUrls.map(url => RawImage.fromURL(url)));
+                    imageInputs = loaded.length === 1 ? loaded[0] : loaded;
+                }
+
+                const prompt = processor.apply_chat_template(messages, {
+                    add_generation_prompt: true,
+                    tokenize: false,
+                });
+
+                const inputs = imageInputs
+                    ? await processor(prompt, imageInputs)
+                    : await processor(prompt);
+
+                const streamer = new TextStreamer(processor.tokenizer, {
+                    skip_prompt: true,
+                    skip_special_tokens: true,
+                    callback_function: (token) => {
+                        self.postMessage({ type: 'token', payload: token });
+                    },
+                });
+
+                await model.generate({
+                    ...inputs,
+                    max_new_tokens: payload.max_new_tokens,
+                    temperature: payload.temperature,
+                    do_sample: payload.temperature > 0,
+                    streamer,
                 });
                 self.postMessage({ type: 'genDone' });
             } catch (err) {
@@ -8076,6 +8250,9 @@ self.onmessage = async (e) => {
 
             const hintEl = document.getElementById('modelPickerHint');
             if (hintEl) hintEl.textContent = `${info.params} • ${info.download} download • ${info.speed} inference`;
+
+            const catEl = document.getElementById('modelCategoryHint');
+            if (catEl) catEl.textContent = MODEL_CATEGORY_HINTS[info.category] || '';
 
             console.log('🧠 Model selection changed to:', info.name, info.id);
         }
@@ -8456,8 +8633,23 @@ Use this data to personalize your response. Comment on their current state when 
                 let toolsContext = '';
                 const enabledTools = Object.values(tools).filter(t => t.enabled);
                 if (enabledTools.length > 0) {
-                    toolsContext = '\n\n[Available Tools - Call with format TOOL_CALL: {"tool": "name", "params": {...}}]:\n' +
-                        enabledTools.map(t => `- ${t.name}: ${t.description}`).join('\n');
+                    // LFM2.5 is trained on <|tool_list_start|>[json]<|tool_list_end|> for tool definitions.
+                    // Gemma/Qwen/Bonsai consume a plain-text tool list. Either way, we still ask for
+                    // TOOL_CALL: {...} as the invocation format so the client-side parser can catch it.
+                    const localModelInfo = shouldUseLocal() ? LOCAL_MODELS[selectedLocalModel] : null;
+                    const isLFM25 = localModelInfo && localModelInfo.family === 'lfm25';
+                    if (isLFM25) {
+                        const toolDefs = enabledTools.map(t => ({
+                            name: t.name,
+                            description: t.description,
+                            params: t.params || {},
+                        }));
+                        toolsContext = '\n\n<|tool_list_start|>' + JSON.stringify(toolDefs) + '<|tool_list_end|>' +
+                            '\nTo invoke a tool, emit exactly: TOOL_CALL: {"tool": "name", "params": {...}}';
+                    } else {
+                        toolsContext = '\n\n[Available Tools - Call with format TOOL_CALL: {"tool": "name", "params": {...}}]:\n' +
+                            enabledTools.map(t => `- ${t.name}: ${t.description}`).join('\n');
+                    }
                 }
 
                 // EEG context — for local models, brainwave data is already injected

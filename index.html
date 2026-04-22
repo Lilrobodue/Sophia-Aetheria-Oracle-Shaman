@@ -1536,7 +1536,7 @@
                     Export
                 </button>
             </div>
-            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v36</div>
+            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v37</div>
             </div><!-- end sidebar-scroll -->
         </div>
 
@@ -7721,12 +7721,13 @@ return result;</textarea>
                 speed: 'Fast',
                 quality: 'Vision + Tools',
                 type: 'lfm2-vision',
-                // Keys match the actual ONNX component filenames in the HF repo's onnx/ folder:
-                //   embed_tokens.onnx / embed_tokens_fp16.onnx         (no q4 variant — must be default or fp16)
-                //   embed_images{,_fp16,_q4,_q8}.onnx
-                //   decoder{,_fp16,_q4,_q8}.onnx
-                // This combination matches Liquid's "Vision FP16, Decoder Q4" default (~2.3 GB).
-                dtype: { embed_tokens: 'fp16', embed_images: 'fp16', decoder: 'q4' },
+                // dtype keys must match Transformers.js's inherited Llava session names
+                // (vision_encoder, decoder_model_merged) — NOT the repo's filenames.
+                // The HF repo actually ships those components as embed_images.onnx / decoder.onnx;
+                // the env.fetch shim in the worker rewrites the URLs to match.
+                // Result: loads embed_tokens_fp16.onnx + embed_images_fp16.onnx + decoder_q4.onnx
+                // → matches Liquid's "Vision FP16, Decoder Q4" default (~2.3 GB).
+                dtype: { embed_tokens: 'fp16', vision_encoder: 'fp16', decoder_model_merged: 'q4' },
                 category: 'agent',
                 family: 'lfm25',
             },
@@ -7827,19 +7828,25 @@ import {
 env.allowLocalModels = false;
 env.useBrowserCache = true;
 
-// Narrowly-scoped env.fetch shim for LFM2.5-VL-1.6B-ONNX:
-// The HF repo has processor_config.json (nested under 'image_processor' key)
-// but Transformers.js 4.x only looks for preprocessor_config.json (flat schema).
-// Transformers.js routes all hub file fetches through env.fetch (not the
-// global fetch), so we must override env.fetch specifically. Monkey-patching
-// self.fetch had no effect because env.fetch was captured at module load.
-// Scoped to this one repo + filename — cannot affect any other model load.
+// Narrowly-scoped env.fetch shim for LFM2.5-VL-1.6B-ONNX.
+// Two mismatches between Transformers.js's lfm2_vl architecture class and
+// Liquid's HF repo layout:
+//   1. TJs looks for preprocessor_config.json (flat schema), repo has
+//      processor_config.json (image processor config nested under 'image_processor').
+//   2. Lfm2VlForConditionalGeneration extends Llava and inherits its session names
+//      (vision_encoder, decoder_model_merged), but the repo ships those components
+//      as embed_images.onnx and decoder.onnx.
+// TJs routes hub file fetches through env.fetch (not global fetch), so we override
+// env.fetch specifically. All rewrites are scoped to this one repo.
 const _origEnvFetch = env.fetch
     ? env.fetch.bind(env)
     : self.fetch.bind(self);
+const LFM2_VL_REPO = '/LFM2.5-VL-1.6B-ONNX/resolve/main';
 env.fetch = function(input, init) {
     const url = typeof input === 'string' ? input : (input && input.url) || '';
-    if (url.includes('/LFM2.5-VL-1.6B-ONNX/resolve/main/preprocessor_config.json')) {
+
+    // Fix 1: preprocessor_config.json → processor_config.json (unwrap nested image_processor)
+    if (url.includes(LFM2_VL_REPO + '/preprocessor_config.json')) {
         const fallbackUrl = url.replace('/preprocessor_config.json', '/processor_config.json');
         return _origEnvFetch(fallbackUrl, init).then(async (res) => {
             if (!res.ok) return res;
@@ -7851,6 +7858,19 @@ env.fetch = function(input, init) {
             });
         });
     }
+
+    // Fix 2: translate Llava-style component filenames to this repo's naming.
+    //   vision_encoder(_suffix)?.onnx(_data)?      → embed_images(_suffix)?.onnx(_data)?
+    //   decoder_model_merged(_suffix)?.onnx(_data)? → decoder(_suffix)?.onnx(_data)?
+    if (url.includes(LFM2_VL_REPO + '/onnx/')) {
+        let rewritten = url
+            .replace('/onnx/vision_encoder',       '/onnx/embed_images')
+            .replace('/onnx/decoder_model_merged', '/onnx/decoder');
+        if (rewritten !== url) {
+            return _origEnvFetch(rewritten, init);
+        }
+    }
+
     return _origEnvFetch(input, init);
 };
 

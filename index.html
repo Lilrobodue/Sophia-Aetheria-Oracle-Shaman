@@ -8244,6 +8244,15 @@ self.onmessage = async (e) => {
 
             selectedLocalModel = newModel;
 
+            // Fresh WebGPU attempt per model. A crash on one model (esp. the vision
+            // model) auto-enables Force WASM in loadError — but q4 LFM2/Bonsai models
+            // don't run on WASM at all (GatherBlockQuantized is WebGPU-only). Clear
+            // the flag so each new selection gets a real WebGPU try.
+            const wasmBox = document.getElementById('forceWasm');
+            if (wasmBox && wasmBox.checked && localInference.webgpuAvailable) {
+                wasmBox.checked = false;
+            }
+
             // Update display
             const nameEl = document.getElementById('localModelName');
             if (nameEl) nameEl.textContent = info.name;

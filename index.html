@@ -1536,7 +1536,7 @@
                     Export
                 </button>
             </div>
-            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v42</div>
+            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v43</div>
             </div><!-- end sidebar-scroll -->
         </div>
 
@@ -8297,10 +8297,21 @@ class VLModel {
     }
 
     async generate(messages, opts) {
-        const { images = [], messageImageMap = new Map(), maxNewTokens = 256, onToken } = opts;
+        const {
+            images = [],
+            messageImageMap = new Map(),
+            maxNewTokens = 256,
+            onToken,
+            temperature = 0,
+            repetitionPenalty = 1.15,
+            repetitionWindow = 64,
+            topK = 50,
+        } = opts;
         console.log('[VL] generate() start —',
             messages.length, 'messages,',
-            images.length, 'images, max_new_tokens=', maxNewTokens);
+            images.length, 'images, max_new_tokens=', maxNewTokens,
+            'temperature=', temperature,
+            'rep_penalty=', repetitionPenalty);
         console.log('[VL] special tokens:',
             'image=', this.imageTokenId,
             'image_start=', this.imageStartTokenId,
@@ -8384,9 +8395,51 @@ class VLModel {
             const logits = outputs.logits;
             const vocab = logits.dims[2];
             const lastStart = (logits.dims[1] - 1) * vocab;
-            const lastLogits = logits.data.slice(lastStart, lastStart + vocab);
-            let maxIdx = 0, maxVal = lastLogits[0];
-            for (let i = 1; i < vocab; i++) if (lastLogits[i] > maxVal) { maxVal = lastLogits[i]; maxIdx = i; }
+            // Copy into a Float32Array we can mutate (rep penalty modifies in place)
+            const lastLogits = new Float32Array(logits.data.subarray(lastStart, lastStart + vocab));
+
+            // Repetition penalty — divide logits of recently seen tokens by the penalty
+            // factor when positive, multiply when negative. Pure greedy on a small LM
+            // without this loops hard (the model found a locally optimal token and keeps
+            // returning to it). Window of last 64 tokens balances fluency vs. novelty.
+            if (repetitionPenalty > 1.0 && generated.length > 0) {
+                const start = Math.max(0, generated.length - repetitionWindow);
+                const seen = new Set(generated.slice(start));
+                for (const id of seen) {
+                    const v = lastLogits[id];
+                    lastLogits[id] = v > 0 ? v / repetitionPenalty : v * repetitionPenalty;
+                }
+            }
+
+            let maxIdx;
+            if (temperature > 0.001) {
+                // Top-k + temperature softmax sampling. Sorts the full vocab once per
+                // step (~65K × logN, negligible vs. decoder.run cost).
+                const scored = new Array(vocab);
+                for (let i = 0; i < vocab; i++) scored[i] = i;
+                scored.sort((a, b) => lastLogits[b] - lastLogits[a]);
+                const K = Math.min(topK, vocab);
+                const maxLogit = lastLogits[scored[0]];
+                let sumExp = 0;
+                const exps = new Float64Array(K);
+                for (let i = 0; i < K; i++) {
+                    const e = Math.exp((lastLogits[scored[i]] - maxLogit) / temperature);
+                    exps[i] = e;
+                    sumExp += e;
+                }
+                const r = Math.random() * sumExp;
+                let cum = 0;
+                maxIdx = scored[K - 1];
+                for (let i = 0; i < K; i++) {
+                    cum += exps[i];
+                    if (r < cum) { maxIdx = scored[i]; break; }
+                }
+            } else {
+                // Greedy argmax
+                maxIdx = 0;
+                let maxVal = lastLogits[0];
+                for (let i = 1; i < vocab; i++) if (lastLogits[i] > maxVal) { maxVal = lastLogits[i]; maxIdx = i; }
+            }
             generated.push(maxIdx);
             if (step < 3) console.log('[VL] step', step, 'token=', maxIdx, 'logits dims=', logits.dims);
             if (onToken) {
@@ -8530,6 +8583,7 @@ self.onmessage = async (e) => {
                     images: bitmaps,
                     messageImageMap,
                     maxNewTokens: payload.max_new_tokens,
+                    temperature: payload.temperature || 0,
                     onToken: (tokenText) => {
                         self.postMessage({ type: 'token', payload: tokenText });
                     },

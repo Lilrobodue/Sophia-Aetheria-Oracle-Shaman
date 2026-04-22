@@ -1536,7 +1536,7 @@
                     Export
                 </button>
             </div>
-            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v38</div>
+            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v39</div>
             </div><!-- end sidebar-scroll -->
         </div>
 
@@ -7721,13 +7721,12 @@ return result;</textarea>
                 speed: 'Fast',
                 quality: 'Vision + Tools',
                 type: 'lfm2-vision',
-                // dtype keys must match Transformers.js's inherited Llava session names
-                // (vision_encoder, decoder_model_merged) — NOT the repo's filenames.
-                // The HF repo actually ships those components as embed_images.onnx / decoder.onnx;
-                // the env.fetch shim in the worker rewrites the URLs to match.
-                // Result: loads embed_tokens_fp16.onnx + embed_images_fp16.onnx + decoder_q4.onnx
-                // → matches Liquid's "Vision FP16, Decoder Q4" default (~2.3 GB).
-                dtype: { embed_tokens: 'fp16', vision_encoder: 'fp16', decoder_model_merged: 'q4' },
+                // This model uses a custom 3-session ORT-Web loader (Transformers.js's
+                // Llava architecture can't load it — repo filenames diverge from TJs's
+                // convention). Keys match Liquid's own config: 'embedImages' + 'decoder'.
+                // embed_tokens is always loaded as fp16 (no quantized variant in the repo).
+                // This matches Liquid's "Vision FP16, Decoder Q4" default preset (~2.3 GB).
+                dtype: { embedImages: 'fp16', decoder: 'q4' },
                 category: 'agent',
                 family: 'lfm25',
             },
@@ -7811,73 +7810,474 @@ return result;</textarea>
         // ── Build inline Web Worker source ──
         // Supports three modes:
         //   'gemma4-vision'   → Gemma4ForConditionalGeneration + AutoProcessor (vision/audio/text)
-        //   'lfm2-vision'     → AutoModelForImageTextToText + AutoProcessor (LFM2.5-VL tile-based vision)
+        //   'lfm2-vision'     → raw ORT-Web 3-session loader for LFM2.5-VL (custom VLModel class)
         //   'text-generation' → pipeline('text-generation') for small text-only models
         function createInferenceWorkerSource() {
             return `
 import {
     pipeline,
     AutoProcessor,
-    AutoModelForImageTextToText,
+    AutoTokenizer,
     Gemma4ForConditionalGeneration,
     TextStreamer,
     RawImage,
     read_audio,
     env,
 } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers';
+import * as ort from 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.23.2/dist/ort.all.bundle.min.mjs';
 env.allowLocalModels = false;
 env.useBrowserCache = true;
-
-// Narrowly-scoped env.fetch shim for LFM2.5-VL-1.6B-ONNX.
-// Two mismatches between Transformers.js's lfm2_vl architecture class and
-// Liquid's HF repo layout:
-//   1. TJs looks for preprocessor_config.json (flat schema), repo has
-//      processor_config.json (image processor config nested under 'image_processor').
-//   2. Lfm2VlForConditionalGeneration extends Llava and inherits its session names
-//      (vision_encoder, decoder_model_merged), but the repo ships those components
-//      as embed_images.onnx and decoder.onnx.
-// TJs routes hub file fetches through env.fetch (not global fetch), so we override
-// env.fetch specifically. All rewrites are scoped to this one repo.
-const _origEnvFetch = env.fetch
-    ? env.fetch.bind(env)
-    : self.fetch.bind(self);
-const LFM2_VL_REPO = '/LFM2.5-VL-1.6B-ONNX/resolve/main';
-env.fetch = function(input, init) {
-    const url = typeof input === 'string' ? input : (input && input.url) || '';
-
-    // Fix 1: preprocessor_config.json → processor_config.json (unwrap nested image_processor)
-    if (url.includes(LFM2_VL_REPO + '/preprocessor_config.json')) {
-        const fallbackUrl = url.replace('/preprocessor_config.json', '/processor_config.json');
-        return _origEnvFetch(fallbackUrl, init).then(async (res) => {
-            if (!res.ok) return res;
-            const json = await res.json();
-            const inner = json.image_processor || json;
-            return new Response(JSON.stringify(inner), {
-                status: 200,
-                headers: { 'Content-Type': 'application/json' },
-            });
-        });
-    }
-
-    // Fix 2: translate Llava-style component filenames to this repo's naming.
-    //   vision_encoder(_suffix)?.onnx(_data)?      → embed_images(_suffix)?.onnx(_data)?
-    //   decoder_model_merged(_suffix)?.onnx(_data)? → decoder(_suffix)?.onnx(_data)?
-    if (url.includes(LFM2_VL_REPO + '/onnx/')) {
-        let rewritten = url
-            .replace('/onnx/vision_encoder',       '/onnx/embed_images')
-            .replace('/onnx/decoder_model_merged', '/onnx/decoder');
-        if (rewritten !== url) {
-            return _origEnvFetch(rewritten, init);
-        }
-    }
-
-    return _origEnvFetch(input, init);
-};
+// Keep ORT-Web single-threaded to avoid SharedArrayBuffer / COOP+COEP requirements
+// we can't guarantee in all deployment contexts.
+ort.env.wasm.numThreads = 1;
 
 let processor = null;
 let model = null;
-let pipe = null;       // for text-generation pipeline mode
+let pipe = null;       // text-generation pipeline mode
+let vlModel = null;    // lfm2-vision (custom 3-session ORT-Web loader)
 let modelType = null;  // 'gemma4-vision' | 'lfm2-vision' | 'text-generation'
+
+// ═══════════════════════════════════════════════════════════════════════
+// LFM2.5-VL — raw ORT-Web path (ported from LiquidAI's HF Space, Apache-2.0)
+// ═══════════════════════════════════════════════════════════════════════
+// Transformers.js cannot load this model: Lfm2VlForConditionalGeneration
+// inherits Llava's session names (vision_encoder, decoder_model_merged), but
+// the HF repo ships those components under Liquid's own names (embed_images,
+// decoder). Even with fetch-level URL rewriting, the ORT virtual-FS mount
+// keys end up misaligned with the external-data references baked into each
+// .onnx graph. So we bypass TJs and run three ORT-Web sessions directly.
+//
+// Reference:  https://huggingface.co/spaces/LiquidAI/LFM2.5-VL-1.6B-WebGPU
+// Simplifications vs. the Space: no Cache API caching (rely on HTTP cache),
+// no image-embedding reuse across turns, simpler progress reporting.
+
+const VL_IMG = {
+    tileSize: 512,
+    maxTiles: 10,
+    minTiles: 2,
+    patchSize: 16,
+    patchesPerTile: 32,
+    downsampleFactor: 2,
+    minImageTokens: 64,
+    maxImageTokens: 256,
+    maxPixelsTolerance: 2.0,
+    useThumbnail: true,
+};
+const VL_NORM_SCALE = 1 / 127.5;
+const VL_NORM_OFFSET = -1.0;
+
+function vlRoundByFactor(n, f) { return Math.round(n / f) * f; }
+function vlCeilByFactor(n, f)  { return Math.ceil(n / f) * f; }
+function vlFloorByFactor(n, f) { return Math.floor(n / f) * f; }
+
+function vlFindClosestAspectRatio(aspect, ratios, w, h, imageSize) {
+    let bestDiff = Infinity, best = [1, 1];
+    const area = w * h;
+    for (const r of ratios) {
+        const targetAspect = r[0] / r[1];
+        const d = Math.abs(aspect - targetAspect);
+        if (d < bestDiff) { bestDiff = d; best = r; }
+        else if (d === bestDiff) {
+            const targetArea = imageSize * imageSize * r[0] * r[1];
+            if (area > 0.5 * targetArea) best = r;
+        }
+    }
+    return best;
+}
+
+function vlIsImageTooLarge(w, h) {
+    const { patchSize, maxImageTokens, downsampleFactor, maxPixelsTolerance } = VL_IMG;
+    const hBar = Math.max(patchSize, vlRoundByFactor(h, patchSize));
+    const wBar = Math.max(patchSize, vlRoundByFactor(w, patchSize));
+    const maxPixels = maxImageTokens * (patchSize ** 2) * (downsampleFactor ** 2) * maxPixelsTolerance;
+    return hBar * wBar > maxPixels;
+}
+
+function vlSmartResize(w, h) {
+    const { patchSize, downsampleFactor, minImageTokens, maxImageTokens } = VL_IMG;
+    const totalFactor = patchSize * downsampleFactor;
+    const minPixels = minImageTokens * (patchSize ** 2) * (downsampleFactor ** 2);
+    const maxPixels = maxImageTokens * (patchSize ** 2) * (downsampleFactor ** 2);
+    let hBar = Math.max(totalFactor, vlRoundByFactor(h, totalFactor));
+    let wBar = Math.max(totalFactor, vlRoundByFactor(w, totalFactor));
+    if (hBar * wBar > maxPixels) {
+        const beta = Math.sqrt((h * w) / maxPixels);
+        hBar = Math.max(totalFactor, vlFloorByFactor(h / beta, totalFactor));
+        wBar = Math.max(totalFactor, vlFloorByFactor(w / beta, totalFactor));
+    } else if (hBar * wBar < minPixels) {
+        const beta = Math.sqrt(minPixels / (h * w));
+        hBar = vlCeilByFactor(h * beta, totalFactor);
+        wBar = vlCeilByFactor(w * beta, totalFactor);
+    }
+    return { width: wBar, height: hBar };
+}
+
+function vlCalculateTileGrid(w, h) {
+    const { tileSize, minTiles, maxTiles } = VL_IMG;
+    const aspect = w / h;
+    const ratios = [];
+    for (let n = minTiles; n <= maxTiles; n++) {
+        for (let rw = 1; rw <= n; rw++) {
+            for (let rh = 1; rh <= n; rh++) {
+                const p = rw * rh;
+                if (p >= minTiles && p <= maxTiles && !ratios.some(r => r[0] === rw && r[1] === rh)) {
+                    ratios.push([rw, rh]);
+                }
+            }
+        }
+    }
+    ratios.sort((a, b) => a[0] * a[1] - b[0] * b[1]);
+    if (ratios.length === 0) return { rows: 1, cols: 1 };
+    const [gw, gh] = vlFindClosestAspectRatio(aspect, ratios, w, h, tileSize);
+    return { rows: gh, cols: gw };
+}
+
+function vlExtractPatchesVariable(imageData, pixelValues, attentionMask, tileIdx, patchesH, patchesW, maxPatches) {
+    const ps = VL_IMG.patchSize;
+    const patchDim = ps * ps * 3;
+    const iw = imageData.width;
+    const px = imageData.data;
+    const tileOffset = tileIdx * maxPatches * patchDim;
+    const maskOffset = tileIdx * maxPatches;
+    let patchIdx = 0;
+    for (let py = 0; py < patchesH; py++) {
+        for (let pxi = 0; pxi < patchesW; pxi++) {
+            const sx = pxi * ps, sy = py * ps;
+            attentionMask[maskOffset + patchIdx] = 1n;
+            const po = tileOffset + patchIdx * patchDim;
+            let oi = 0;
+            for (let dy = 0; dy < ps; dy++) {
+                const row = (sy + dy) * iw;
+                for (let dx = 0; dx < ps; dx++) {
+                    const s = (row + sx + dx) * 4;
+                    pixelValues[po + oi++] = px[s] * VL_NORM_SCALE + VL_NORM_OFFSET;
+                    pixelValues[po + oi++] = px[s + 1] * VL_NORM_SCALE + VL_NORM_OFFSET;
+                    pixelValues[po + oi++] = px[s + 2] * VL_NORM_SCALE + VL_NORM_OFFSET;
+                }
+            }
+            patchIdx++;
+        }
+    }
+    for (let i = patchesH * patchesW; i < maxPatches; i++) attentionMask[maskOffset + i] = 0n;
+}
+
+async function vlLoadImageBitmap(dataUrl) {
+    const res = await fetch(dataUrl);
+    const blob = await res.blob();
+    return await createImageBitmap(blob);
+}
+
+async function vlProcessImage(bitmap) {
+    const width = bitmap.width, height = bitmap.height;
+    const { tileSize, patchSize, useThumbnail, patchesPerTile } = VL_IMG;
+    const maxPatchesPerTile = patchesPerTile * patchesPerTile;
+    const patchDim = patchSize * patchSize * 3;
+    const needsSplit = vlIsImageTooLarge(width, height);
+
+    if (needsSplit) {
+        const { rows, cols } = vlCalculateTileGrid(width, height);
+        if (rows * cols > 1) {
+            const numTiles = rows * cols + (useThumbnail ? 1 : 0);
+            const pixelValues = new Float32Array(numTiles * maxPatchesPerTile * patchDim);
+            const attentionMask = new BigInt64Array(numTiles * maxPatchesPerTile);
+            const spatialShapes = new BigInt64Array(numTiles * 2);
+            const tw = tileSize * cols, th = tileSize * rows;
+            const rc = new OffscreenCanvas(tw, th);
+            const rctx = rc.getContext('2d');
+            rctx.drawImage(bitmap, 0, 0, tw, th);
+            let tileIdx = 0;
+            for (let r = 0; r < rows; r++) {
+                for (let c = 0; c < cols; c++) {
+                    const tc = new OffscreenCanvas(tileSize, tileSize);
+                    const tctx = tc.getContext('2d');
+                    tctx.drawImage(rc, c * tileSize, r * tileSize, tileSize, tileSize, 0, 0, tileSize, tileSize);
+                    const td = tctx.getImageData(0, 0, tileSize, tileSize);
+                    vlExtractPatchesVariable(td, pixelValues, attentionMask, tileIdx, patchesPerTile, patchesPerTile, maxPatchesPerTile);
+                    spatialShapes[tileIdx * 2] = BigInt(patchesPerTile);
+                    spatialShapes[tileIdx * 2 + 1] = BigInt(patchesPerTile);
+                    tileIdx++;
+                }
+            }
+            if (useThumbnail) {
+                const ts = vlSmartResize(width, height);
+                const tw2 = ts.width, th2 = ts.height;
+                const thc = new OffscreenCanvas(tw2, th2);
+                const thctx = thc.getContext('2d');
+                thctx.drawImage(bitmap, 0, 0, tw2, th2);
+                const thd = thctx.getImageData(0, 0, tw2, th2);
+                const ph = th2 / patchSize, pw = tw2 / patchSize;
+                vlExtractPatchesVariable(thd, pixelValues, attentionMask, tileIdx, ph, pw, maxPatchesPerTile);
+                spatialShapes[tileIdx * 2] = BigInt(ph);
+                spatialShapes[tileIdx * 2 + 1] = BigInt(pw);
+                tileIdx++;
+            }
+            return { pixelValues, attentionMask, spatialShapes, numTiles, shape: [numTiles, maxPatchesPerTile, patchDim] };
+        }
+    }
+    // Single-tile path
+    const resized = vlSmartResize(width, height);
+    const rw = resized.width, rh = resized.height;
+    const c = new OffscreenCanvas(rw, rh);
+    const ctx = c.getContext('2d');
+    ctx.drawImage(bitmap, 0, 0, rw, rh);
+    const imgData = ctx.getImageData(0, 0, rw, rh);
+    const actualPatchesH = rh / patchSize, actualPatchesW = rw / patchSize;
+    const numTiles = 1;
+    const pixelValues = new Float32Array(numTiles * maxPatchesPerTile * patchDim);
+    const attentionMask = new BigInt64Array(numTiles * maxPatchesPerTile);
+    const spatialShapes = new BigInt64Array(numTiles * 2);
+    vlExtractPatchesVariable(imgData, pixelValues, attentionMask, 0, actualPatchesH, actualPatchesW, maxPatchesPerTile);
+    spatialShapes[0] = BigInt(actualPatchesH);
+    spatialShapes[1] = BigInt(actualPatchesW);
+    return { pixelValues, attentionMask, spatialShapes, numTiles, shape: [numTiles, maxPatchesPerTile, patchDim] };
+}
+
+// --- VL model runner ---
+const VL_LARGE_FILE_THRESHOLD = 2 * 1024 * 1024 * 1024; // 2 GB
+
+class VLModel {
+    constructor() {
+        this.tokenizer = null;
+        this.embedTokensSession = null;
+        this.embedImagesSession = null;
+        this.decoderSession = null;
+        this.hiddenSize = 2048;
+        this.numKVHeads = 8;
+        this.headDim = 64;
+        this.imageTokenId = null;
+        this.imageStartTokenId = null;
+        this.imageEndTokenId = null;
+        this.eosTokenId = null;
+    }
+
+    async load(modelPath, opts) {
+        const { quantization, device, onProgress } = opts;
+        const report = (msg) => { if (onProgress) onProgress(msg); };
+        const providers = device === 'wasm' ? ['wasm'] : ['webgpu', 'wasm'];
+
+        // --- Tokenizer + special tokens ---
+        report('Loading tokenizer…');
+        this.tokenizer = await AutoTokenizer.from_pretrained(opts.modelId);
+        // Extract special token IDs by direct tokenizer.json fetch (most reliable)
+        const tokRes = await fetch(modelPath + '/tokenizer.json');
+        if (tokRes.ok) {
+            const tokJson = await tokRes.json();
+            const specials = {};
+            if (tokJson.added_tokens) {
+                for (const t of tokJson.added_tokens) specials[t.content] = t.id;
+            }
+            this.imageTokenId = specials['<image>'] ?? null;
+            this.imageStartTokenId = specials['<|image_start|>'] ?? null;
+            this.imageEndTokenId = specials['<|image_end|>'] ?? null;
+        }
+        this.eosTokenId = this.tokenizer.eos_token_id;
+
+        // --- Model config (hidden size, KV heads) ---
+        const cfgRes = await fetch(modelPath + '/config.json');
+        const cfg = await cfgRes.json();
+        const tcfg = cfg.text_config || cfg;
+        this.hiddenSize = tcfg.hidden_size || 2048;
+        this.numKVHeads = tcfg.num_key_value_heads || 8;
+        this.headDim = Math.floor(this.hiddenSize / (tcfg.num_attention_heads || 32));
+
+        // --- Helper: load one ONNX session with its external data sidecar ---
+        const loadSession = async (baseName, quantSuffix) => {
+            const suffix = quantSuffix ? '_' + quantSuffix : '';
+            const fileName = baseName + suffix;
+            const onnxUrl = modelPath + '/onnx/' + fileName + '.onnx';
+            const dataUrl = modelPath + '/onnx/' + fileName + '.onnx_data';
+            report('Downloading ' + fileName + '.onnx…');
+
+            // Graph file
+            const gRes = await fetch(onnxUrl);
+            if (!gRes.ok) throw new Error('Failed to fetch ' + fileName + '.onnx: ' + gRes.status);
+            const onnxBuffer = await gRes.arrayBuffer();
+
+            const sessionOptions = { executionProviders: providers };
+
+            // External data sidecar (check existence, choose in-memory vs URL streaming)
+            const hRes = await fetch(dataUrl, { method: 'HEAD' });
+            if (hRes.ok) {
+                const size = parseInt(hRes.headers.get('content-length') || '0', 10);
+                if (size > VL_LARGE_FILE_THRESHOLD) {
+                    // Too big for a single ArrayBuffer — let ORT-Web stream it
+                    sessionOptions.externalData = [{ path: fileName + '.onnx_data', data: dataUrl }];
+                } else {
+                    report('Downloading ' + fileName + '.onnx_data…');
+                    const dRes = await fetch(dataUrl);
+                    const dBuf = await dRes.arrayBuffer();
+                    sessionOptions.externalData = [{ path: fileName + '.onnx_data', data: new Uint8Array(dBuf) }];
+                }
+            }
+
+            report('Initializing ' + fileName + '…');
+            return await ort.InferenceSession.create(new Uint8Array(onnxBuffer), sessionOptions);
+        };
+
+        // --- Three sessions ---
+        // embed_tokens only ships as default or _fp16 (no q4/q8 variant).
+        const embedTokensQuant = quantization.decoder ? 'fp16' : null;
+        this.embedTokensSession = await loadSession('embed_tokens', embedTokensQuant);
+        this.embedImagesSession = await loadSession('embed_images', quantization.embedImages || null);
+        this.decoderSession     = await loadSession('decoder',     quantization.decoder     || null);
+    }
+
+    async getTextEmbeddings(ids) {
+        const t = new ort.Tensor('int64', new BigInt64Array(ids.map(id => BigInt(id))), [1, ids.length]);
+        const out = await this.embedTokensSession.run({ input_ids: t });
+        return out.inputs_embeds;
+    }
+
+    async getImageEmbeddings(bitmaps) {
+        const all = [];
+        const tokensPerImage = [];
+        let total = 0;
+        for (const bmp of bitmaps) {
+            const p = await vlProcessImage(bmp);
+            const pxT = new ort.Tensor('float32', p.pixelValues, p.shape);
+            const amT = new ort.Tensor('int64', p.attentionMask, [p.numTiles, p.shape[1]]);
+            const ssT = new ort.Tensor('int64', p.spatialShapes, [p.numTiles, 2]);
+            const out = await this.embedImagesSession.run({
+                pixel_values: pxT,
+                pixel_attention_mask: amT,
+                spatial_shapes: ssT,
+            });
+            const emb = out.image_features;
+            const n = emb.dims[0];
+            all.push(new Float32Array(emb.data));
+            tokensPerImage.push(n);
+            total += n;
+        }
+        const combined = new Float32Array(all.reduce((s, e) => s + e.length, 0));
+        let off = 0;
+        for (const e of all) { combined.set(e, off); off += e.length; }
+        return { embeddings: combined, numTokens: total, tokensPerImage };
+    }
+
+    buildCombinedEmbeddings(ids, textEmb, imgEmb) {
+        const [, seqLen, dim] = textEmb.dims;
+        const result = new Float32Array(textEmb.data);
+        const positions = [];
+        for (let i = 0; i < ids.length; i++) if (ids[i] === this.imageTokenId) positions.push(i);
+        const n = Math.min(positions.length, imgEmb.length / dim);
+        for (let i = 0; i < n; i++) {
+            result.set(imgEmb.slice(i * dim, (i + 1) * dim), positions[i] * dim);
+        }
+        return new ort.Tensor('float32', result, [1, seqLen, dim]);
+    }
+
+    initializeCache() {
+        const cache = {};
+        for (const name of this.decoderSession.inputNames) {
+            if (name.startsWith('past_conv')) {
+                cache[name] = new ort.Tensor('float32', new Float32Array(this.hiddenSize * 3), [1, this.hiddenSize, 3]);
+            } else if (name.startsWith('past_key_values')) {
+                cache[name] = new ort.Tensor('float32', new Float32Array(0), [1, this.numKVHeads, 0, this.headDim]);
+            }
+        }
+        return cache;
+    }
+
+    updateCache(cache, outputs) {
+        for (const name of Object.keys(outputs)) {
+            if (name.startsWith('present_conv')) {
+                const k = name.replace('present_conv', 'past_conv');
+                if (k in cache) cache[k] = outputs[name];
+            } else if (name.startsWith('present.')) {
+                const k = name.replace('present.', 'past_key_values.');
+                if (k in cache) cache[k] = outputs[name];
+            }
+        }
+    }
+
+    async generate(messages, opts) {
+        const { images = [], messageImageMap = new Map(), maxNewTokens = 256, onToken } = opts;
+
+        // 1. Process images → embeddings
+        let imgEmb = null, tokensPerImage = [];
+        if (images.length > 0) {
+            const r = await this.getImageEmbeddings(images);
+            imgEmb = r.embeddings;
+            tokensPerImage = r.tokensPerImage;
+        }
+
+        // 2. Insert <image> placeholders into user messages
+        let promptMessages = messages;
+        if (images.length > 0) {
+            promptMessages = messages.map((msg, idx) => {
+                if (msg.role === 'user' && messageImageMap.has(idx)) {
+                    const imgs = messageImageMap.get(idx);
+                    const placeholders = imgs.map(() => '<image>').join('');
+                    return { ...msg, content: placeholders + msg.content };
+                }
+                return msg;
+            });
+        }
+
+        // 3. Apply chat template → encode → expand <image> tokens
+        const prompt = this.tokenizer.apply_chat_template(promptMessages, {
+            add_generation_prompt: true,
+            tokenize: false,
+        });
+        let inputIds = [...this.tokenizer.encode(prompt)];
+        if (images.length > 0 && this.imageTokenId !== null) {
+            const expanded = [];
+            let imgIdx = 0;
+            for (const id of inputIds) {
+                if (id === this.imageTokenId && imgIdx < tokensPerImage.length) {
+                    if (this.imageStartTokenId) expanded.push(this.imageStartTokenId);
+                    const count = tokensPerImage[imgIdx];
+                    for (let i = 0; i < count; i++) expanded.push(this.imageTokenId);
+                    if (this.imageEndTokenId) expanded.push(this.imageEndTokenId);
+                    imgIdx++;
+                } else {
+                    expanded.push(id);
+                }
+            }
+            inputIds = expanded;
+        }
+
+        // 4. Build initial embeddings (text + image substitutions)
+        const textEmb = await this.getTextEmbeddings(inputIds);
+        let currentEmbeds = images.length > 0
+            ? this.buildCombinedEmbeddings(inputIds, textEmb, imgEmb)
+            : textEmb;
+
+        // 5. Greedy decoder loop
+        const cache = this.initializeCache();
+        let curLen = currentEmbeds.dims[1];
+        const generated = [];
+        for (let step = 0; step < maxNewTokens; step++) {
+            const am = new ort.Tensor('int64', new BigInt64Array(curLen).fill(1n), [1, curLen]);
+            const feeds = { inputs_embeds: currentEmbeds, attention_mask: am, ...cache };
+            const outputs = await this.decoderSession.run(feeds);
+            const logits = outputs.logits;
+            const vocab = logits.dims[2];
+            const lastStart = (logits.dims[1] - 1) * vocab;
+            const lastLogits = logits.data.slice(lastStart, lastStart + vocab);
+            let maxIdx = 0, maxVal = lastLogits[0];
+            for (let i = 1; i < vocab; i++) if (lastLogits[i] > maxVal) { maxVal = lastLogits[i]; maxIdx = i; }
+            generated.push(maxIdx);
+            if (onToken) {
+                const txt = this.tokenizer.decode([maxIdx]);
+                if (onToken(txt, maxIdx)) break;
+            }
+            if (maxIdx === this.eosTokenId) break;
+            this.updateCache(cache, outputs);
+            const next = await this.getTextEmbeddings([maxIdx]);
+            currentEmbeds = next;
+            curLen++;
+        }
+        return this.tokenizer.decode(generated, { skip_special_tokens: true });
+    }
+
+    async dispose() {
+        for (const key of ['embedTokensSession', 'embedImagesSession', 'decoderSession']) {
+            if (this[key]) { try { await this[key].release(); } catch (e) {} this[key] = null; }
+        }
+        this.tokenizer = null;
+    }
+}
 
 self.onmessage = async (e) => {
     const { type, payload } = e.data;
@@ -7894,21 +8294,17 @@ self.onmessage = async (e) => {
                 });
                 self.postMessage({ type: 'loaded' });
             } else if (modelType === 'lfm2-vision') {
-                // ── LFM2.5-VL via AutoModelForImageTextToText ──
-                // Accepts structured dtype like { embed_tokens: 'fp16', vision_encoder: 'fp16', decoder_model_merged: 'q4' }.
-                // use_external_data_format is required: each variant we load (_fp16, _q4)
-                // ships its weights in a .onnx_data sidecar (the .onnx file holds only the
-                // graph). Without this flag Transformers.js skips the prefetch/mount step
-                // and ORT-Web throws "Module.MountedFiles is not available" at session
-                // deserialization. Value true = 1 chunk per component; our preset uses
-                // one data file per component.
-                self.postMessage({ type: 'progress', payload: { status: 'progress', name: 'processor', progress: 0 } });
-                processor = await AutoProcessor.from_pretrained(payload.modelId);
-                model = await AutoModelForImageTextToText.from_pretrained(payload.modelId, {
-                    dtype: payload.dtype,
+                // ── LFM2.5-VL via custom 3-session ORT-Web loader ──
+                // dtype is Liquid-style: { embedImages: 'fp16', decoder: 'q4' }
+                const modelPath = 'https://huggingface.co/' + payload.modelId + '/resolve/main';
+                vlModel = new VLModel();
+                await vlModel.load(modelPath, {
+                    modelId: payload.modelId,
+                    quantization: payload.dtype || {},
                     device: payload.device,
-                    use_external_data_format: true,
-                    progress_callback: (p) => self.postMessage({ type: 'progress', payload: p }),
+                    onProgress: (msg) => {
+                        self.postMessage({ type: 'progress', payload: { status: 'progress', file: msg, progress: 0 } });
+                    },
                 });
                 self.postMessage({ type: 'loaded' });
             } else {
@@ -7961,57 +8357,36 @@ self.onmessage = async (e) => {
             return;
         }
 
-        // ── LFM2.5-VL vision mode ──
+        // ── LFM2.5-VL vision mode (custom 3-session ORT-Web runner) ──
         if (modelType === 'lfm2-vision') {
-            if (!model || !processor) {
+            if (!vlModel) {
                 self.postMessage({ type: 'genError', payload: 'Model not loaded' });
                 return;
             }
             try {
-                const messages = payload.messages.map(m => {
-                    const hasImages = m.images && m.images.length > 0;
-                    if (hasImages) {
-                        const content = [];
-                        for (let i = 0; i < m.images.length; i++) content.push({ type: 'image' });
-                        content.push({ type: 'text', text: m.content });
-                        return { role: m.role, content };
+                // Plain messages (no content-parts — VLModel handles <image> placement)
+                const plainMessages = payload.messages.map(m => ({ role: m.role, content: m.content }));
+
+                // messageImageMap: map message index → list of images for that message
+                const messageImageMap = new Map();
+                const allImageUrls = [];
+                payload.messages.forEach((m, idx) => {
+                    if (m.images && m.images.length > 0) {
+                        messageImageMap.set(idx, m.images);
+                        allImageUrls.push(...m.images);
                     }
-                    return { role: m.role, content: m.content };
                 });
 
-                const imageDataUrls = [];
-                for (const m of payload.messages) {
-                    if (m.images) imageDataUrls.push(...m.images);
-                }
-                let imageInputs = null;
-                if (imageDataUrls.length > 0) {
-                    const loaded = await Promise.all(imageDataUrls.map(url => RawImage.fromURL(url)));
-                    imageInputs = loaded.length === 1 ? loaded[0] : loaded;
-                }
+                // Load image bitmaps (Worker-compatible)
+                const bitmaps = await Promise.all(allImageUrls.map(u => vlLoadImageBitmap(u)));
 
-                const prompt = processor.apply_chat_template(messages, {
-                    add_generation_prompt: true,
-                    tokenize: false,
-                });
-
-                const inputs = imageInputs
-                    ? await processor(prompt, imageInputs)
-                    : await processor(prompt);
-
-                const streamer = new TextStreamer(processor.tokenizer, {
-                    skip_prompt: true,
-                    skip_special_tokens: true,
-                    callback_function: (token) => {
-                        self.postMessage({ type: 'token', payload: token });
+                await vlModel.generate(plainMessages, {
+                    images: bitmaps,
+                    messageImageMap,
+                    maxNewTokens: payload.max_new_tokens,
+                    onToken: (tokenText) => {
+                        self.postMessage({ type: 'token', payload: tokenText });
                     },
-                });
-
-                await model.generate({
-                    ...inputs,
-                    max_new_tokens: payload.max_new_tokens,
-                    temperature: payload.temperature,
-                    do_sample: payload.temperature > 0,
-                    streamer,
                 });
                 self.postMessage({ type: 'genDone' });
             } catch (err) {
@@ -8098,6 +8473,10 @@ self.onmessage = async (e) => {
         model = null;
         processor = null;
         pipe = null;
+        if (vlModel) {
+            try { await vlModel.dispose(); } catch (e) {}
+            vlModel = null;
+        }
         modelType = null;
         self.postMessage({ type: 'unloaded' });
     }

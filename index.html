@@ -1536,7 +1536,7 @@
                     Export
                 </button>
             </div>
-            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v34</div>
+            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v35</div>
             </div><!-- end sidebar-scroll -->
         </div>
 
@@ -7826,6 +7826,29 @@ import {
 } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers';
 env.allowLocalModels = false;
 env.useBrowserCache = true;
+
+// Narrowly-scoped fetch shim for LFM2.5-VL-1.6B-ONNX:
+// The HF repo has processor_config.json (nested under 'image_processor' key)
+// but Transformers.js 4.x only looks for preprocessor_config.json (flat schema).
+// Redirect the 404'ing URL to processor_config.json and unwrap the nested key.
+// Scoped to this one repo + filename — cannot affect any other model load.
+const _origFetch = self.fetch.bind(self);
+self.fetch = function(input, init) {
+    const url = typeof input === 'string' ? input : (input && input.url) || '';
+    if (url.includes('/LFM2.5-VL-1.6B-ONNX/resolve/main/preprocessor_config.json')) {
+        const fallbackUrl = url.replace('/preprocessor_config.json', '/processor_config.json');
+        return _origFetch(fallbackUrl, init).then(async (res) => {
+            if (!res.ok) return res;
+            const json = await res.json();
+            const inner = json.image_processor || json;
+            return new Response(JSON.stringify(inner), {
+                status: 200,
+                headers: { 'Content-Type': 'application/json' },
+            });
+        });
+    }
+    return _origFetch(input, init);
+};
 
 let processor = null;
 let model = null;

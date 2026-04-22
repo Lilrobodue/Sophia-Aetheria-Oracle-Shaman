@@ -1536,7 +1536,7 @@
                     Export
                 </button>
             </div>
-            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v33</div>
+            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v34</div>
             </div><!-- end sidebar-scroll -->
         </div>
 
@@ -1861,12 +1861,12 @@
                                 </optgroup>
                                 <optgroup label="🔧 Agent Mode — Tools & Structured Work">
                                     <option value="agent-lite">LFM2.5-1.2B-Instruct — Agent Lite (~0.8 GB, any device)</option>
-                                    <option value="agent-vision">LFM2.5-VL-1.6B — Agent + Vision (~1.2 GB, 6GB+ RAM)</option>
+                                    <option value="agent-vision">LFM2.5-VL-1.6B — Agent + Vision (~2.3 GB, 8GB+ RAM)</option>
                                 </optgroup>
                                 <optgroup label="🧠 Reasoning Mode — Analysis & Logic">
                                     <option value="reason-lite">LFM2.5-1.2B-Thinking — Transparent Reasoning (~0.8 GB, any device)</option>
-                                    <option value="reason-bonsai-4b">Ternary-Bonsai-4B — Compressed Power (~1–2 GB, 4GB+ RAM)</option>
-                                    <option value="reason-bonsai-8b">Ternary-Bonsai-8B — Max Intelligence (~2 GB, 6GB+ RAM)</option>
+                                    <option value="reason-bonsai-4b">Ternary-Bonsai-4B — Compressed Power (~1.2 GB, 4GB+ RAM)</option>
+                                    <option value="reason-bonsai-8b">Ternary-Bonsai-8B — Max Intelligence (~2.2 GB, 6GB+ RAM)</option>
                                 </optgroup>
                                 <optgroup label="⚡ Tiny Fallback">
                                     <option value="tiny">Qwen 0.5B — Spark (~0.3 GB, any device)</option>
@@ -7721,9 +7721,12 @@ return result;</textarea>
                 speed: 'Fast',
                 quality: 'Vision + Tools',
                 type: 'lfm2-vision',
-                // Per-component quant matches Liquid's "Vision FP16, Decoder Q4" default preset.
-                // Keys mirror Transformers.js ONNX component names — adjust if repo uses different filenames.
-                dtype: { embed_tokens: 'q4', vision_encoder: 'fp16', decoder_model_merged: 'q4' },
+                // Keys match the actual ONNX component filenames in the HF repo's onnx/ folder:
+                //   embed_tokens.onnx / embed_tokens_fp16.onnx         (no q4 variant — must be default or fp16)
+                //   embed_images{,_fp16,_q4,_q8}.onnx
+                //   decoder{,_fp16,_q4,_q8}.onnx
+                // This combination matches Liquid's "Vision FP16, Decoder Q4" default (~2.3 GB).
+                dtype: { embed_tokens: 'fp16', embed_images: 'fp16', decoder: 'q4' },
                 category: 'agent',
                 family: 'lfm25',
             },
@@ -7741,30 +7744,32 @@ return result;</textarea>
                 family: 'lfm25',
             },
             'reason-bonsai-4b': {
-                // Size is an estimate — Bonsai's 1.58-bit native compression may not
-                // fully survive ONNX Q4 packing. Update after reading model_q4.onnx_data.
+                // Bonsai's ternary (1.58-bit) native compression was preserved down to
+                // Q2 in the ONNX export. The repo only ships q2 and q2f16 variants —
+                // no q4, fp16, or int8. Use q2f16 (Q2 weights, fp16 compute) for WebGPU.
                 id: 'onnx-community/Ternary-Bonsai-4B-ONNX',
                 name: 'Ternary-Bonsai-4B — Compressed Power',
                 params: '~4B',
-                download: '~1–2 GB',
+                download: '~1.2 GB',
                 minMemory: 4,
                 speed: 'Fast',
                 quality: 'Compressed power',
                 type: 'text-generation',
-                dtype: 'q4',
+                dtype: 'q2f16',
                 category: 'reason',
                 family: 'bonsai',
             },
             'reason-bonsai-8b': {
+                // 8B repo ships only q2f16 (no q2 variant). Total download ~2.2 GB.
                 id: 'onnx-community/Ternary-Bonsai-8B-ONNX',
                 name: 'Ternary-Bonsai-8B — Max Intelligence',
                 params: '~8B',
-                download: '~2 GB',
+                download: '~2.2 GB',
                 minMemory: 6,
                 speed: 'Moderate',
                 quality: 'Max intelligence',
                 type: 'text-generation',
-                dtype: 'q4',
+                dtype: 'q2f16',
                 category: 'reason',
                 family: 'bonsai',
             },
@@ -8101,27 +8106,45 @@ self.onmessage = async (e) => {
                 const wasmBox = document.getElementById('forceWasm');
                 const wasWebGPU = localInference.webgpuAvailable && !(wasmBox && wasmBox.checked);
 
-                // If WebGPU failed, auto-check "Force WASM" and suggest retry
-                if (wasWebGPU && wasmBox) {
+                // Classify the error. Only a real GPU failure should flip Force WASM —
+                // missing files (404) and unsupported model types are config problems
+                // that WASM won't fix, and auto-flipping poisons subsequent loads.
+                const errLower = (payload || '').toLowerCase();
+                const isFileNotFound = errLower.includes('could not locate file')
+                    || errLower.includes('fetch failed')
+                    || errLower.includes('404')
+                    || errLower.includes('no such file');
+                const isUnsupportedModel = errLower.includes('unsupported model type');
+                const isRealGpuFailure = wasWebGPU
+                    && !isFileNotFound
+                    && !isUnsupportedModel
+                    && (errLower.includes('webgpu')
+                        || errLower.includes('shader')
+                        || errLower.includes('device lost')
+                        || errLower.includes('gatherblockquantized')
+                        || errLower.includes('out of memory'));
+
+                const statusEl = document.getElementById('localModelStatus');
+                document.getElementById('loadModelBtn').style.display = '';
+
+                if (isRealGpuFailure && wasmBox) {
                     wasmBox.checked = true;
-                    const statusEl = document.getElementById('localModelStatus');
                     if (statusEl) {
                         statusEl.textContent = 'WebGPU crashed — tap Load again (WASM mode enabled)';
                         statusEl.style.color = '#ffaa00';
                     }
-                    document.getElementById('loadModelBtn').style.display = '';
                     showStatus('WebGPU failed on this device. WASM fallback enabled — try loading again.', 'warning');
                 } else {
-                    const statusEl = document.getElementById('localModelStatus');
-                    if (statusEl) { statusEl.textContent = 'Failed: ' + payload; statusEl.style.color = '#ff4444'; }
-                    document.getElementById('loadModelBtn').style.display = '';
+                    // Show the real error so the user can actually see what failed.
+                    const shortErr = payload && payload.length > 220 ? payload.slice(0, 220) + '…' : payload;
+                    if (statusEl) { statusEl.textContent = 'Failed: ' + shortErr; statusEl.style.color = '#ff4444'; }
 
                     if (config.inferenceMode === 'auto') {
                         updateInferenceBadge('remote', 'Remote (API)');
                         showStatus('Local model unavailable — using remote API', 'warning');
                     } else {
                         updateInferenceBadge('unavailable', 'Model Failed');
-                        showStatus('Local model failed: ' + payload, 'error');
+                        showStatus('Local model failed: ' + shortErr, 'error');
                     }
                 }
                 return;

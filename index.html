@@ -1536,7 +1536,7 @@
                     Export
                 </button>
             </div>
-            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v41</div>
+            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v42</div>
             </div><!-- end sidebar-scroll -->
         </div>
 
@@ -8115,6 +8115,22 @@ class VLModel {
         // --- Tokenizer + special tokens ---
         report('Loading tokenizer…', 0);
         this.tokenizer = await AutoTokenizer.from_pretrained(opts.modelId);
+
+        // Transformers.js doesn't auto-load a standalone chat_template.jinja file —
+        // only templates embedded in tokenizer_config.json. LFM2.5-VL ships the
+        // template as a separate file, so fetch and attach it manually.
+        if (!this.tokenizer.chat_template) {
+            try {
+                const tplRes = await fetch(modelPath + '/chat_template.jinja');
+                if (tplRes.ok) {
+                    this.tokenizer.chat_template = await tplRes.text();
+                    console.log('[VL] loaded chat_template.jinja (' + this.tokenizer.chat_template.length + ' chars)');
+                }
+            } catch (e) {
+                console.warn('[VL] could not fetch chat_template.jinja:', e);
+            }
+        }
+
         // Extract special token IDs by direct tokenizer.json fetch (most reliable)
         const tokRes = await fetch(modelPath + '/tokenizer.json');
         if (tokRes.ok) {

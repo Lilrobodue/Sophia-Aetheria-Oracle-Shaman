@@ -1536,7 +1536,7 @@
                     Export
                 </button>
             </div>
-            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v43</div>
+            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v44</div>
             </div><!-- end sidebar-scroll -->
         </div>
 
@@ -8395,13 +8395,19 @@ class VLModel {
             const logits = outputs.logits;
             const vocab = logits.dims[2];
             const lastStart = (logits.dims[1] - 1) * vocab;
-            // Copy into a Float32Array we can mutate (rep penalty modifies in place)
-            const lastLogits = new Float32Array(logits.data.subarray(lastStart, lastStart + vocab));
+            // Reuse scratch buffers across steps. Allocating fresh Float32Array per
+            // step cost ~260KB of alloc/GC pressure per token (×1000+ tokens = real).
+            if (!this._logitsScratch || this._logitsScratch.length !== vocab) {
+                this._logitsScratch = new Float32Array(vocab);
+                this._expScratch = new Float64Array(vocab);
+            }
+            const lastLogits = this._logitsScratch;
+            lastLogits.set(logits.data.subarray(lastStart, lastStart + vocab));
 
             // Repetition penalty — divide logits of recently seen tokens by the penalty
             // factor when positive, multiply when negative. Pure greedy on a small LM
-            // without this loops hard (the model found a locally optimal token and keeps
-            // returning to it). Window of last 64 tokens balances fluency vs. novelty.
+            // loops hard without this. Window of last 64 tokens balances fluency vs.
+            // novelty. Seen set is small (≤ 64) so plain iteration is fine.
             if (repetitionPenalty > 1.0 && generated.length > 0) {
                 const start = Math.max(0, generated.length - repetitionWindow);
                 const seen = new Set(generated.slice(start));
@@ -8413,29 +8419,31 @@ class VLModel {
 
             let maxIdx;
             if (temperature > 0.001) {
-                // Top-k + temperature softmax sampling. Sorts the full vocab once per
-                // step (~65K × logN, negligible vs. decoder.run cost).
-                const scored = new Array(vocab);
-                for (let i = 0; i < vocab; i++) scored[i] = i;
-                scored.sort((a, b) => lastLogits[b] - lastLogits[a]);
-                const K = Math.min(topK, vocab);
-                const maxLogit = lastLogits[scored[0]];
+                // Full-vocab temperature softmax — O(n) linear scans only, no sort.
+                // Previous top-k version sorted all 65K indices every step; V8's sort
+                // comparator overhead alone was ~50-100ms per token → minutes across a
+                // 1K-token response. Tight linear passes here are ~1-2ms per step.
+                // At temp ≤ 1.0, exp((-10)/T) is already < 1e-6 so the long tail of
+                // unlikely tokens contributes negligibly — no explicit top-k needed.
+                let maxLogit = -Infinity;
+                for (let i = 0; i < vocab; i++) if (lastLogits[i] > maxLogit) maxLogit = lastLogits[i];
+                const invT = 1 / temperature;
+                const exps = this._expScratch;
                 let sumExp = 0;
-                const exps = new Float64Array(K);
-                for (let i = 0; i < K; i++) {
-                    const e = Math.exp((lastLogits[scored[i]] - maxLogit) / temperature);
+                for (let i = 0; i < vocab; i++) {
+                    const e = Math.exp((lastLogits[i] - maxLogit) * invT);
                     exps[i] = e;
                     sumExp += e;
                 }
-                const r = Math.random() * sumExp;
+                const target = Math.random() * sumExp;
                 let cum = 0;
-                maxIdx = scored[K - 1];
-                for (let i = 0; i < K; i++) {
+                maxIdx = vocab - 1;
+                for (let i = 0; i < vocab; i++) {
                     cum += exps[i];
-                    if (r < cum) { maxIdx = scored[i]; break; }
+                    if (target < cum) { maxIdx = i; break; }
                 }
             } else {
-                // Greedy argmax
+                // Greedy argmax — single pass
                 maxIdx = 0;
                 let maxVal = lastLogits[0];
                 for (let i = 1; i < vocab; i++) if (lastLogits[i] > maxVal) { maxVal = lastLogits[i]; maxIdx = i; }

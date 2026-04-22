@@ -1536,7 +1536,7 @@
                     Export
                 </button>
             </div>
-            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v40</div>
+            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v41</div>
             </div><!-- end sidebar-scroll -->
         </div>
 
@@ -7832,6 +7832,22 @@ env.useBrowserCache = true;
 // we can't guarantee in all deployment contexts.
 ort.env.wasm.numThreads = 1;
 
+// WebGPU can fire GPUBuffer.mapAsync rejections *after* an inference operation
+// has already returned — ORT-Web's internal bookkeeping discovers the lost
+// device on a later microtask. Without this catch, those rejections appear
+// as 'Uncaught (in promise)' errors in devtools and the UI keeps spinning
+// because neither genDone nor genError ever posts. Surface them as genError
+// so the user sees a real failure instead of an infinite hang.
+self.addEventListener('unhandledrejection', (e) => {
+    const msg = (e.reason && e.reason.message) ? e.reason.message : String(e.reason);
+    console.error('[worker] unhandled rejection:', msg);
+    // Only convert WebGPU-ish rejections — don't swallow unrelated ones.
+    if (/mapAsync|GPUBuffer|external Instance|device is lost|webgpu/i.test(msg)) {
+        self.postMessage({ type: 'genError', payload: 'WebGPU error: ' + msg + ' (GPU may be out of memory — try Force WASM)' });
+        e.preventDefault();
+    }
+});
+
 let processor = null;
 let model = null;
 let pipe = null;       // text-generation pipeline mode
@@ -7965,7 +7981,22 @@ function vlExtractPatchesVariable(imageData, pixelValues, attentionMask, tileIdx
 async function vlLoadImageBitmap(dataUrl) {
     const res = await fetch(dataUrl);
     const blob = await res.blob();
-    return await createImageBitmap(blob);
+    const bmp = await createImageBitmap(blob);
+    // Cap input to VL_IMG.tileSize on the longest edge. Multi-tile processing
+    // (>1 tile) runs the SigLIP2 vision encoder N+1 times on WebGPU, which is
+    // either very slow or causes GPU OOM on anything short of a workstation.
+    // Forcing a single tile path keeps inference tractable on consumer GPUs.
+    const cap = VL_IMG.tileSize;
+    if (bmp.width <= cap && bmp.height <= cap) return bmp;
+    const scale = cap / Math.max(bmp.width, bmp.height);
+    const newW = Math.max(1, Math.round(bmp.width * scale));
+    const newH = Math.max(1, Math.round(bmp.height * scale));
+    const canvas = new OffscreenCanvas(newW, newH);
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(bmp, 0, 0, newW, newH);
+    const resized = await createImageBitmap(canvas);
+    console.log('[VL] resized image from', bmp.width + 'x' + bmp.height, 'to', newW + 'x' + newH);
+    return resized;
 }
 
 async function vlProcessImage(bitmap) {
@@ -8053,11 +8084,36 @@ class VLModel {
 
     async load(modelPath, opts) {
         const { quantization, device, onProgress } = opts;
-        const report = (msg) => { if (onProgress) onProgress(msg); };
+        // report(msg, pct?) — pct defaults to undefined so the caller can keep the bar as-is
+        const report = (msg, pct) => { if (onProgress) onProgress(msg, pct); };
         const providers = device === 'wasm' ? ['wasm'] : ['webgpu', 'wasm'];
 
+        // Streaming fetch with byte-accurate progress. Returns an ArrayBuffer.
+        // onBytes(received, total) fires per chunk; total may be 0 if the server
+        // didn't send content-length, in which case we skip percentage updates.
+        const fetchWithProgress = async (url, onBytes) => {
+            const res = await fetch(url);
+            if (!res.ok) throw new Error('Fetch failed (' + res.status + '): ' + url);
+            const total = parseInt(res.headers.get('content-length') || '0', 10);
+            if (!total || !onBytes || !res.body) return await res.arrayBuffer();
+            const reader = res.body.getReader();
+            const chunks = [];
+            let received = 0;
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                chunks.push(value);
+                received += value.length;
+                onBytes(received, total);
+            }
+            const buf = new Uint8Array(received);
+            let off = 0;
+            for (const c of chunks) { buf.set(c, off); off += c.length; }
+            return buf.buffer;
+        };
+
         // --- Tokenizer + special tokens ---
-        report('Loading tokenizer…');
+        report('Loading tokenizer…', 0);
         this.tokenizer = await AutoTokenizer.from_pretrained(opts.modelId);
         // Extract special token IDs by direct tokenizer.json fetch (most reliable)
         const tokRes = await fetch(modelPath + '/tokenizer.json');
@@ -8082,17 +8138,24 @@ class VLModel {
         this.headDim = Math.floor(this.hiddenSize / (tcfg.num_attention_heads || 32));
 
         // --- Helper: load one ONNX session with its external data sidecar ---
-        const loadSession = async (baseName, quantSuffix) => {
+        // Each session gets an allocated [pctStart, pctEnd] band of the overall
+        // progress bar. Within the band, the graph file (.onnx) gets the first
+        // few % and the weight sidecar (.onnx_data) gets the rest, since the
+        // sidecar is orders of magnitude larger.
+        const loadSession = async (baseName, quantSuffix, pctStart, pctEnd) => {
             const suffix = quantSuffix ? '_' + quantSuffix : '';
             const fileName = baseName + suffix;
             const onnxUrl = modelPath + '/onnx/' + fileName + '.onnx';
             const dataUrl = modelPath + '/onnx/' + fileName + '.onnx_data';
-            report('Downloading ' + fileName + '.onnx…');
+            const bandSpan = pctEnd - pctStart;
+            // Graph file: first 5% of this session's band
+            const graphSplit = pctStart + Math.round(bandSpan * 0.05);
 
-            // Graph file
-            const gRes = await fetch(onnxUrl);
-            if (!gRes.ok) throw new Error('Failed to fetch ' + fileName + '.onnx: ' + gRes.status);
-            const onnxBuffer = await gRes.arrayBuffer();
+            report('Downloading ' + fileName + '.onnx…', pctStart);
+            const onnxBuffer = await fetchWithProgress(onnxUrl, (rx, total) => {
+                const pct = pctStart + Math.round((rx / total) * bandSpan * 0.05);
+                report('Downloading ' + fileName + '.onnx (' + Math.round(rx/1024) + ' KB)', pct);
+            });
 
             const sessionOptions = { executionProviders: providers };
 
@@ -8104,26 +8167,37 @@ class VLModel {
                     // Too big for a single ArrayBuffer — let ORT-Web stream it
                     sessionOptions.externalData = [{ path: fileName + '.onnx_data', data: dataUrl }];
                 } else {
-                    report('Downloading ' + fileName + '.onnx_data…');
-                    const dRes = await fetch(dataUrl);
-                    const dBuf = await dRes.arrayBuffer();
+                    report('Downloading ' + fileName + '.onnx_data…', graphSplit);
+                    const dBuf = await fetchWithProgress(dataUrl, (rx, total) => {
+                        const bandPct = graphSplit + Math.round((rx / total) * (pctEnd - graphSplit) * 0.95);
+                        const mb = (rx / 1024 / 1024).toFixed(0);
+                        const totalMb = (total / 1024 / 1024).toFixed(0);
+                        report(fileName + '.onnx_data: ' + mb + ' / ' + totalMb + ' MB', bandPct);
+                    });
                     sessionOptions.externalData = [{ path: fileName + '.onnx_data', data: new Uint8Array(dBuf) }];
                 }
             }
 
-            report('Initializing ' + fileName + '…');
-            return await ort.InferenceSession.create(new Uint8Array(onnxBuffer), sessionOptions);
+            report('Initializing ' + fileName + '…', pctEnd - 1);
+            const session = await ort.InferenceSession.create(new Uint8Array(onnxBuffer), sessionOptions);
+            report(fileName + ' ready', pctEnd);
+            return session;
         };
 
         // --- Three sessions ---
         // embed_tokens only ships as default or _fp16 (no q4/q8 variant).
+        // Progress bands weighted by typical file size:
+        //   embed_tokens:  ~0.1 GB →   2 – 10 %
+        //   embed_images:  ~0.4 GB →  10 – 35 %   (Q4 variant)
+        //   decoder:       ~1.0 GB →  35 – 98 %   (Q4 variant)
         // Release partially loaded sessions on any failure so a retry starts
         // with a clean WebGPU state instead of inheriting a dead GPU context.
         try {
             const embedTokensQuant = quantization.decoder ? 'fp16' : null;
-            this.embedTokensSession = await loadSession('embed_tokens', embedTokensQuant);
-            this.embedImagesSession = await loadSession('embed_images', quantization.embedImages || null);
-            this.decoderSession     = await loadSession('decoder',     quantization.decoder     || null);
+            this.embedTokensSession = await loadSession('embed_tokens', embedTokensQuant,           2, 10);
+            this.embedImagesSession = await loadSession('embed_images', quantization.embedImages || null, 10, 35);
+            this.decoderSession     = await loadSession('decoder',     quantization.decoder     || null, 35, 98);
+            report('Ready', 100);
         } catch (err) {
             await this.dispose();
             throw err;
@@ -8140,18 +8214,26 @@ class VLModel {
         const all = [];
         const tokensPerImage = [];
         let total = 0;
-        for (const bmp of bitmaps) {
+        for (let i = 0; i < bitmaps.length; i++) {
+            const bmp = bitmaps[i];
+            console.log('[VL] processing image', i + 1, '/', bitmaps.length,
+                '—', bmp.width + 'x' + bmp.height);
             const p = await vlProcessImage(bmp);
+            console.log('[VL] tiled:', p.numTiles, 'tiles, tensor shape', p.shape);
             const pxT = new ort.Tensor('float32', p.pixelValues, p.shape);
             const amT = new ort.Tensor('int64', p.attentionMask, [p.numTiles, p.shape[1]]);
             const ssT = new ort.Tensor('int64', p.spatialShapes, [p.numTiles, 2]);
+            const t0 = Date.now();
+            console.log('[VL] embed_images.run starting…');
             const out = await this.embedImagesSession.run({
                 pixel_values: pxT,
                 pixel_attention_mask: amT,
                 spatial_shapes: ssT,
             });
+            const dt = ((Date.now() - t0) / 1000).toFixed(1);
             const emb = out.image_features;
             const n = emb.dims[0];
+            console.log('[VL] embed_images.run done in', dt, 's —', n, 'tokens, dims=', emb.dims);
             all.push(new Float32Array(emb.data));
             tokensPerImage.push(n);
             total += n;
@@ -8336,8 +8418,15 @@ self.onmessage = async (e) => {
                     modelId: payload.modelId,
                     quantization: payload.dtype || {},
                     device: payload.device,
-                    onProgress: (msg) => {
-                        self.postMessage({ type: 'progress', payload: { status: 'progress', file: msg, progress: 0 } });
+                    onProgress: (msg, pct) => {
+                        self.postMessage({
+                            type: 'progress',
+                            payload: {
+                                status: 'progress',
+                                file: msg,
+                                progress: (typeof pct === 'number') ? pct : 0,
+                            },
+                        });
                     },
                 });
                 self.postMessage({ type: 'loaded' });
@@ -8393,6 +8482,8 @@ self.onmessage = async (e) => {
 
         // ── LFM2.5-VL vision mode (custom 3-session ORT-Web runner) ──
         if (modelType === 'lfm2-vision') {
+            console.log('[VL-worker] entered generate branch, vlModel=', !!vlModel,
+                'messages=', payload.messages ? payload.messages.length : 0);
             if (!vlModel) {
                 self.postMessage({ type: 'genError', payload: 'Model not loaded' });
                 return;

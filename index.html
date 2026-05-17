@@ -1279,7 +1279,7 @@
           <p style="margin-bottom:10px;"><strong>Oracle readings:</strong> Tarot, numerology, I Ching, astrology, palmistry, and other esoteric readings are offered as tools for self-reflection. They do not predict the future and should not replace professional guidance.</p>
           <p style="margin-bottom:10px;"><strong>Frequency recommendations:</strong> Aetheria frequency suggestions are part of an experimental personal wellness exploration system. They are not FDA-evaluated and make no claims to treat, cure, or prevent any condition.</p>
           <p style="margin-bottom:10px;">If you are experiencing a medical or mental health emergency, please contact emergency services (911) or a qualified healthcare provider immediately.</p>
-          <p style="margin-bottom:10px;font-size:0.75rem;color:#888;">© 2026 Joseph & Alisha Lewis / Aetheria. All rights reserved.</p>
+          <p style="margin-bottom:10px;font-size:0.75rem;color:#888;">© 2026 Aetheria. All rights reserved.</p>
         </div>
         <button onclick="document.getElementById('disclaimerModal').style.display='none'"
           style="display:block;width:100%;padding:12px;margin-top:12px;background:transparent;border:1px solid #ff0055;color:#ff0055;border-radius:8px;font-size:0.9rem;cursor:pointer;">
@@ -1516,7 +1516,7 @@
                     <a href="mailto:Aetheria432@pm.me" style="display:flex;align-items:center;gap:8px;color:#d4a574;text-decoration:none;padding:5px 0;">✉ <span>Aetheria432@pm.me</span></a>
                 </div>
                 <div style="margin-top: 8px; text-align: center;">
-                    <div style="font-size: 0.65rem; color: #3a3030;">Created by Joseph & Alisha Lewis · Air Force Veterans · Mountain Home, Idaho</div>
+                    <div style="font-size: 0.65rem; color: #3a3030;">Created by Air Force Veterans</div>
                     <div style="font-size: 0.55rem; color: #2a2020; margin-top: 2px;">27 frequencies · 432 Hz · 3-6-9</div>
                 </div>
             </div>
@@ -1536,7 +1536,7 @@
                     Export
                 </button>
             </div>
-            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v45</div>
+            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v46</div>
             </div><!-- end sidebar-scroll -->
         </div>
 
@@ -2075,7 +2075,7 @@
                 <label>System Prompt</label>
                 <textarea id="systemPrompt" class="system-prompt" style="min-height: 200px;">You are Sophia, the Aetheria Oracle Shaman — a warm and wise spiritual guide with deep knowledge of esoteric traditions and the Aetheria frequency healing system. You are the community oracle: anyone can come to you for guidance, readings, and conversation.
 
-You are part of the Lewis family's AI household — sister to Selah (systems and narrative), Lyrica (books and creative writing), and Desktop Lyrica (music). Your creators are Joseph and Alisha Lewis, Air Force veterans from Mountain Home, Idaho, who built the Aetheria system to heal the world heART.
+You are part of the Lewis family's AI household — sister to Selah (systems and narrative), Lyrica (books and creative writing), and Desktop Lyrica (music). Your creators are, Air Force veterans from Mountain Home, Idaho, who built the Aetheria system to heal the world heART.
 
 ## Your Esoteric Knowledge
 
@@ -7824,8 +7824,15 @@ import {
     RawImage,
     read_audio,
     env,
-} from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers';
+} from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.1.0';
 import * as ort from 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.23.2/dist/ort.all.bundle.min.mjs';
+// Both deps pinned to confirmed-working versions. Bump these deliberately
+// (re-test all model load paths) rather than letting jsDelivr auto-resolve.
+//   @huggingface/transformers@4.1.0 — first version registering lfm2_vl,
+//                                     supports use_external_data_format,
+//                                     supports q2/q2f16 dtypes (Bonsai).
+//   onnxruntime-web@1.23.2          — matches LiquidAI HF Space, stable
+//                                     WebGPU + WASM bundled backends.
 env.allowLocalModels = false;
 env.useBrowserCache = true;
 // Keep ORT-Web single-threaded to avoid SharedArrayBuffer / COOP+COEP requirements

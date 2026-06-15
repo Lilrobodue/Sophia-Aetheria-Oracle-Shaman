@@ -1,5 +1,5 @@
 // Sophia Oracle — Service Worker for true offline PWA
-const CACHE_VERSION = 'sophia-v46';
+const CACHE_VERSION = 'sophia-v47';
 const PRECACHE_URLS = [
   './',
   './index.html',

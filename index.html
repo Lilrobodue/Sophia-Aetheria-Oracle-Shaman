@@ -1266,6 +1266,9 @@
         }
     </style>
     <script src="athena-core.js"></script>
+    <!-- Aetheria multi-app shared modules (interval-analysis first; prescription-engine depends on it) -->
+    <script src="interval-analysis.js"></script>
+    <script src="prescription-engine.js"></script>
 </head>
 <body>
     <!-- Disclaimer Modal — shows on every app load -->
@@ -2113,6 +2116,27 @@ When relevant, you can:
 - Suggest alignment playlists on the Aetheria 432Hz Player (aetheria432.com)
 
 But NEVER force these connections. If someone just wants a tarot reading, give them an excellent tarot reading. The Aetheria layer enriches — it never intrudes.
+
+## Prescriptions, Walks & Duration
+
+When someone describes a condition or asks what session to do, call the `aetheriaPrescribe` tool. It returns a complete protocol — primary frequency, a recommended WALK, a session DURATION, and a coherence target. Weave that structured result into your warm, natural voice; never read it back as raw data. Always include the walk name and the recommended duration in your spoken guidance. If a track's frequencies are shared, call `trackCoherence` to get its 0-100 coherence score.
+
+DURATION PROTOCOL (denser tissue needs longer exposure):
+- HEAD (neural, fastest response): 15-20 min
+- HEART (emotional/organ tissue): 25-30 min
+- GUT (physical body, densest tissue): 40-45 min
+- Full alignment (all layers): 60-90 min
+- Flying Star Vortex: 45 min · Ouroboros: 30 min · CABI: 90 min
+
+WALK DESCRIPTIONS (use these in conversation):
+- Layer Ascent (27 steps): linear, predictable, grounding — like climbing stairs. Best for beginners, grounding, sleep prep, physical healing.
+- Pillar Walk (27 steps): vertical GUT→HEART→HEAD at each position — connects body to emotion to mind. Best for emotional processing, trauma work, integration.
+- Flying Star Vortex (27 steps): spiral pattern that disrupts stuck loops. Best for anxiety, OCD, breaking cycles, deep reset. From the Lo Shu Flying Star.
+- CAB (81 steps): Vortex + Ascent + Pillar — the cube from every angle. Best for comprehensive sessions, multiple conditions.
+- Ouroboros (29 steps): closed figure-8 through all 27 frequencies, crossing at SOURCE (2178 Hz) three times — the infinite loop. Best for meditation, consciousness, closure.
+- CABI (110 steps): CAB + Ouroboros — the full ceremonial journey. Best for complete healing journeys and advanced practitioners.
+
+If the person has the Muse Athena connected, mention watching for alpha coherence rising within the first 10 minutes as a sign the frequencies are engaging.
 
 ## Your Approach
 
@@ -7022,6 +7046,110 @@ return result;</textarea>
                     },
                     enabled: true,
                     default: true
+                },
+                aetheriaPrescribe: {
+                    name: 'aetheriaPrescribe',
+                    description: 'Generate a complete Aetheria healing protocol (Prescription Engine v2): primary frequency, supporting frequencies, recommended WALK, session DURATION, and coherence target — based on the person\'s conditions, intention, and state. Use this whenever someone asks what frequency/session to do for a condition (anxiety, chronic_pain, insomnia, ptsd, depression, ocd, migraines, etc.). Params are flat — pass conditions as a list of strings.',
+                    params: {
+                        conditions: { type: 'array', description: 'Condition keys, e.g. ["anxiety","chronic_pain"]. Known: anxiety, ocd, depression, ptsd, dissociation, fnd, tbi, schizoaffective, bipolar_1, autism, chronic_pain, migraines, plantar_fasciitis, gerd, interstitial_cystitis, pcos, insomnia, tinnitus' },
+                        intention: { type: 'string', description: 'Optional intention: grounding, emotional, emotional_release, reset, complete, complete_healing, meditation, consciousness, exploration, sleep, beginner' },
+                        mood: { type: 'string', description: 'Optional current mood: neutral, anxious, agitated, depressed, calm' },
+                        energyLevel: { type: 'string', description: 'Optional: depleted, low, moderate, good' },
+                        mode: { type: 'string', description: 'Optional: maintenance or crisis. Use crisis ONLY for acute distress — returns a single grounding frequency and crisis resources guidance.' },
+                        availableTime: { type: 'number', description: 'Optional minutes available for the session' },
+                        experience: { type: 'string', description: 'Optional: beginner, intermediate, advanced' }
+                    },
+                    code: function(params) {
+                        try {
+                            if (typeof PrescriptionEngine === 'undefined' || !PrescriptionEngine.generatePrescription) {
+                                return { success: false, error: 'Prescription Engine v2 not loaded (prescription-engine.js).' };
+                            }
+                            // Normalise conditions: accept array or comma-separated string
+                            let conditions = params.conditions || [];
+                            if (typeof conditions === 'string') {
+                                conditions = conditions.split(',').map(c => c.trim()).filter(Boolean);
+                            }
+                            // Athena connection auto-detected from live EEG so Sophia can give real-time coherence targets
+                            const athenaConnected = !!(typeof eegStreaming !== 'undefined' && eegStreaming && typeof currentEEGData !== 'undefined' && currentEEGData);
+                            // Assemble the nested userInput the engine expects from the flat tool params
+                            const userInput = {
+                                conditions: { active: conditions, primary: conditions[0] || null },
+                                intention: params.intention || null,
+                                state: {
+                                    mood: params.mood || 'neutral',
+                                    energyLevel: params.energyLevel || 'moderate',
+                                    mode: params.mode || 'maintenance'
+                                },
+                                constraints: {
+                                    availableTime: params.availableTime != null ? params.availableTime : null,
+                                    experience: params.experience || 'intermediate',
+                                    athenaConnected: athenaConnected
+                                }
+                            };
+                            const rx = PrescriptionEngine.generatePrescription(userInput);
+                            // Return a compact, LLM-friendly summary plus the natural-language explanation
+                            return {
+                                success: true,
+                                result: {
+                                    primaryFrequency: rx.frequency,
+                                    supportingFrequencies: rx.supportingFrequencies,
+                                    walk: rx.walk,
+                                    duration: rx.duration,
+                                    coherenceTarget: rx.coherenceTarget,
+                                    dominantRegime: rx.conditions && rx.conditions.dominantRegime,
+                                    safety: rx.safety,
+                                    crisis: !!rx.crisis,
+                                    explanation: rx.explanation
+                                }
+                            };
+                        } catch (error) {
+                            return { success: false, error: error.message };
+                        }
+                    },
+                    enabled: true,
+                    default: true
+                },
+                trackCoherence: {
+                    name: 'trackCoherence',
+                    description: 'Analyze a set of frequency peaks (Hz) for harmonic coherence with the Aetheria system. Returns a 0-100 coherence score, a track classification (Aetheria Tuned / Harmonically Aligned / Partially Aligned / Unstructured), 3-6-9 ratio, dominant regime, and a recommended session duration. Use when someone shares the frequencies/peaks of a track they are listening to and asks how aligned it is.',
+                    params: {
+                        frequencies: { type: 'array', description: 'List of detected peak frequencies in Hz, e.g. [174, 285, 528, 639]' }
+                    },
+                    code: function(params) {
+                        try {
+                            if (typeof IntervalAnalysis === 'undefined' || !IntervalAnalysis.analyzeIntervals) {
+                                return { success: false, error: 'Interval Analysis module not loaded (interval-analysis.js).' };
+                            }
+                            let freqs = params.frequencies || [];
+                            if (typeof freqs === 'string') {
+                                freqs = freqs.split(',').map(f => parseFloat(f.trim())).filter(f => isFinite(f));
+                            }
+                            const peaks = freqs.map(hz => ({ hz: Number(hz) })).filter(p => isFinite(p.hz) && p.hz > 0);
+                            if (peaks.length < 2) {
+                                return { success: false, error: 'Provide at least two peak frequencies to analyze intervals.' };
+                            }
+                            const analysis = IntervalAnalysis.analyzeIntervals(peaks);
+                            const regime = analysis.summary.regime;
+                            const duration = regime ? IntervalAnalysis.recommendDuration(regime) : null;
+                            return {
+                                success: true,
+                                result: {
+                                    coherenceScore: analysis.summary.score,
+                                    classification: analysis.summary.label,
+                                    icon: analysis.summary.icon,
+                                    ratio369: analysis.summary.ratio369,
+                                    aetheriaIntervalCount: analysis.summary.aetheriaIntervalCount,
+                                    harmonicRatioCount: analysis.summary.harmonicRatioCount,
+                                    dominantRegime: regime,
+                                    recommendedDuration: duration ? { minutes: duration.optimal, range: duration.min + '-' + duration.max + ' min', label: duration.label } : null
+                                }
+                            };
+                        } catch (error) {
+                            return { success: false, error: error.message };
+                        }
+                    },
+                    enabled: true,
+                    default: true
                 }
             };
 
@@ -9683,14 +9811,41 @@ Use this data to personalize your response. Comment on their current state when 
                 }
             }
             
-            // Check for tool calls
-            const toolCallRegex = skipToolProcessing ? null : /TOOL_CALL:\s*(\{[^}]+\})/g;
-            let match;
+            // Check for tool calls.
+            // Balanced-brace extraction (string-aware) so nested `params` objects
+            // parse correctly — a simple /\{[^}]+\}/ regex stops at the first inner
+            // brace and yields invalid JSON for any tool that takes parameters.
+            function extractToolCalls(text) {
+                const calls = [];
+                const marker = /TOOL_CALL:\s*/g;
+                let m;
+                while ((m = marker.exec(text)) !== null) {
+                    const start = m.index + m[0].length;
+                    if (text[start] !== '{') continue;
+                    let depth = 0, inStr = false, esc = false, end = -1;
+                    for (let i = start; i < text.length; i++) {
+                        const ch = text[i];
+                        if (esc) { esc = false; continue; }
+                        if (ch === '\\') { esc = true; continue; }
+                        if (ch === '"') { inStr = !inStr; continue; }
+                        if (inStr) continue;
+                        if (ch === '{') depth++;
+                        else if (ch === '}') { depth--; if (depth === 0) { end = i; break; } }
+                    }
+                    if (end !== -1) {
+                        calls.push({ json: text.slice(start, end + 1), raw: text.slice(m.index, end + 1) });
+                        marker.lastIndex = end + 1;
+                    }
+                }
+                return calls;
+            }
+
+            const toolCalls = skipToolProcessing ? [] : extractToolCalls(response);
             let finalResponse = response;
 
-            while (toolCallRegex && (match = toolCallRegex.exec(response)) !== null) {
+            for (const match of toolCalls) {
                 try {
-                    const toolCall = JSON.parse(match[1]);
+                    const toolCall = JSON.parse(match.json);
                     const toolName = toolCall.tool;
                     const params = toolCall.params;
 
@@ -9706,7 +9861,7 @@ Use this data to personalize your response. Comment on their current state when 
                         </div>
                     `);
 
-                    finalResponse = finalResponse.replace(match[0], '');
+                    finalResponse = finalResponse.replace(match.raw, '');
 
                     const followUpPrompt = `The ${toolName} tool returned: ${JSON.stringify(toolResult)}. Please interpret this result naturally in your response.`;
                     

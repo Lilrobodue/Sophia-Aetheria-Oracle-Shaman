@@ -1269,6 +1269,8 @@
     <!-- Aetheria multi-app shared modules (interval-analysis first; prescription-engine depends on it) -->
     <script src="interval-analysis.js"></script>
     <script src="prescription-engine.js"></script>
+    <!-- Spiral wave detection: pairwise PLV, phase-lag direction, hemispheric coherence -->
+    <script src="spiral-wave.js"></script>
 </head>
 <body>
     <!-- Disclaimer Modal — shows on every app load -->
@@ -1392,6 +1394,9 @@
                         <div style="margin-top: 4px; color: #888;">
                             Dominant: <span id="dominantWave">-</span>
                         </div>
+                        <div id="deltaArtifactWarn" style="display:none; margin-top: 6px; font-size: 0.68rem; color: #ffb84d; line-height: 1.3;">
+                            ⚠️ High delta may be movement artifact — hold still to confirm slow-wave.
+                        </div>
                     </div>
                     <!-- Aetheria Position Display -->
                     <div id="aetheriaPositionDisplay" style="display: none; background: rgba(0,0,0,0.4); padding: 10px; border-radius: 6px; margin-top: 8px; border: 1px solid rgba(255,0,85,0.3);">
@@ -1404,6 +1409,32 @@
                         <div style="font-size: 0.7rem; color: #ff6b9d; margin-top: 2px;" id="aetheriaGeoLabel">—</div>
                         <div style="font-size: 0.7rem; color: #ccc; margin-top: 2px;" id="aetheriaStateLabel">—</div>
                         <div style="font-size: 0.7rem; color: #888; margin-top: 4px;" id="aetheriaHexLabel">—</div>
+                    </div>
+                    <!-- Spiral Wave Detection Display -->
+                    <div id="spiralWaveDisplay" style="display: none; background: rgba(0,0,0,0.4); padding: 10px; border-radius: 6px; margin-top: 8px; border: 1px solid rgba(74,124,89,0.35);">
+                        <div style="font-size: 0.8rem; font-weight: 600; margin-bottom: 8px; display: flex; align-items: center; gap: 6px;">
+                            <span>🌀</span><span style="color: #4A7C59;">Spiral Wave Signatures</span>
+                        </div>
+                        <!-- PLV heatmap (6 pairs x 4 bands) -->
+                        <div style="font-size: 0.65rem; color: #888; margin-bottom: 3px;">Pairwise PLV (θ α β γ)</div>
+                        <div id="spiralPlvHeatmap" style="display: grid; grid-template-columns: auto repeat(4, 1fr); gap: 2px; font-size: 0.6rem; margin-bottom: 8px;"></div>
+                        <!-- Wave direction arrows -->
+                        <div style="font-size: 0.65rem; color: #888; margin-bottom: 3px;">Wave Direction (<span id="spiralDirBand">alpha</span>)</div>
+                        <div id="spiralDirection" style="font-size: 0.7rem; line-height: 1.5;">
+                            <div>Left: <span id="spiralDirLeft" style="color:#ccc;">—</span></div>
+                            <div>Right: <span id="spiralDirRight" style="color:#ccc;">—</span></div>
+                            <div style="color:#888;">Symmetry: <span id="spiralSymmetry">—</span></div>
+                        </div>
+                        <!-- HCR gauge -->
+                        <div style="font-size: 0.65rem; color: #888; margin-top: 8px; margin-bottom: 3px;">Hemispheric Coherence Ratio</div>
+                        <div style="display:flex; align-items:center; gap:8px;">
+                            <span id="spiralHcrValue" style="font-size: 1.1rem; font-weight: 700; color: #fff;">—</span>
+                            <span id="spiralHcrInterp" style="font-size: 0.65rem; color: #888;">—</span>
+                        </div>
+                        <div style="background: rgba(255,255,255,0.1); height: 5px; border-radius: 3px; margin-top: 4px; position: relative;">
+                            <div id="spiralHcrBar" style="background: #4A7C59; height: 100%; border-radius: 3px; width: 0%; transition: width 0.3s;"></div>
+                            <div style="position:absolute; left:50%; top:-2px; width:1px; height:9px; background:rgba(255,255,255,0.4);"></div>
+                        </div>
                     </div>
                 </div>
                 <div style="margin-top: 8px; display: flex; gap: 6px;">
@@ -1539,7 +1570,7 @@
                     Export
                 </button>
             </div>
-            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v47</div>
+            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v48</div>
             </div><!-- end sidebar-scroll -->
         </div>
 
@@ -2530,11 +2561,25 @@ return result;</textarea>
                         📋 CSV
                     </button>
                 </div>
+                <button class="btn btn-small btn-secondary" onclick="showSessionSummary()" style="width: 100%; margin-top: 6px;">
+                    📈 Session Summary &amp; Insights
+                </button>
             </div>
 
             <button class="btn btn-primary" onclick="saveEEGSettings()" style="width: 100%; margin-top: 15px;">
                 Save EEG Settings
             </button>
+        </div>
+    </div>
+
+    <!-- Session Summary & Insights Modal -->
+    <div class="modal" id="sessionSummaryModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>📈 Session Summary</h2>
+                <button class="close-btn" onclick="closeSessionSummary()">✕</button>
+            </div>
+            <div id="sessionSummaryBody" style="font-size: 0.85rem; line-height: 1.55;"></div>
         </div>
     </div>
 
@@ -2641,7 +2686,17 @@ return result;</textarea>
                     timestamps: [],
                     sampleRate: 256 // Muse 2 samples at 256 Hz per channel
                 };
-                
+
+                // Spiral wave analyzer (pairwise PLV, phase-lag direction, HCR).
+                // Computed from the raw per-channel buffers; throttled to ~1.5 s
+                // so the FFT/IFFT work stays well within budget.
+                this.spiralAnalyzer = (typeof SpiralWaveAnalyzer !== 'undefined')
+                    ? new SpiralWaveAnalyzer({ sampleRate: 256, windowSize: 512, directionBand: 'alpha' })
+                    : null;
+                this.lastSpiral = null;
+                this._lastSpiralComputeTs = 0;
+                this.SPIRAL_INTERVAL_MS = 1500;
+
                 // Headset status (no automatic off-head detection — Muse 2 raw BLE
                 // doesn't provide reliable fit indicators. Use manual toggle instead.)
                 this.headsetStatus = {
@@ -2923,10 +2978,13 @@ return result;</textarea>
                         };
 
                         const metrics = self.calculateMetricsFromRealData(bandpowers);
+                        const spiral = self._updateSpiralMetrics(Date.now());
 
                         const processedData = {
                             bandpowers: bandpowers,
                             metrics: metrics,
+                            spiral: spiral,
+                            artifact: self.assessDeltaArtifact(bandpowers),
                             raw_eeg: self._athenaLatestRaw || [0, 0, 0, 0, 0, 0, 0, 0],
                             timestamp: Date.now(),
                             source: 'athena_bluetooth',
@@ -2943,10 +3001,25 @@ return result;</textarea>
 
                     onEEG: (data) => {
                         // data.samples is an array of Float64Arrays (one per sample-per-packet)
-                        // Store latest 4 electrode values for raw display
+                        // data.labels gives the channel order (4ch or 8ch).
                         if (data && data.samples && data.samples.length > 0) {
                             const latest = data.samples[data.samples.length - 1];
                             self._athenaLatestRaw = Array.from(latest);
+
+                            // Feed raw per-channel buffers so the spiral analyzer
+                            // can run on Athena too (mirrors the Muse 2 path).
+                            const labels = data.labels || ['TP9', 'AF7', 'AF8', 'TP10'];
+                            for (let s = 0; s < data.samples.length; s++) {
+                                const samp = data.samples[s];
+                                for (let c = 0; c < labels.length; c++) {
+                                    const ch = labels[c];
+                                    if (!Array.isArray(self.realEEGData[ch])) continue; // skip AUX/non-core
+                                    self.realEEGData[ch].push(samp[c]);
+                                    if (self.realEEGData[ch].length > 512) {
+                                        self.realEEGData[ch] = self.realEEGData[ch].slice(-512);
+                                    }
+                                }
+                            }
                         }
                     },
 
@@ -3463,6 +3536,73 @@ return result;</textarea>
                 }, 100);
             }
             
+            // Compute spiral wave metrics from the raw per-channel buffers.
+            // Shared by the Muse 2 (processRealEEGData) and Athena (onEEG) paths.
+            // Throttled; updates this.lastSpiral in place. Returns it (or null).
+            _updateSpiralMetrics(now) {
+                if (!this.spiralAnalyzer) return this.lastSpiral;
+                const haveAll = ['AF7', 'AF8', 'TP9', 'TP10'].every(
+                    c => this.realEEGData[c] && this.realEEGData[c].length >= 256
+                );
+                if (!haveAll) return this.lastSpiral;
+                if (now - this._lastSpiralComputeTs < this.SPIRAL_INTERVAL_MS) return this.lastSpiral;
+                this._lastSpiralComputeTs = now;
+                try {
+                    const spiral = this.spiralAnalyzer.analyze({
+                        AF7: this.realEEGData.AF7,
+                        AF8: this.realEEGData.AF8,
+                        TP9: this.realEEGData.TP9,
+                        TP10: this.realEEGData.TP10,
+                    }, now);
+                    if (spiral) this.lastSpiral = spiral;
+                } catch (e) {
+                    console.warn('🌀 Spiral metric computation failed:', e.message);
+                }
+                return this.lastSpiral;
+            }
+
+            // Scale-invariant movement/artifact score from the raw EEG buffers.
+            // For each channel: fraction of recent samples that are large outliers
+            // vs the channel's own robust spread (median + MAD). Jerky movement,
+            // blinks and clenches produce many outliers; smooth slow-wave (real
+            // delta) produces almost none — so this tells "I moved" from "genuine
+            // slow-wave". Works on both Muse 2 and Athena (no accelerometer needed).
+            _assessMovement() {
+                const chs = ['AF7', 'AF8', 'TP9', 'TP10'];
+                let totalFrac = 0, used = 0;
+                for (const ch of chs) {
+                    const buf = this.realEEGData[ch];
+                    if (!buf || buf.length < 128) continue;
+                    const w = buf.slice(-256);
+                    const sorted = Array.prototype.slice.call(w).sort((a, b) => a - b);
+                    const median = sorted[sorted.length >> 1];
+                    const devs = w.map(v => Math.abs(v - median)).sort((a, b) => a - b);
+                    const mad = devs[devs.length >> 1] || 1e-6;
+                    let out = 0;
+                    for (let i = 0; i < w.length; i++) {
+                        if (Math.abs(w[i] - median) > 6 * mad) out++;
+                    }
+                    totalFrac += out / w.length;
+                    used++;
+                }
+                if (!used) return { movementScore: 0, available: false };
+                return { movementScore: totalFrac / used, available: true };
+            }
+
+            // Assess whether a high-delta reading is likely a movement artifact.
+            assessDeltaArtifact(bandpowers) {
+                const deltaHigh = bandpowers && bandpowers.delta >= 60;
+                const mv = this._assessMovement();
+                // >4% outlier samples alongside high delta = movement-contaminated.
+                const deltaArtifactLikely = deltaHigh && mv.available && mv.movementScore > 0.04;
+                return {
+                    movementScore: Math.round(mv.movementScore * 1000) / 1000,
+                    deltaHigh: !!deltaHigh,
+                    deltaArtifactLikely: deltaArtifactLikely,
+                    source: mv.available ? 'eeg-mad' : 'none',
+                };
+            }
+
             // Process real EEG data into bandpowers and metrics
             processRealEEGData() {
                 // Check if we have enough data from all connected electrodes
@@ -3496,11 +3636,17 @@ return result;</textarea>
                         const samples = this.realEEGData[electrode];
                         return samples.length > 0 ? samples[samples.length - 1] : 0;
                     });
+
+                    // Spiral wave metrics (PLV matrix, phase-lag direction, HCR).
+                    // Needs all four channels and the raw time series; throttled.
+                    this._updateSpiralMetrics(Date.now());
                     
                     // Create processed data object
                     const processedData = {
                         bandpowers: avgBandpowers,
                         metrics: metrics,
+                        spiral: this.lastSpiral,
+                        artifact: this.assessDeltaArtifact(avgBandpowers),
                         raw_eeg: raw_eeg,
                         gyro: this.realEEGData.gyro,
                         accel: this.realEEGData.accel,
@@ -4472,41 +4618,51 @@ return result;</textarea>
             // bands = {delta, theta, alpha, beta, gamma} as log-PSD normalized percentages
             const d = bands.delta, t = bands.theta, a = bands.alpha, b = bands.beta, g = bands.gamma;
 
+            // NOTE: Alpha thresholds recalibrated 2026-06-19. In the log-PSD
+            // normalized percentages, alpha realistically peaks ~15-20% (not the
+            // 30-40% the original a>20/a>25/a>30 gates assumed), so 19 of the 27
+            // positions were effectively unreachable and the classifier collapsed
+            // onto a few low-alpha states. Alpha gates rescaled to a>11 / a>13 /
+            // a>15 and the a<15 upper bounds tightened to a<11 so moderate-alpha
+            // states correctly escape the low-alpha positions. Theta>30 (rare) →
+            // theta>26. Other bands (delta/theta/beta/gamma) reach their gates
+            // routinely and are unchanged.
+
             // GUT REGIME (positions 0-8) — body, grounding, survival states
-            if (d > 35 && a < 15 && g < 10)              return 0;  // Scattered Field (174Hz)
-            if (d > 30 && t > 20 && a < 15)               return 1;  // Body Restoring (285Hz)
-            if (b > 30 && g > 15 && a < 15)               return 2;  // Sympathetic Activation (396Hz)
+            if (d > 35 && a < 11 && g < 10)               return 0;  // Scattered Field (174Hz)
+            if (d > 30 && t > 20 && a < 11)               return 1;  // Body Restoring (285Hz)
+            if (b > 30 && g > 15 && a < 11)               return 2;  // Sympathetic Activation (396Hz)
             if (Math.abs(a - b) < 8 && t > 15 && t < 25)  return 3;  // State Transition (417Hz)
-            if (t > 30 && d > 25 && a < 15)                return 4;  // Subconscious Drift (528Hz)
-            if (a > 20 && a < 30 && d > 20 && b < 25)     return 5;  // Grounding (639Hz)
-            if (a > 25 && t > 20 && b < 20)                return 6;  // Awakening (741Hz)
-            if (a > 30 && b < 15 && t > 15)                return 7;  // Inner Stillness (852Hz)
-            if (a > 25 && t > 20 && g > 10 && b < 25)     return 8;  // Coherence Building (963Hz)
+            if (t > 26 && d > 25 && a < 11)               return 4;  // Subconscious Drift (528Hz)
+            if (a > 11 && a < 18 && d > 20 && b < 25)     return 5;  // Grounding (639Hz)
+            if (a > 13 && t > 20 && b < 20)               return 6;  // Awakening (741Hz)
+            if (a > 15 && b < 15 && t > 15)               return 7;  // Inner Stillness (852Hz)
+            if (a > 13 && t > 20 && g > 10 && b < 25)     return 8;  // Coherence Building (963Hz)
 
             // HEART REGIME (positions 9-17) — emotion, connection, flow states
-            if (t > 25 && b > 20 && a < 20)                return 9;  // Pain Processing (1206Hz)
-            if (d > 25 && b > 20 && a < 15 && t < 20)     return 10; // Sensory Fog (1449Hz)
-            if (a > 20 && g > 12 && t > 15)                return 11; // Field Extension (1692Hz)
-            if (t > 25 && a > 20 && g > 10)                return 12; // Intuitive Perception (1935Hz)
-            if (t > 30 && a > 25 && b < 15)                return 13; // Deep Meditation (2178Hz)
-            if (t > 20 && a > 20 && b > 15 && b < 25)     return 14; // Emotional Release (2421Hz)
-            if (a > 25 && g > 15 && b < 20)                return 15; // Transmutation (2664Hz)
-            if (a > 20 && t > 15 && g > 12 && b > 15)     return 16; // Creative Flow (2907Hz)
-            if (a > 25 && g > 15 && t > 15 && b < 20)     return 17; // Renewal (3150Hz)
+            if (t > 25 && b > 20 && a < 13)               return 9;  // Pain Processing (1206Hz)
+            if (d > 25 && b > 20 && a < 11 && t < 20)     return 10; // Sensory Fog (1449Hz)
+            if (a > 11 && g > 12 && t > 15)               return 11; // Field Extension (1692Hz)
+            if (t > 25 && a > 11 && g > 10)               return 12; // Intuitive Perception (1935Hz)
+            if (t > 26 && a > 13 && b < 15)               return 13; // Deep Meditation (2178Hz)
+            if (t > 20 && a > 11 && b > 15 && b < 25)     return 14; // Emotional Release (2421Hz)
+            if (a > 13 && g > 15 && b < 20)               return 15; // Transmutation (2664Hz)
+            if (a > 11 && t > 15 && g > 12 && b > 15)     return 16; // Creative Flow (2907Hz)
+            if (a > 13 && g > 15 && t > 15 && b < 20)     return 17; // Renewal (3150Hz)
 
             // HEAD REGIME (positions 18-26) — awareness, mastery, creation states
-            if (b > 25 && a > 20 && g > 10)                return 18; // Focused Attention (3504Hz)
-            if (a > 25 && g > 12 && b > 15 && b < 25)     return 19; // Receptive State (3858Hz)
-            if (g > 18 && a > 20 && b > 15)                return 20; // Field Broadcast (4212Hz)
-            if (a > 25 && t > 20 && g > 15 && b < 20)     return 21; // Collective Harmony (4566Hz)
-            if (g > 20 && a > 20 && t > 15)                return 22; // Expanded Awareness (4920Hz)
-            if (a > 25 && g > 18 && t > 15 && b < 20)     return 23; // Healing Resonance (5274Hz)
-            if (g > 22 && a > 20 && t > 15)                return 24; // Peak Vision (5628Hz)
-            if (g > 20 && a > 25 && t > 20 && b < 15)     return 25; // Integration (5982Hz)
-            if (g > 25 && a > 25 && t > 20)                return 26; // Summit Coherence (6336Hz)
+            if (b > 25 && a > 11 && g > 10)               return 18; // Focused Attention (3504Hz)
+            if (a > 13 && g > 12 && b > 15 && b < 25)     return 19; // Receptive State (3858Hz)
+            if (g > 18 && a > 11 && b > 15)               return 20; // Field Broadcast (4212Hz)
+            if (a > 13 && t > 20 && g > 15 && b < 20)     return 21; // Collective Harmony (4566Hz)
+            if (g > 20 && a > 11 && t > 15)               return 22; // Expanded Awareness (4920Hz)
+            if (a > 13 && g > 18 && t > 15 && b < 20)     return 23; // Healing Resonance (5274Hz)
+            if (g > 22 && a > 11 && t > 15)               return 24; // Peak Vision (5628Hz)
+            if (g > 20 && a > 13 && t > 20 && b < 15)     return 25; // Integration (5982Hz)
+            if (g > 25 && a > 13 && t > 20)               return 26; // Summit Coherence (6336Hz)
 
             // Default fallback
-            if (a > 20) return 5;    // Grounding
+            if (a > 11) return 5;    // Grounding
             if (t > 20) return 4;    // Subconscious Drift
             if (b > 25) return 2;    // Sympathetic Activation
             return 0;                 // Scattered Field
@@ -4522,6 +4678,43 @@ return result;</textarea>
 
         // Track the current Aetheria position globally for context injection
         let currentAetheriaPosition = null;
+
+        // ── Position de-bounce ──
+        // The raw classifier runs on instantaneous bandpowers and can jitter
+        // between states as bands cross thresholds. Require a new state to
+        // persist for AETH_MIN_DWELL_MS before committing, so the displayed
+        // position is stable instead of ping-ponging every update.
+        let _aethCommittedIdx = -1, _aethCandidateIdx = -1, _aethCandidateSince = 0;
+        const AETH_MIN_DWELL_MS = 2500;
+        function stabilizeAetheriaIndex(rawIdx, now) {
+            if (_aethCommittedIdx === -1) {
+                _aethCommittedIdx = _aethCandidateIdx = rawIdx;
+                _aethCandidateSince = now;
+                return rawIdx;
+            }
+            if (rawIdx === _aethCommittedIdx) {
+                // Still in the committed state — reset any pending candidate.
+                _aethCandidateIdx = rawIdx;
+                _aethCandidateSince = now;
+            } else if (rawIdx !== _aethCandidateIdx) {
+                // New contender — start its dwell timer.
+                _aethCandidateIdx = rawIdx;
+                _aethCandidateSince = now;
+            } else if (now - _aethCandidateSince >= AETH_MIN_DWELL_MS) {
+                // Contender held long enough — commit the switch.
+                _aethCommittedIdx = rawIdx;
+            }
+            return _aethCommittedIdx;
+        }
+
+        // Like getAetheriaPosition but de-bounced for the live display path.
+        function getStableAetheriaPosition(bands) {
+            const rawIdx = getAetheriaState(bands);
+            const stateIdx = stabilizeAetheriaIndex(rawIdx, Date.now());
+            const freq = AETHERIA_FREQUENCIES[stateIdx];
+            const coherence = calcCoherence(bands);
+            return { ...freq, coherence, stateIdx };
+        }
 
         // ═══════════════════════════════════════════════════
         // END AETHERIA PRESCRIPTION ENGINE
@@ -6225,6 +6418,7 @@ return result;</textarea>
             // If no saved preference, apply auto-selected female en-GB
             if (!hasSavedVoice && bestMatch >= 0) {
                 config.selectedVoice = bestMatch;
+                _pinnedVoiceName = availableVoices[bestMatch].name; // pin by name
                 select.value = bestMatch;
                 console.log('🔊 Auto-selected voice:', availableVoices[bestMatch].name);
             } else if (hasSavedVoice && availableVoices[config.selectedVoice]) {
@@ -6309,6 +6503,29 @@ return result;</textarea>
                 .trim();
         }
 
+        // Resolve Sophia's voice by NAME (cached), not by list index. The browser
+        // re-fetches getVoices() on 'voiceschanged' and the order can shift, so a
+        // raw index occasionally points at a different voice for one utterance —
+        // that's the "voice deviated once then went back" glitch. Pinning the name
+        // keeps every utterance on the same voice.
+        let _pinnedVoiceName = null;
+        function getSelectedVoice() {
+            if (!synthesis) return null;
+            const voices = (availableVoices && availableVoices.length) ? availableVoices : synthesis.getVoices();
+            if (!voices || !voices.length) return null;
+            if (_pinnedVoiceName === null && config.selectedVoice !== null && voices[config.selectedVoice]) {
+                _pinnedVoiceName = voices[config.selectedVoice].name;
+            }
+            if (_pinnedVoiceName) {
+                const byName = voices.find(v => v.name === _pinnedVoiceName);
+                if (byName) return byName;
+            }
+            if (config.selectedVoice !== null && voices[config.selectedVoice]) {
+                return voices[config.selectedVoice];
+            }
+            return null;
+        }
+
         function speakText(text, streaming = false) {
             if (!synthesis) return;
 
@@ -6322,10 +6539,9 @@ return result;</textarea>
                 utterance.pitch = config.voicePitch;
                 utterance.volume = config.voiceVolume;
                 utterance.lang = config.voiceLang;
-                
-                if (config.selectedVoice !== null && availableVoices[config.selectedVoice]) {
-                    utterance.voice = availableVoices[config.selectedVoice];
-                }
+
+                const v = getSelectedVoice();
+                if (v) utterance.voice = v;
 
                 currentUtterance = utterance;
                 synthesis.speak(utterance);
@@ -6368,9 +6584,8 @@ return result;</textarea>
                 utterance.volume = config.voiceVolume;
                 utterance.lang = config.voiceLang;
 
-                if (config.selectedVoice !== null && availableVoices[config.selectedVoice]) {
-                    utterance.voice = availableVoices[config.selectedVoice];
-                }
+                const v = getSelectedVoice();
+                if (v) utterance.voice = v;
 
                 utterance.onend = () => {
                     speakNextSentence();
@@ -6398,6 +6613,13 @@ return result;</textarea>
         let voiceOracleLastSpoke = 0;
         let voiceOracleCooldown = 25000; // 25s minimum between spoken insights
         let voiceOracleLastCoherence = -1;
+        // Spiral wave Oracle tracking (debounced so transient flicker doesn't trigger speech)
+        let voiceOracleSpiralDir = 'indeterminate';   // current stable bilateral direction
+        let voiceOracleSpiralDirStreak = 0;           // consecutive consistent reads
+        let voiceOracleSpiralDirAnnounced = false;    // stabilization already spoken
+        let voiceOracleHcrPrev = null;                // dominant-band HCR interp last read
+        let voiceOracleHcrStreak = 0;                 // consecutive reads at current interp
+        let voiceOracleHcrAnnounced = null;           // last dominant interp spoken
 
         function toggleVoiceOracle() {
             voiceOracleEnabled = !voiceOracleEnabled;
@@ -6408,6 +6630,9 @@ return result;</textarea>
                 btn.style.borderColor = voiceOracleEnabled ? 'rgba(0, 255, 136, 0.5)' : '';
             }
             if (voiceOracleEnabled) {
+                // Reset spiral announce state so fresh insights can fire this session
+                voiceOracleSpiralDirAnnounced = false;
+                voiceOracleHcrAnnounced = null;
                 speakText('Voice oracle activated. I will share insights about your brain state as it shifts.');
                 showStatus('Voice Oracle enabled — Sophia will speak about brain state changes', 'success');
             } else {
@@ -6419,6 +6644,67 @@ return result;</textarea>
         // Called from updateEEGMetrics whenever new data arrives
         function voiceOracleCheck(bandpowers, aethPos) {
             if (!voiceOracleEnabled || !aethPos) return;
+
+            // --- Spiral wave tracking (runs every call so streaks stay continuous) ---
+            // Produces an optional spiralMessage, used only if no higher-priority
+            // (position / coherence) event fires this cycle.
+            let spiralMessage = null;
+            let spiralAnnounce = null; // {type:'dir'|'hcr', interp?}
+            const spiral = (typeof currentEEGData !== 'undefined' && currentEEGData) ? currentEEGData.spiral : null;
+            if (spiral && spiral.phaseLag) {
+                const bi = spiral.phaseLag.bilateral;
+                const minStrength = Math.min(spiral.phaseLag.left.strength, spiral.phaseLag.right.strength);
+                const stable = bi.direction !== 'indeterminate' && bi.symmetry >= 0.6 && minStrength >= 0.25;
+
+                if (stable && bi.direction === voiceOracleSpiralDir) {
+                    voiceOracleSpiralDirStreak++;
+                } else if (stable) {
+                    voiceOracleSpiralDir = bi.direction;
+                    voiceOracleSpiralDirStreak = 1;
+                    voiceOracleSpiralDirAnnounced = false;
+                } else {
+                    voiceOracleSpiralDir = 'indeterminate';
+                    voiceOracleSpiralDirStreak = 0;
+                    voiceOracleSpiralDirAnnounced = false;
+                }
+
+                // Dominant-band HCR interp, debounced over 2 consecutive reads.
+                const dom = spiral.dominantBand;
+                const hcrData = spiral.hcr[dom];
+                const interp = hcrData.interpretation;
+                if (interp === voiceOracleHcrPrev) {
+                    voiceOracleHcrStreak++;
+                } else {
+                    voiceOracleHcrPrev = interp;
+                    voiceOracleHcrStreak = 1;
+                }
+
+                // Headline event: traveling-wave direction has stabilized + mirrored.
+                if (voiceOracleSpiralDirStreak >= 4 && !voiceOracleSpiralDirAnnounced) {
+                    const band = spiral.phaseLag.left.band;
+                    const sym = Math.round(bi.symmetry * 100);
+                    const flow = voiceOracleSpiralDir === 'front-to-back'
+                        ? 'front to back, with the frontal regions leading'
+                        : 'back to front, with the temporal regions leading';
+                    spiralMessage = `Your traveling waves are organizing. In the ${band} band the phase lag has stabilized — flowing ${flow}, ` +
+                        `mirrored across both hemispheres with ${sym} percent symmetry. This is the coordinated wave motion the frequencies are meant to entrain.`;
+                    spiralAnnounce = { type: 'dir' };
+                }
+                // Secondary event: hemispheric coherence ratio crosses a regime.
+                else if (voiceOracleHcrStreak >= 2 && interp !== voiceOracleHcrAnnounced
+                         && (interp === 'hemispheric-dominant' || interp === 'ipsilateral-dominant')) {
+                    const ratio = hcrData.hcr.toFixed(2);
+                    if (interp === 'hemispheric-dominant') {
+                        spiralMessage = `Inter-hemispheric coherence is rising in the ${dom} band. Your hemispheric coherence ratio is ${ratio} — ` +
+                            `the left and right sides are mirroring more strongly than front to back, consistent with spiral wave mirroring.`;
+                    } else {
+                        spiralMessage = `Coherence has shifted toward front-to-back flow in the ${dom} band. Hemispheric ratio is ${ratio} — ` +
+                            `the ipsilateral pathways now lead over cross-hemisphere mirroring.`;
+                    }
+                    spiralAnnounce = { type: 'hcr', interp };
+                }
+            }
+
             const now = Date.now();
             if (now - voiceOracleLastSpoke < voiceOracleCooldown) return;
 
@@ -6467,6 +6753,17 @@ return result;</textarea>
                 const direction = coherence > voiceOracleLastCoherence ? 'rising' : 'dropping';
                 message = `Coherence ${direction} — now at ${coherence} percent. ` +
                     `Position ${aethPos.pos}, ${aethPos.keyword}.`;
+            }
+            // Spiral wave insight — lowest priority, only when nothing else fired
+            else if (spiralMessage) {
+                message = spiralMessage;
+                // Mark this spiral event as announced (we're past the cooldown gate,
+                // so reaching here means it will be spoken).
+                if (spiralAnnounce.type === 'dir') {
+                    voiceOracleSpiralDirAnnounced = true;
+                } else if (spiralAnnounce.type === 'hcr') {
+                    voiceOracleHcrAnnounced = spiralAnnounce.interp;
+                }
             }
 
             if (message) {
@@ -10225,7 +10522,8 @@ Use this data to personalize your response. Comment on their current state when 
             config.voiceLang = document.getElementById('voiceLang').value;
             config.voiceChunkSize = parseInt(document.getElementById('voiceChunkSize').value);
             config.selectedVoice = parseInt(document.getElementById('voiceSelect').value);
-            
+            _pinnedVoiceName = null; // re-pin to the newly chosen voice
+
             // Save auto-optimization settings
             config.autoOptimization = document.getElementById('autoOptimization').checked;
             config.manualDeviceType = document.getElementById('manualDeviceType').value;
@@ -10811,6 +11109,7 @@ Use this data to personalize your response. Comment on their current state when 
                     eegStreaming = true;
                     currentEEGData = event.detail;
                     updateEEGMetrics(event.detail);
+                    updateSpiralDisplay(event.detail.spiral);
                     updateEEGQualityDisplay(event.detail);
                     updateEEGHeaderIndicator(true, true);
                     updateNeuroMiniDisplay();
@@ -11059,6 +11358,85 @@ Use this data to personalize your response. Comment on their current state when 
             }
         }
 
+        // Render the spiral wave panel (PLV heatmap, direction arrows, HCR gauge).
+        function updateSpiralDisplay(spiral) {
+            const panel = document.getElementById('spiralWaveDisplay');
+            if (!panel) return;
+            if (!spiral || typeof SpiralWaveAnalyzer === 'undefined') {
+                panel.style.display = 'none';
+                return;
+            }
+            panel.style.display = 'block';
+
+            const BANDS = SpiralWaveAnalyzer.BAND_NAMES;       // ['theta','alpha','beta','gamma']
+            const PAIRS = SpiralWaveAnalyzer.CHANNEL_PAIRS;
+
+            // PLV -> color: dark -> Aetheria green. Returns an rgba string.
+            const plvColor = (v) => {
+                const a = 0.12 + Math.max(0, Math.min(1, v)) * 0.88;
+                return `rgba(74,124,89,${a.toFixed(2)})`;
+            };
+
+            // Build / refresh the heatmap grid.
+            const heatmap = document.getElementById('spiralPlvHeatmap');
+            if (heatmap) {
+                let html = '<div></div>'; // top-left spacer
+                const bandSym = { theta: 'θ', alpha: 'α', beta: 'β', gamma: 'γ' };
+                for (const b of BANDS) {
+                    html += `<div style="text-align:center;color:#888;">${bandSym[b]}</div>`;
+                }
+                for (const pair of PAIRS) {
+                    const cells = spiral.plvMatrix[pair.name];
+                    html += `<div style="color:#999;white-space:nowrap;padding-right:4px;" title="${pair.type}">${pair.name}</div>`;
+                    for (const b of BANDS) {
+                        const plv = cells ? cells[b].plv : 0;
+                        const txt = plv >= 0.995 ? '1.0' : plv.toFixed(2).slice(1); // ".62"
+                        html += `<div title="${pair.name} ${b}: ${plv.toFixed(3)}" style="text-align:center;border-radius:3px;padding:2px 0;color:#e8ffe8;background:${plvColor(plv)};">${txt}</div>`;
+                    }
+                }
+                heatmap.innerHTML = html;
+            }
+
+            // Direction arrows.
+            const pl = spiral.phaseLag;
+            const bandLabel = document.getElementById('spiralDirBand');
+            if (bandLabel) bandLabel.textContent = pl.left.band;
+            const arrow = (side) => {
+                if (side.direction === 'indeterminate') return '⟷';
+                return side.direction === 'front-to-back' ? '──→' : '←──';
+            };
+            const fmtDir = (side, front, back) => {
+                const op = (0.3 + side.strength * 0.7).toFixed(2);
+                const sign = side.lagMs >= 0 ? '+' : '';
+                return `<span style="opacity:${op};">${front} ${arrow(side)} ${back}</span> ` +
+                       `<span style="color:#888;">(${sign}${side.lagMs.toFixed(1)}ms, s=${side.strength.toFixed(2)})</span>`;
+            };
+            const lEl = document.getElementById('spiralDirLeft');
+            const rEl = document.getElementById('spiralDirRight');
+            if (lEl) lEl.innerHTML = fmtDir(pl.left, 'AF7', 'TP9');
+            if (rEl) rEl.innerHTML = fmtDir(pl.right, 'AF8', 'TP10');
+            const symEl = document.getElementById('spiralSymmetry');
+            if (symEl) symEl.textContent = pl.bilateral.symmetry.toFixed(2);
+
+            // HCR gauge — shown for the dominant (strongest inter-hemispheric) band.
+            const dom = spiral.dominantBand;
+            const hcrData = spiral.hcr[dom];
+            const valEl = document.getElementById('spiralHcrValue');
+            const interpEl = document.getElementById('spiralHcrInterp');
+            const barEl = document.getElementById('spiralHcrBar');
+            if (hcrData) {
+                const color = hcrData.hcr > 1.2 ? '#FFD700'
+                            : hcrData.hcr < 0.8 ? '#ff6b6b' : '#4A7C59';
+                if (valEl) { valEl.textContent = hcrData.hcr.toFixed(2); valEl.style.color = color; }
+                if (interpEl) interpEl.textContent = hcrData.interpretation + ' · ' + dom;
+                if (barEl) {
+                    // Map HCR 0..2 onto 0..100% (1.0 = center tick).
+                    barEl.style.width = Math.max(0, Math.min(100, hcrData.hcr * 50)).toFixed(0) + '%';
+                    barEl.style.background = color;
+                }
+            }
+        }
+
         function updateEEGHeaderIndicator(connected, streaming) {
             const dot = document.getElementById('eegDot');
             const indicator = document.getElementById('eegIndicator');
@@ -11116,13 +11494,20 @@ Use this data to personalize your response. Comment on their current state when 
             // Update dominant wave
             document.getElementById('dominantWave').textContent = metrics.dominant_wave || '-';
 
+            // Delta-artifact warning — flag high delta that coincides with movement
+            const artifactWarn = document.getElementById('deltaArtifactWarn');
+            if (artifactWarn) {
+                const art = currentEEGData && currentEEGData.artifact;
+                artifactWarn.style.display = (art && art.deltaArtifactLikely) ? 'block' : 'none';
+            }
+
             // Store for context integration
             lastFocusLevel = metrics.focus;
             lastMeditationLevel = metrics.meditation;
 
             // ── Aetheria 27-Position Prescription ──
             try {
-                const aethPos = getAetheriaPosition(bandpowers);
+                const aethPos = getStableAetheriaPosition(bandpowers);
                 currentAetheriaPosition = aethPos;
 
                 const posDisplay = document.getElementById('aetheriaPositionDisplay');
@@ -11652,8 +12037,10 @@ Use this data to personalize your response. Comment on their current state when 
             if (solfeggioSettings.currentFrequency) {
                 const freqName = solfeggioFrequencies[solfeggioSettings.currentFrequency]?.name || 'Unknown';
                 const shortName = freqName.split(' - ')[0]; // Take just the frequency part
-                frequencyText = `🎵 ${solfeggioSettings.currentFrequency}Hz`;
-                
+                // "Now Playing" makes clear this is the audible tone, distinct from
+                // the Aetheria position frequency shown in the side panel.
+                frequencyText = `🎵 Now Playing: ${solfeggioSettings.currentFrequency}Hz`;
+
                 // Show transition if crossfading
                 if (solfeggioSettings.isTransitioning && solfeggioSettings.pendingFrequency) {
                     frequencyText += ` → ${solfeggioSettings.pendingFrequency}Hz`;
@@ -11661,21 +12048,11 @@ Use this data to personalize your response. Comment on their current state when 
             }
             frequencyDisplay.textContent = frequencyText;
             
-            // Update brain state display
+            // Update brain state display — single source of truth: the Aetheria
+            // 27-position engine, so the header always agrees with the side panel.
             let brainStateText = '🧠 Brain State: Analyzing';
-            if (solfeggioSettings.currentBrainState && solfeggioSettings.currentBrainState !== 'analyzing') {
-                // Shorten long brain state names for header display
-                let shortState = solfeggioSettings.currentBrainState;
-                if (shortState.length > 20) {
-                    shortState = shortState.substring(0, 17) + '...';
-                }
-                brainStateText = `🧠 ${shortState}`;
-                
-                // Add confidence if available
-                if (solfeggioSettings.stateConfidence > 0) {
-                    const confidence = Math.round(solfeggioSettings.stateConfidence * 100);
-                    brainStateText += ` (${confidence}%)`;
-                }
+            if (currentAetheriaPosition) {
+                brainStateText = `🧠 ${currentAetheriaPosition.keyword} (${currentAetheriaPosition.regime})`;
             }
             brainStateDisplay.textContent = brainStateText;
             
@@ -11694,11 +12071,10 @@ Use this data to personalize your response. Comment on their current state when 
             } else if (!solfeggioSettings.enabled) {
                 miniDisplay.style.opacity = '0.8';
                 frequencyDisplay.textContent = '🎵 Active Frequency: Disabled';
-                // Keep brain state display active even if Solfeggio is disabled
-                if (currentEEGData && currentEEGData.metrics) {
-                    const focusPercent = Math.round(currentEEGData.metrics.focus * 100);
-                    const meditationPercent = Math.round(currentEEGData.metrics.meditation * 100);
-                    brainStateDisplay.textContent = `🧠 Focus: ${focusPercent}% | Meditation: ${meditationPercent}%`;
+                // Keep brain state in sync with the Aetheria position even when
+                // the adaptive Solfeggio system is off.
+                if (currentAetheriaPosition) {
+                    brainStateDisplay.textContent = `🧠 ${currentAetheriaPosition.keyword} (${currentAetheriaPosition.regime})`;
                 }
             } else {
                 miniDisplay.style.opacity = '1.0';
@@ -13959,6 +14335,14 @@ Use this data to personalize your response. Comment on their current state when 
                 beta: Math.round(bp.beta),
                 gamma: Math.round(bp.gamma),
             };
+            // Include spiral wave metrics snapshot if available
+            if (currentEEGData.spiral && eegIntegration && eegIntegration.spiralAnalyzer) {
+                timelineEntry.spiral = eegIntegration.spiralAnalyzer.summarize(currentEEGData.spiral);
+            }
+            // Include delta-artifact flag so high-delta epochs can be filtered later
+            if (currentEEGData.artifact) {
+                timelineEntry.artifact = currentEEGData.artifact;
+            }
             // Include Athena fNIRS/PPG snapshot in timeline if available
             if (eegIntegration && eegIntegration.lastConnectionMethod === 'athena') {
                 if (eegIntegration.athenaFNIRS) {
@@ -13976,6 +14360,202 @@ Use this data to personalize your response. Comment on their current state when 
         // Record every 30 seconds
         setInterval(recordAetheriaPosition, 30000);
 
+        // ── Session Summary & Insights ──
+        // Aggregate the recorded timeline into headline stats + actionable,
+        // observational insights (no clinical claims). Used by both the export
+        // and the on-screen Session Summary modal.
+        function computeSessionSummary(tl) {
+            if (!tl || tl.length === 0) return null;
+            const n = tl.length;
+            const BANDS = ['theta', 'alpha', 'beta', 'gamma'];
+            const avg = (f) => tl.reduce((s, e) => s + (f(e) || 0), 0) / n;
+            const meanOf = (arr, f) => arr.reduce((s, e) => s + (f(e) || 0), 0) / arr.length;
+
+            const t0 = new Date(tl[0].t).getTime();
+            const t1 = new Date(tl[n - 1].t).getTime();
+            const durationMin = Math.max(0, (t1 - t0) / 60000);
+
+            const regimeCount = { GUT: 0, HEART: 0, HEAD: 0 };
+            tl.forEach(e => { if (regimeCount[e.regime] !== undefined) regimeCount[e.regime]++; });
+            const regimePct = {};
+            Object.keys(regimeCount).forEach(r => regimePct[r] = Math.round(regimeCount[r] / n * 100));
+
+            const posCount = {};
+            tl.forEach(e => {
+                if (!posCount[e.pos]) posCount[e.pos] = { count: 0, keyword: e.keyword, freq: e.freq, regime: e.regime };
+                posCount[e.pos].count++;
+            });
+            const topPositions = Object.keys(posCount).map(k => ({
+                pos: +k, keyword: posCount[k].keyword, freq: posCount[k].freq, regime: posCount[k].regime,
+                pct: Math.round(posCount[k].count / n * 100)
+            })).sort((a, b) => b.pct - a.pct).slice(0, 4);
+
+            const meanBands = {
+                delta: Math.round(avg(e => e.delta)), theta: Math.round(avg(e => e.theta)),
+                alpha: Math.round(avg(e => e.alpha)), beta: Math.round(avg(e => e.beta)),
+                gamma: Math.round(avg(e => e.gamma))
+            };
+
+            const third = Math.max(1, Math.floor(n / 3));
+            const firstA = tl.slice(0, third), lastA = tl.slice(-third);
+            const alphaTrend = { start: Math.round(meanOf(firstA, e => e.alpha)), end: Math.round(meanOf(lastA, e => e.alpha)) };
+            const cohTrend = { start: Math.round(meanOf(firstA, e => e.coherence)), end: Math.round(meanOf(lastA, e => e.coherence)) };
+
+            let spiral = null;
+            const ws = tl.filter(e => e.spiral && e.spiral.hcr);
+            if (ws.length) {
+                const ns = ws.length;
+                const meanHcr = {}, hcrInterp = {};
+                BANDS.forEach(b => {
+                    meanHcr[b] = Math.round(ws.reduce((s, e) => s + (e.spiral.hcr[b] ? e.spiral.hcr[b].hcr : 0), 0) / ns * 100) / 100;
+                    const ic = {};
+                    ws.forEach(e => { const it = e.spiral.hcr[b] && e.spiral.hcr[b].interp; if (it) ic[it] = (ic[it] || 0) + 1; });
+                    hcrInterp[b] = Object.keys(ic).sort((a, c) => ic[c] - ic[a])[0] || 'n/a';
+                });
+                const dirCount = { 'front-to-back': 0, 'back-to-front': 0, 'indeterminate': 0 };
+                ws.forEach(e => { const d = e.spiral.phase_lag_bilateral && e.spiral.phase_lag_bilateral.direction; if (dirCount[d] !== undefined) dirCount[d]++; });
+                const dominantDir = Object.keys(dirCount).sort((a, c) => dirCount[c] - dirCount[a])[0];
+                const meanSymmetry = Math.round(ws.reduce((s, e) => s + ((e.spiral.phase_lag_bilateral && e.spiral.phase_lag_bilateral.symmetry) || 0), 0) / ns * 100) / 100;
+                spiral = { meanHcr, hcrInterp, phaseLagDir: dirCount, dominantDir, meanSymmetry, samples: ns };
+            }
+
+            const flagged = tl.filter(e => e.artifact && e.artifact.deltaArtifactLikely).length;
+            const artifactPct = Math.round(flagged / n * 100);
+
+            return {
+                durationMin: Math.round(durationMin * 10) / 10, dataPoints: n,
+                regimePct, topPositions, meanBands,
+                meanCoherence: Math.round(avg(e => e.coherence)),
+                meanFocus: Math.round(avg(e => e.focus)),
+                meanMeditation: Math.round(avg(e => e.meditation)),
+                alphaTrend, cohTrend, spiral, artifactPct
+            };
+        }
+
+        function generateSessionInsights(s) {
+            if (!s) return [];
+            const ins = [];
+
+            // Alpha - the band that unlocks the meditative positions
+            // (ASCII dashes only: these strings go into the portable JSON export)
+            if (s.alphaTrend.end - s.alphaTrend.start >= 3) {
+                ins.push(`Your alpha rose from ${s.alphaTrend.start}% to ${s.alphaTrend.end}% across the session - settling in is working. The eyes-closed, still posture is paying off; longer sits should deepen it.`);
+            } else if (s.meanBands.alpha < 9) {
+                ins.push(`Alpha averaged ${s.meanBands.alpha}% - still on the low side. A dimmer room and a few minutes of slow breathing before you begin can lift it and open more HEART/HEAD positions.`);
+            } else {
+                ins.push(`Alpha held a healthy ${s.meanBands.alpha}% average - that's the band that opens the meditative positions.`);
+            }
+
+            // Regime balance
+            const regimes = Object.keys(s.regimePct).sort((a, b) => s.regimePct[b] - s.regimePct[a]);
+            let regimeMsg = `You spent most of the session in the ${regimes[0]} regime (${s.regimePct[regimes[0]]}%)`;
+            if (s.regimePct[regimes[1]]) regimeMsg += `, with ${s.regimePct[regimes[1]]}% in ${regimes[1]}`;
+            regimeMsg += '.';
+            if (regimes[0] === 'GUT') regimeMsg += ' That\'s the grounding/body range - a solid base. Letting theta and alpha rise together while staying relaxed is what carries you up into HEART (emotion/flow).';
+            ins.push(regimeMsg);
+
+            // Anchor position
+            if (s.topPositions.length) {
+                const tp = s.topPositions[0];
+                ins.push(`Your anchor state was position ${tp.pos} - ${tp.keyword} (${tp.freq}Hz, ${tp.regime}) - ${tp.pct}% of the time.`);
+            }
+
+            // Coherence trend
+            if (s.cohTrend.end - s.cohTrend.start >= 3) {
+                ins.push(`Coherence climbed from ${s.cohTrend.start}% to ${s.cohTrend.end}% - you were trending toward a more ordered state as the session went on.`);
+            }
+
+            // Spiral signatures
+            if (s.spiral) {
+                const sp = s.spiral;
+                const mirrorBands = ['theta', 'alpha'].filter(b => sp.hcrInterp[b] === 'hemispheric-dominant');
+                if (mirrorBands.length) {
+                    ins.push(`Your hemispheres mirrored strongly in ${mirrorBands.join(' and ')} (HCR ${mirrorBands.map(b => sp.meanHcr[b]).join(', ')}) - the left-right coupling the spiral-wave hypothesis predicts. This is your signature; watch whether it strengthens during entrainment.`);
+                }
+                if (sp.dominantDir === 'indeterminate') {
+                    ins.push('Traveling-wave direction stayed mostly indeterminate - normal at rest. If a frequency regime stabilizes it into a consistent front-to-back or back-to-front flow, that\'s a sign of real entrainment.');
+                } else {
+                    ins.push(`Your traveling-wave direction leaned ${sp.dominantDir} (bilateral symmetry ${sp.meanSymmetry}) - a consistent, mirrored flow.`);
+                }
+            }
+
+            // Data quality
+            if (s.artifactPct <= 5) {
+                ins.push(`Clean data - movement artifact flagged in only ${s.artifactPct}% of epochs, so these readings are trustworthy.`);
+            } else {
+                ins.push(`Movement was flagged in ${s.artifactPct}% of epochs - for the cleanest data, minimize jaw/neck movement and let the headband settle.`);
+            }
+
+            return ins;
+        }
+
+        function renderSessionSummaryHTML(s, insights) {
+            const bar = (label, val, max, color) => {
+                const pct = Math.max(0, Math.min(100, (val / max) * 100));
+                return `<div style="display:flex;align-items:center;gap:8px;margin:2px 0;">
+                    <span style="width:54px;color:#aaa;">${label}</span>
+                    <div style="flex:1;background:rgba(255,255,255,0.08);height:8px;border-radius:4px;">
+                        <div style="background:${color};height:100%;border-radius:4px;width:${pct}%;"></div>
+                    </div><span style="width:38px;text-align:right;">${val}%</span></div>`;
+            };
+            let html = '';
+            html += `<div style="color:#888;margin-bottom:10px;">${s.dataPoints} readings over ${s.durationMin} min</div>`;
+
+            // Regime time
+            html += '<div style="font-weight:600;color:#4A7C59;margin:10px 0 4px;">Time by Regime</div>';
+            html += bar('GUT', s.regimePct.GUT, 100, '#00ff88');
+            html += bar('HEART', s.regimePct.HEART, 100, '#ff6b9d');
+            html += bar('HEAD', s.regimePct.HEAD, 100, '#00ccff');
+
+            // Top positions
+            html += '<div style="font-weight:600;color:#4A7C59;margin:12px 0 4px;">Most-Visited Positions</div>';
+            s.topPositions.forEach(tp => {
+                html += `<div style="margin:2px 0;">• <strong>${tp.pos}</strong> ${tp.keyword} <span style="color:#888;">(${tp.freq}Hz · ${tp.regime}) — ${tp.pct}%</span></div>`;
+            });
+
+            // Bands + metrics
+            html += '<div style="font-weight:600;color:#4A7C59;margin:12px 0 4px;">Average Brainwaves</div>';
+            html += bar('Delta', s.meanBands.delta, 100, '#9b59b6');
+            html += bar('Theta', s.meanBands.theta, 100, '#3498db');
+            html += bar('Alpha', s.meanBands.alpha, 100, '#2ecc71');
+            html += bar('Beta', s.meanBands.beta, 100, '#f39c12');
+            html += bar('Gamma', s.meanBands.gamma, 100, '#e74c3c');
+            html += `<div style="margin-top:6px;color:#ccc;">Coherence ${s.meanCoherence}% · Focus ${s.meanFocus}% · Meditation ${s.meanMeditation}%</div>`;
+            html += `<div style="color:#888;font-size:0.78rem;">Alpha trend: ${s.alphaTrend.start}% → ${s.alphaTrend.end}% · Coherence trend: ${s.cohTrend.start}% → ${s.cohTrend.end}%</div>`;
+
+            // Spiral
+            if (s.spiral) {
+                const sp = s.spiral;
+                html += '<div style="font-weight:600;color:#4A7C59;margin:12px 0 4px;">🌀 Spiral Signatures</div>';
+                html += `<div>Mean HCR — θ ${sp.meanHcr.theta} · α ${sp.meanHcr.alpha} · β ${sp.meanHcr.beta} · γ ${sp.meanHcr.gamma}</div>`;
+                html += `<div style="color:#888;font-size:0.78rem;">θ ${sp.hcrInterp.theta} · α ${sp.hcrInterp.alpha}</div>`;
+                html += `<div>Wave direction: <strong>${sp.dominantDir}</strong> (symmetry ${sp.meanSymmetry})</div>`;
+            }
+
+            // Insights
+            html += '<div style="font-weight:600;color:#FFD700;margin:14px 0 6px;">💡 Actionable Insights</div>';
+            html += '<ul style="margin:0;padding-left:18px;">';
+            insights.forEach(i => { html += `<li style="margin-bottom:6px;">${i}</li>`; });
+            html += '</ul>';
+
+            return html;
+        }
+
+        function showSessionSummary() {
+            const s = computeSessionSummary(aetheriaTimeline);
+            if (!s) {
+                showStatus('No session data yet — connect your headband and let it record first', 'error');
+                return;
+            }
+            const insights = generateSessionInsights(s);
+            document.getElementById('sessionSummaryBody').innerHTML = renderSessionSummaryHTML(s, insights);
+            document.getElementById('sessionSummaryModal').classList.add('active');
+        }
+
+        function closeSessionSummary() {
+            document.getElementById('sessionSummaryModal').classList.remove('active');
+        }
+
         function exportEEGData() {
             if (!currentEEGData && aetheriaTimeline.length === 0) {
                 showStatus('No EEG data to export', 'error');
@@ -13985,11 +14565,14 @@ Use this data to personalize your response. Comment on their current state when 
             // Current snapshot
             const bandpowers = currentEEGData ? currentEEGData.bandpowers : null;
             const aethPos = currentAetheriaPosition || (bandpowers ? getAetheriaPosition(bandpowers) : null);
+            const sessionSummary = computeSessionSummary(aetheriaTimeline);
 
             const exportData = {
                 exportVersion: 2,
                 timestamp: new Date().toISOString(),
                 device: eegIntegration?.getDeviceInfo()?.name || 'Unknown',
+                sessionSummary: sessionSummary,
+                insights: generateSessionInsights(sessionSummary),
                 session: {
                     dataPoints: aetheriaTimeline.length,
                     firstReading: aetheriaTimeline.length > 0 ? aetheriaTimeline[0].t : null,
@@ -14006,11 +14589,27 @@ Use this data to personalize your response. Comment on their current state when 
                     iChing: '#' + aethPos.hex + ' ' + aethPos.hexName,
                 } : null,
                 timeline: aetheriaTimeline,
+                // Fall back to the last recorded timeline entry when the live
+                // currentEEGData has already been cleared (e.g. exporting after
+                // disconnect) — otherwise these top-level summaries read as null
+                // even though the timeline is full.
                 latestBrainwave: currentEEGData ? {
                     bandpowers: currentEEGData.bandpowers,
                     metrics: currentEEGData.metrics,
                     source: currentEEGData.source,
-                } : null,
+                } : (aetheriaTimeline.length ? (function () {
+                    const e = aetheriaTimeline[aetheriaTimeline.length - 1];
+                    return {
+                        bandpowers: { delta: e.delta, theta: e.theta, alpha: e.alpha, beta: e.beta, gamma: e.gamma },
+                        metrics: { focus: e.focus / 100, meditation: e.meditation / 100, coherence: e.coherence / 100 },
+                        source: 'last-timeline-entry',
+                    };
+                })() : null),
+                latestSpiral: (currentEEGData && currentEEGData.spiral && eegIntegration && eegIntegration.spiralAnalyzer)
+                    ? eegIntegration.spiralAnalyzer.summarize(currentEEGData.spiral)
+                    : (aetheriaTimeline.length && aetheriaTimeline[aetheriaTimeline.length - 1].spiral
+                        ? aetheriaTimeline[aetheriaTimeline.length - 1].spiral
+                        : null),
                 athenaData: (eegIntegration && eegIntegration.lastConnectionMethod === 'athena') ? {
                     fnirs: summarizeFnirs(eegIntegration.athenaFNIRS),
                     ppg: eegIntegration.athenaPPG ? {
@@ -14666,6 +15265,38 @@ Use this data to personalize your response. Comment on their current state when 
             animate();
         }
 
+        // Resample sparse (t,v) points onto `count` uniform columns for scrolling.
+        // smooth=true → Catmull-Rom spline (rounded peaks/valleys); false → linear
+        // (raw angular segments). This is what the "Smooth Lines" toggle controls.
+        function resampleSeries(rawPts, count, tStart, timeWindow, smooth) {
+            const out = new Float32Array(count);
+            const n = rawPts.length;
+            let ri = 0;
+            for (let px = 0; px < count; px++) {
+                const t = tStart + ((px + 0.5) / count) * timeWindow;
+                while (ri < n - 2 && rawPts[ri + 1].t < t) ri++;
+                const p1 = rawPts[ri];
+                const p2 = rawPts[Math.min(ri + 1, n - 1)];
+                const dt = p2.t - p1.t;
+                const frac = dt > 0 ? Math.max(0, Math.min(1, (t - p1.t) / dt)) : 0;
+                if (smooth && n > 2) {
+                    // Catmull-Rom through the four surrounding points → smooth curve
+                    const p0 = rawPts[Math.max(0, ri - 1)];
+                    const p3 = rawPts[Math.min(ri + 2, n - 1)];
+                    const f2 = frac * frac, f3 = f2 * frac;
+                    out[px] = 0.5 * (
+                        (2 * p1.v) +
+                        (-p0.v + p2.v) * frac +
+                        (2 * p0.v - 5 * p1.v + 4 * p2.v - p3.v) * f2 +
+                        (-p0.v + 3 * p1.v - 3 * p2.v + p3.v) * f3
+                    );
+                } else {
+                    out[px] = p1.v + (p2.v - p1.v) * frac;
+                }
+            }
+            return out;
+        }
+
         function drawElectrodesWaveforms() {
             const canvas = document.getElementById('electrodesCanvas');
             const ctx = vizCanvasContexts.electrodes;
@@ -14760,7 +15391,7 @@ Use this data to personalize your response. Comment on their current state when 
                     sc.amp += (instantAmp - sc.amp) * 0.02;
                 }
 
-                const halfRange = sc.amp * 1.2; // 20% padding
+                const halfRange = sc.amp * 1.4; // 40% headroom so peaks don't clip flat
 
                 // Build raw time→value pairs for this channel
                 const rawPts = [];
@@ -14775,19 +15406,9 @@ Use this data to personalize your response. Comment on their current state when 
                 }
                 if (rawPts.length < 2) return;
 
-                // Resample to uniform pixel grid via linear interpolation → smooth scrolling
+                // Resample to uniform pixel grid (Catmull-Rom or linear per toggle)
                 const drawW = width - labelW;
-                const pts = new Float32Array(drawW);
-                let ri = 0;
-                for (let px = 0; px < drawW; px++) {
-                    const t = tStart + ((px + 0.5) / drawW) * timeWindow;
-                    // Advance to bracketing points
-                    while (ri < rawPts.length - 2 && rawPts[ri + 1].t < t) ri++;
-                    const a = rawPts[ri], b = rawPts[Math.min(ri + 1, rawPts.length - 1)];
-                    const dt = b.t - a.t;
-                    const frac = dt > 0 ? Math.max(0, Math.min(1, (t - a.t) / dt)) : 0;
-                    pts[px] = a.v + (b.v - a.v) * frac;
-                }
+                const pts = resampleSeries(rawPts, drawW, tStart, timeWindow, vizSettings.smoothLines);
 
                 // Map normalized values to y-coordinates
                 const yPts = new Float32Array(drawW);
@@ -14945,16 +15566,11 @@ Use this data to personalize your response. Comment on their current state when 
                 }
                 if (raw.length < 2) return;
 
-                // Resample to pixel grid
+                // Resample to pixel grid (Catmull-Rom or linear per toggle)
+                const vArr = resampleSeries(raw, width, tStart, timeWindow, vizSettings.smoothLines);
                 const yArr = new Float32Array(width);
-                let ri = 0;
                 for (let px = 0; px < width; px++) {
-                    const t = tStart + ((px + 0.5) / width) * timeWindow;
-                    while (ri < raw.length - 2 && raw[ri + 1].t < t) ri++;
-                    const a = raw[ri], b = raw[Math.min(ri + 1, raw.length - 1)];
-                    const dt = b.t - a.t;
-                    const frac = dt > 0 ? Math.max(0, Math.min(1, (t - a.t) / dt)) : 0;
-                    yArr[px] = height - (a.v + (b.v - a.v) * frac) * height;
+                    yArr[px] = height - vArr[px] * height;
                 }
 
                 const strokeResampled = () => {

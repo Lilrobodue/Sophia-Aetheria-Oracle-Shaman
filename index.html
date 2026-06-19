@@ -1271,6 +1271,8 @@
     <script src="prescription-engine.js"></script>
     <!-- Spiral wave detection: pairwise PLV, phase-lag direction, hemispheric coherence -->
     <script src="spiral-wave.js"></script>
+    <!-- Temporal dynamics: Takens attractor reconstruction + fractal/complexity metrics -->
+    <script src="neurodynamics.js"></script>
 </head>
 <body>
     <!-- Disclaimer Modal — shows on every app load -->
@@ -1425,6 +1427,15 @@
                             <div>Right: <span id="spiralDirRight" style="color:#ccc;">—</span></div>
                             <div style="color:#888;">Symmetry: <span id="spiralSymmetry">—</span></div>
                         </div>
+                        <!-- 2D traveling-wave vector (direction, speed, spin) -->
+                        <div style="font-size: 0.65rem; color: #888; margin-top: 8px; margin-bottom: 3px;">2D Traveling Wave (<span id="spiralTwBand">alpha</span>)</div>
+                        <div style="display: flex; align-items: center; gap: 10px;">
+                            <span id="spiralTwArrow" style="display: inline-block; font-size: 1.4rem; color: #4A7C59; transition: transform 0.4s ease;">→</span>
+                            <div style="font-size: 0.7rem; line-height: 1.4;">
+                                <div id="spiralTwDir" style="color: #ccc;">—</div>
+                                <div id="spiralTwMeta" style="color: #888;">—</div>
+                            </div>
+                        </div>
                         <!-- HCR gauge -->
                         <div style="font-size: 0.65rem; color: #888; margin-top: 8px; margin-bottom: 3px;">Hemispheric Coherence Ratio</div>
                         <div style="display:flex; align-items:center; gap:8px;">
@@ -1570,7 +1581,7 @@
                     Export
                 </button>
             </div>
-            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v48</div>
+            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v49</div>
             </div><!-- end sidebar-scroll -->
         </div>
 
@@ -2564,6 +2575,15 @@ return result;</textarea>
                 <button class="btn btn-small btn-secondary" onclick="showSessionSummary()" style="width: 100%; margin-top: 6px;">
                     📈 Session Summary &amp; Insights
                 </button>
+                <button class="btn btn-small btn-secondary" onclick="showChannelDiagnostic()" style="width: 100%; margin-top: 6px;">
+                    🔬 Verify EEG Channels
+                </button>
+                <button class="btn btn-small btn-secondary" onclick="showNeurodynamics()" style="width: 100%; margin-top: 6px;">
+                    🌀 Neurodynamics (Attractor &amp; Fractals)
+                </button>
+                <button class="btn btn-small btn-secondary" onclick="showABTest()" style="width: 100%; margin-top: 6px;">
+                    ⚗️ A/B Compare (e.g. Silence vs Song)
+                </button>
             </div>
 
             <button class="btn btn-primary" onclick="saveEEGSettings()" style="width: 100%; margin-top: 15px;">
@@ -2580,6 +2600,46 @@ return result;</textarea>
                 <button class="close-btn" onclick="closeSessionSummary()">✕</button>
             </div>
             <div id="sessionSummaryBody" style="font-size: 0.85rem; line-height: 1.55;"></div>
+        </div>
+    </div>
+
+    <!-- EEG Channel Verification Modal -->
+    <div class="modal" id="channelDiagModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>🔬 EEG Channel Check</h2>
+                <button class="close-btn" onclick="closeChannelDiagnostic()">✕</button>
+            </div>
+            <div id="channelDiagBody" style="font-size: 0.85rem; line-height: 1.55;"></div>
+        </div>
+    </div>
+
+    <!-- Neurodynamics Modal (Takens attractor + fractal/complexity) -->
+    <div class="modal" id="neuroDynModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>🌀 Neurodynamics</h2>
+                <button class="close-btn" onclick="closeNeurodynamics()">✕</button>
+            </div>
+            <div id="neuroDynBody" style="font-size: 0.85rem; line-height: 1.55;">
+                <div style="text-align:center; margin-bottom:8px;">
+                    <canvas id="neuroPortraitCanvas" width="300" height="300" style="background:rgba(0,0,0,0.4); border:1px solid rgba(74,124,89,0.35); border-radius:8px; max-width:100%;"></canvas>
+                    <div id="neuroPortraitCaption" style="font-size:0.72rem; color:#888; margin-top:4px;">Phase-space attractor</div>
+                </div>
+                <div id="neuroMetrics"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- A/B Condition Comparison Modal -->
+    <div class="modal" id="abTestModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>⚗️ A/B Compare</h2>
+                <button class="close-btn" onclick="closeABTest()">✕</button>
+            </div>
+            <div style="font-size:0.78rem;color:#888;margin-bottom:8px;">Tag the stream while you sit. Switch to the other condition partway through (or alternate A/B/A/B). Tagging runs in the background even if you close this.</div>
+            <div id="abTestBody" style="font-size: 0.85rem; line-height: 1.5;"></div>
         </div>
     </div>
 
@@ -2681,6 +2741,9 @@ return result;</textarea>
                     AF7: [],  // Left forehead
                     AF8: [],  // Right forehead
                     TP10: [], // Right ear
+                    // Athena EEG8 auxiliary channels — captured so we can verify
+                    // empirically whether they carry independent EEG (see diagnoseChannels).
+                    AUX1: [], AUX2: [], AUX3: [], AUX4: [],
                     gyro: { x: 0, y: 0, z: 0 },
                     accel: { x: 0, y: 0, z: 0 },
                     timestamps: [],
@@ -3600,6 +3663,193 @@ return result;</textarea>
                     deltaHigh: !!deltaHigh,
                     deltaArtifactLikely: deltaArtifactLikely,
                     source: mv.available ? 'eeg-mad' : 'none',
+                };
+            }
+
+            // Spectral signature of one channel — the decisive signal-vs-noise test.
+            // Real EEG has a 1/f power spectrum (slope clearly negative) with most
+            // power at low frequency; white/electronic noise is flat (slope ~0) and
+            // spread evenly, often with a 60 Hz mains spike. Returns the log-log
+            // slope, low-frequency power ratio, a 60 Hz line-noise ratio, and an
+            // eegLike verdict.
+            analyzeChannelSpectrum(samples) {
+                if (!samples || samples.length < 128) return null;
+                const w = samples.slice(-256);
+                const N = w.length;
+                const mean = w.reduce((a, b) => a + b, 0) / N;
+                // Detrend + Hamming window before the periodogram.
+                const win = w.map((s, i) => (s - mean) * (0.54 - 0.46 * Math.cos(2 * Math.PI * i / (N - 1))));
+                const ps = this.calculatePowerSpectrum(win, N); // power per bin, length ~N/2
+                const freqRes = 256 / N; // Hz per bin
+
+                // 1/f slope: least-squares fit of log10(power) vs log10(freq), 2-40 Hz.
+                const pts = [];
+                for (let k = 1; k < ps.length; k++) {
+                    const f = k * freqRes;
+                    if (f >= 2 && f <= 40 && ps[k] > 0) pts.push([Math.log10(f), Math.log10(ps[k])]);
+                }
+                let slope = 0;
+                if (pts.length >= 5) {
+                    let sx = 0, sy = 0, sxx = 0, sxy = 0;
+                    pts.forEach(p => { sx += p[0]; sy += p[1]; sxx += p[0] * p[0]; sxy += p[0] * p[1]; });
+                    const n = pts.length;
+                    const denom = n * sxx - sx * sx;
+                    if (Math.abs(denom) > 1e-9) slope = (n * sxy - sx * sy) / denom;
+                }
+
+                // Low-frequency concentration (2-12 Hz / 2-45 Hz) and 60 Hz line ratio.
+                let lo = 0, hi = 0, line = 0, around = 0;
+                for (let k = 1; k < ps.length; k++) {
+                    const f = k * freqRes;
+                    if (f >= 2 && f <= 12) lo += ps[k];
+                    if (f >= 2 && f <= 45) hi += ps[k];
+                    if (f >= 58 && f <= 62) line += ps[k];
+                    if (f >= 45 && f <= 70) around += ps[k];
+                }
+                const lowFreqRatio = hi > 0 ? lo / hi : 0;
+                const lineNoiseRatio = around > 0 ? line / around : 0;
+                // EEG-like: clearly negative 1/f slope AND low-frequency dominant.
+                const eegLike = slope < -0.7 && lowFreqRatio > 0.4;
+                return {
+                    slope: Math.round(slope * 100) / 100,
+                    lowFreqRatio: Math.round(lowFreqRatio * 100) / 100,
+                    lineNoiseRatio: Math.round(lineNoiseRatio * 100) / 100,
+                    eegLike: eegLike,
+                };
+            }
+
+            // Verify which EEG channels carry independent signal. For each channel:
+            // RMS amplitude (is there signal?), spectral shape (EEG-like 1/f vs noise),
+            // and Pearson correlation of each AUX channel against the four named scalp
+            // electrodes (a copy/reference, or genuinely independent?). Lets us decide
+            // empirically whether the Athena's AUX1-4 are usable EEG rather than assuming.
+            diagnoseChannels() {
+                const all = ['TP9', 'AF7', 'AF8', 'TP10', 'AUX1', 'AUX2', 'AUX3', 'AUX4'];
+                const main = ['TP9', 'AF7', 'AF8', 'TP10'];
+                const series = {}, stats = {};
+                all.forEach(ch => {
+                    const buf = this.realEEGData[ch];
+                    if (buf && buf.length >= 64) {
+                        const w = buf.slice(-256);
+                        series[ch] = w;
+                        const mean = w.reduce((a, b) => a + b, 0) / w.length;
+                        const varc = w.reduce((s, v) => s + (v - mean) * (v - mean), 0) / w.length;
+                        const rms = Math.sqrt(varc);
+                        stats[ch] = { rms: Math.round(rms * 1000) / 1000, samples: w.length, active: rms > 1e-3, spectrum: this.analyzeChannelSpectrum(w) };
+                    } else {
+                        stats[ch] = { rms: 0, samples: buf ? buf.length : 0, active: false, spectrum: null };
+                    }
+                });
+                const corr = (a, b) => {
+                    const n = Math.min(a.length, b.length);
+                    if (n < 8) return null;
+                    let ma = 0, mb = 0;
+                    for (let i = 0; i < n; i++) { ma += a[i]; mb += b[i]; }
+                    ma /= n; mb /= n;
+                    let sab = 0, sa = 0, sb = 0;
+                    for (let i = 0; i < n; i++) { const da = a[i] - ma, db = b[i] - mb; sab += da * db; sa += da * da; sb += db * db; }
+                    return (sa > 0 && sb > 0) ? sab / Math.sqrt(sa * sb) : 0;
+                };
+                const auxCorr = {};
+                ['AUX1', 'AUX2', 'AUX3', 'AUX4'].forEach(ax => {
+                    if (!series[ax]) return;
+                    const row = {};
+                    const mags = [];
+                    main.forEach(m => {
+                        if (!series[m]) return;
+                        const c = corr(series[ax], series[m]);
+                        if (c !== null) { row[m] = Math.round(c * 100) / 100; mags.push(Math.abs(c)); }
+                    });
+                    row.maxAbsCorr = mags.length ? Math.round(Math.max.apply(null, mags) * 100) / 100 : null;
+                    // Not a near-copy of any scalp channel.
+                    row.independent = !!(stats[ax].active && mags.length && Math.max.apply(null, mags) < 0.9);
+                    // EEG-like spectral shape (the decisive test for "usable signal").
+                    row.eegLike = !!(stats[ax].spectrum && stats[ax].spectrum.eegLike);
+                    // Usable = independent of the scalp channels AND looks like real EEG.
+                    row.usable = row.independent && row.eegLike;
+                    auxCorr[ax] = row;
+                });
+                // Scalp 60 Hz line-noise summary (informational — the neurodynamics
+                // analysis notch-filters it out, but high values flag environment).
+                const scalpLine = main
+                    .map(ch => stats[ch].spectrum ? stats[ch].spectrum.lineNoiseRatio : null)
+                    .filter(v => v != null);
+                const meanScalpLine = scalpLine.length
+                    ? Math.round((scalpLine.reduce((s, v) => s + v, 0) / scalpLine.length) * 100) / 100 : null;
+                const lineNoise = {
+                    meanScalpRatio: meanScalpLine,
+                    flaggedChannels: main.filter(ch => stats[ch].spectrum && stats[ch].spectrum.lineNoiseRatio >= 0.5),
+                };
+
+                const auxActive = ['AUX1', 'AUX2', 'AUX3', 'AUX4'].filter(a => stats[a] && stats[a].active);
+                const auxUsable = Object.keys(auxCorr).filter(a => auxCorr[a].usable);
+                const auxIndependentNoise = Object.keys(auxCorr).filter(a => auxCorr[a].independent && !auxCorr[a].eegLike);
+                let verdict;
+                if (auxActive.length === 0) {
+                    verdict = 'AUX channels carry no signal — only the 4 scalp electrodes are usable.';
+                } else if (auxUsable.length > 0) {
+                    verdict = `${auxUsable.length} AUX channel(s) show EEG-like spectra and are independent of the scalp electrodes — genuinely usable: ${auxUsable.join(', ')}.`;
+                } else if (auxIndependentNoise.length > 0) {
+                    verdict = 'AUX channels are active and uncorrelated with the scalp electrodes, but their spectra are flat/noise-like (not 1/f EEG) — almost certainly floating/auxiliary inputs, NOT usable brain signal. Keeping them out of the analysis.';
+                } else {
+                    verdict = 'AUX channels mirror the scalp electrodes (reference/derived) — no new information.';
+                }
+                return {
+                    timestamp: Date.now(),
+                    device: this.lastConnectionMethod || 'unknown',
+                    stats: stats,
+                    auxCorr: auxCorr,
+                    lineNoise: lineNoise,
+                    verdict: verdict,
+                };
+            }
+
+            // Temporal-dynamics analysis: Takens attractor reconstruction + fractal/
+            // complexity metrics, per channel + averaged. Returns a phase portrait
+            // (from a representative channel) for rendering. This is honest "whole
+            // from the part" — reconstructing the dynamics' shape in time, not space.
+            computeNeurodynamics() {
+                if (typeof NeuroDynamics === 'undefined') return null;
+                const chs = ['TP9', 'AF7', 'AF8', 'TP10'];
+                const perChannel = {};
+                const agg = { higuchiFD: [], sampleEntropy: [], lempelZiv: [], recurrenceRate: [] };
+                const rmsByCh = {};
+                let any = false;
+                for (const ch of chs) {
+                    const buf = this.realEEGData[ch];
+                    if (!buf || buf.length < 256) continue;
+                    const res = NeuroDynamics.analyze(buf, { windowSize: 1024 });
+                    if (!res) continue;
+                    any = true;
+                    perChannel[ch] = {
+                        tau: res.tau, embeddingDim: res.embeddingDim,
+                        higuchiFD: res.higuchiFD, sampleEntropy: res.sampleEntropy,
+                        lempelZiv: res.lempelZiv, recurrenceRate: res.recurrenceRate,
+                    };
+                    perChannel[ch]._portrait = res.portrait; // kept for UI only
+                    Object.keys(agg).forEach(k => { if (res[k] != null) agg[k].push(res[k]); });
+                    const w = buf.slice(-256);
+                    const mn = w.reduce((a, b) => a + b, 0) / w.length;
+                    rmsByCh[ch] = Math.sqrt(w.reduce((s, v) => s + (v - mn) * (v - mn), 0) / w.length);
+                }
+                if (!any) return null;
+                // Representative channel for the portrait = median RMS (robust against
+                // a dead channel or a railing/high-amplitude one like AF7 was).
+                const ranked = Object.keys(rmsByCh).sort((a, b) => rmsByCh[a] - rmsByCh[b]);
+                const repCh = ranked[Math.floor(ranked.length / 2)] || ranked[0];
+                const meanOf = (arr) => arr.length ? Math.round((arr.reduce((s, v) => s + v, 0) / arr.length) * 1000) / 1000 : null;
+                const mean = {
+                    higuchiFD: meanOf(agg.higuchiFD), sampleEntropy: meanOf(agg.sampleEntropy),
+                    lempelZiv: meanOf(agg.lempelZiv), recurrenceRate: meanOf(agg.recurrenceRate),
+                };
+                return {
+                    timestamp: Date.now(),
+                    portraitChannel: repCh,
+                    tau: perChannel[repCh] ? perChannel[repCh].tau : null,
+                    embeddingDim: perChannel[repCh] ? perChannel[repCh].embeddingDim : null,
+                    portrait: perChannel[repCh] ? perChannel[repCh]._portrait : [],
+                    perChannel: perChannel,
+                    mean: mean,
                 };
             }
 
@@ -11110,6 +11360,7 @@ Use this data to personalize your response. Comment on their current state when 
                     currentEEGData = event.detail;
                     updateEEGMetrics(event.detail);
                     updateSpiralDisplay(event.detail.spiral);
+                    abSample(event.detail);
                     updateEEGQualityDisplay(event.detail);
                     updateEEGHeaderIndicator(true, true);
                     updateNeuroMiniDisplay();
@@ -11417,6 +11668,30 @@ Use this data to personalize your response. Comment on their current state when 
             if (rEl) rEl.innerHTML = fmtDir(pl.right, 'AF8', 'TP10');
             const symEl = document.getElementById('spiralSymmetry');
             if (symEl) symEl.textContent = pl.bilateral.symmetry.toFixed(2);
+
+            // 2D traveling-wave vector — arrow points the way the wave propagates
+            // (screen up = forward/anterior). Spin = how fast that direction turns.
+            const tw = spiral.travelingWave;
+            const twBandEl = document.getElementById('spiralTwBand');
+            const twArrow = document.getElementById('spiralTwArrow');
+            const twDir = document.getElementById('spiralTwDir');
+            const twMeta = document.getElementById('spiralTwMeta');
+            if (tw) {
+                if (twBandEl) twBandEl.textContent = tw.band;
+                if (twArrow) {
+                    // CSS rotates clockwise; our angle is CCW from "right" with +y=up.
+                    twArrow.style.transform = `rotate(${-tw.angleDeg}deg)`;
+                    twArrow.style.opacity = (0.3 + Math.min(1, tw.strength) * 0.7).toFixed(2);
+                }
+                if (twDir) twDir.textContent = `${tw.direction} (${tw.angleDeg}°)`;
+                const meta = [];
+                if (tw.speedMps != null) meta.push(`~${tw.speedMps} m/s`);
+                meta.push(`planar ${Math.round(tw.planarity * 100)}%`);
+                if (tw.rotationDegPerSec != null && Math.abs(tw.rotationDegPerSec) >= 5) {
+                    meta.push(`spin ${tw.rotationDegPerSec > 0 ? '↺' : '↻'} ${Math.abs(tw.rotationDegPerSec)}°/s`);
+                }
+                if (twMeta) twMeta.textContent = meta.join(' · ');
+            }
 
             // HCR gauge — shown for the dominant (strongest inter-hemispheric) band.
             const dom = spiral.dominantBand;
@@ -14556,6 +14831,277 @@ Use this data to personalize your response. Comment on their current state when 
             document.getElementById('sessionSummaryModal').classList.remove('active');
         }
 
+        function showChannelDiagnostic() {
+            if (!eegIntegration || typeof eegIntegration.diagnoseChannels !== 'function') {
+                showStatus('EEG not initialized', 'error');
+                return;
+            }
+            const d = eegIntegration.diagnoseChannels();
+            const main = ['TP9', 'AF7', 'AF8', 'TP10'];
+            const aux = ['AUX1', 'AUX2', 'AUX3', 'AUX4'];
+            const dot = (active) => `<span style="color:${active ? '#2ecc71' : '#888'};">${active ? '●' : '○'}</span>`;
+
+            // Spectral tag: EEG-like 1/f vs flat/noise.
+            const specTag = (sp) => {
+                if (!sp) return '<span style="color:#888;">spectrum n/a</span>';
+                const label = sp.eegLike
+                    ? '<span style="color:#2ecc71;">EEG-like</span>'
+                    : '<span style="color:#ff9966;">flat/noise</span>';
+                let line = `1/f slope ${sp.slope} · low-freq ${Math.round(sp.lowFreqRatio * 100)}% · ${label}`;
+                if (sp.lineNoiseRatio >= 0.4) line += ' <span style="color:#ff6b6b;">· 60Hz spike</span>';
+                return `<span style="color:#888;">${line}</span>`;
+            };
+
+            let html = `<div style="color:#888;margin-bottom:8px;">Device: ${d.device} · last ~1s of raw EEG</div>`;
+
+            html += '<div style="font-weight:600;color:#4A7C59;margin:8px 0 4px;">Scalp electrodes (reference baseline)</div>';
+            main.forEach(ch => {
+                const s = d.stats[ch];
+                html += `<div>${dot(s.active)} <strong>${ch}</strong> — RMS ${s.rms}<br><span style="margin-left:16px;font-size:0.78rem;">${specTag(s.spectrum)}</span></div>`;
+            });
+
+            html += '<div style="font-weight:600;color:#4A7C59;margin:12px 0 4px;">Auxiliary channels (AUX)</div>';
+            aux.forEach(ch => {
+                const s = d.stats[ch];
+                const c = d.auxCorr[ch];
+                let line = `${dot(s.active)} <strong>${ch}</strong> — RMS ${s.rms}`;
+                if (c && c.maxAbsCorr != null) {
+                    const tag = c.usable ? '<span style="color:#2ecc71;">usable EEG</span>'
+                        : c.independent ? '<span style="color:#ff9966;">independent but noise-like</span>'
+                        : 'mirrors a scalp channel';
+                    line += ` <span style="color:#888;">· max |corr| ${c.maxAbsCorr} · ${tag}</span>`;
+                } else if (!s.active) {
+                    line += ' <span style="color:#888;">· no signal</span>';
+                }
+                html += `<div>${line}<br><span style="margin-left:16px;font-size:0.78rem;">${specTag(s.spectrum)}</span></div>`;
+            });
+
+            // 60 Hz line-noise surfacing.
+            if (d.lineNoise && d.lineNoise.meanScalpRatio != null) {
+                const r = d.lineNoise.meanScalpRatio;
+                const hot = d.lineNoise.flaggedChannels.length;
+                const color = r >= 0.5 ? '#ff9966' : '#888';
+                html += `<div style="font-weight:600;color:#4A7C59;margin:12px 0 4px;">⚡ 60 Hz Line Noise</div>`;
+                html += `<div style="color:${color};">Mean scalp ratio ${r}${hot ? ` · elevated on ${d.lineNoise.flaggedChannels.join(', ')}` : ''}</div>`;
+                if (r >= 0.5) {
+                    html += '<div style="color:#888;font-size:0.78rem;">Mains pickup is present. The Neurodynamics analysis notch-filters it out, but for the cleanest raw signal: move away from chargers/power strips, unplug the laptop, and re-seat the band.</div>';
+                }
+            }
+
+            html += `<div style="font-weight:600;color:#FFD700;margin:14px 0 6px;">💡 Verdict</div><div>${d.verdict}</div>`;
+            html += '<div style="color:#888;font-size:0.78rem;margin-top:8px;">Real EEG shows a negative 1/f slope with most power at low frequency; flat slopes / even spread indicate electronic noise. The Muse S Athena has 4 physical EEG sites, so even "usable" AUX means extra signal, not new scalp locations.</div>';
+
+            document.getElementById('channelDiagBody').innerHTML = html;
+            document.getElementById('channelDiagModal').classList.add('active');
+        }
+
+        function closeChannelDiagnostic() {
+            document.getElementById('channelDiagModal').classList.remove('active');
+        }
+
+        function showNeurodynamics() {
+            if (!eegIntegration || typeof eegIntegration.computeNeurodynamics !== 'function') {
+                showStatus('EEG not initialized', 'error');
+                return;
+            }
+            const d = eegIntegration.computeNeurodynamics();
+            if (!d) {
+                showStatus('Need a few seconds of EEG first — connect and let it stream', 'error');
+                return;
+            }
+
+            // Draw the phase-space attractor (delay embedding x[t] vs x[t+τ]).
+            const cv = document.getElementById('neuroPortraitCanvas');
+            if (cv) {
+                const ctx = cv.getContext('2d');
+                const W = cv.width, H = cv.height, pad = 12;
+                ctx.clearRect(0, 0, W, H);
+                // Axes
+                ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+                ctx.lineWidth = 1;
+                ctx.beginPath(); ctx.moveTo(W / 2, pad); ctx.lineTo(W / 2, H - pad);
+                ctx.moveTo(pad, H / 2); ctx.lineTo(W - pad, H / 2); ctx.stroke();
+                const px = (x) => pad + (x + 1) / 2 * (W - 2 * pad);
+                const py = (y) => H - pad - (y + 1) / 2 * (H - 2 * pad);
+                const pts = d.portrait || [];
+                // Trajectory line (faint) — shows the attractor's loop structure.
+                ctx.strokeStyle = 'rgba(74,124,89,0.35)';
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                pts.forEach((p, i) => { const X = px(p.x), Y = py(p.y); i ? ctx.lineTo(X, Y) : ctx.moveTo(X, Y); });
+                ctx.stroke();
+                // Points
+                ctx.fillStyle = 'rgba(0,255,136,0.6)';
+                pts.forEach(p => { ctx.beginPath(); ctx.arc(px(p.x), py(p.y), 1.3, 0, 2 * Math.PI); ctx.fill(); });
+            }
+            const cap = document.getElementById('neuroPortraitCaption');
+            if (cap) cap.textContent = `Phase-space attractor — ${d.portraitChannel} · x(t) vs x(t+${d.tau}) · embed dim ${d.embeddingDim}`;
+
+            // Metrics + plain-language scales.
+            const m = d.mean;
+            const fmt = (v) => v == null ? 'n/a' : v;
+            let html = '<div style="font-weight:600;color:#4A7C59;margin:6px 0 4px;">Complexity (mean across channels)</div>';
+            html += `<div>Fractal dimension (Higuchi): <strong>${fmt(m.higuchiFD)}</strong> <span style="color:#888;">— 1≈smooth/ordered, 2≈rough/random</span></div>`;
+            html += `<div>Sample entropy: <strong>${fmt(m.sampleEntropy)}</strong> <span style="color:#888;">— higher = less predictable</span></div>`;
+            html += `<div>Lempel-Ziv complexity: <strong>${fmt(m.lempelZiv)}</strong> <span style="color:#888;">— ~0 ordered .. ~1 random</span></div>`;
+            html += `<div>Recurrence rate: <strong>${fmt(m.recurrenceRate)}</strong> <span style="color:#888;">— how often the trajectory revisits states</span></div>`;
+
+            html += '<div style="font-weight:600;color:#4A7C59;margin:12px 0 4px;">Per channel (FD · SampEn · LZ)</div>';
+            ['TP9', 'AF7', 'AF8', 'TP10'].forEach(ch => {
+                const c = d.perChannel[ch];
+                if (c) html += `<div><strong>${ch}</strong>: ${fmt(c.higuchiFD)} · ${fmt(c.sampleEntropy)} · ${fmt(c.lempelZiv)} <span style="color:#888;">(τ=${c.tau})</span></div>`;
+            });
+
+            html += '<div style="color:#888;font-size:0.78rem;margin-top:10px;">Computed on 1–45 Hz band-limited, 60 Hz-notched signal, so these reflect brain rhythms, not mains/broadband noise. This reconstructs the shape of your brain\'s <em>temporal</em> dynamics (Takens\' theorem) — a real attractor from limited data — not a map of cortical space. A tight, looping portrait = ordered rhythmic activity; a diffuse cloud = more complex/noisy dynamics.</div>';
+
+            document.getElementById('neuroMetrics').innerHTML = html;
+            document.getElementById('neuroDynModal').classList.add('active');
+        }
+
+        function closeNeurodynamics() {
+            document.getElementById('neuroDynModal').classList.remove('active');
+        }
+
+        // ── A/B condition comparison ──
+        // Tag the live stream as condition A or B (e.g. silence vs a frequency),
+        // accumulate each condition's samples in the background, then compare the
+        // DISTRIBUTIONS with effect size + probability-of-superiority. This answers
+        // "does it actually do something?" above the large moment-to-moment swing —
+        // honestly labelled as exploratory, not a controlled trial.
+        function abNewBucket() {
+            return { alpha: [], theta: [], coherence: [], meditation: [], hcrAlpha: [], hcrTheta: [], fd: [], sampEn: [] };
+        }
+        let abTest = { active: null, labelA: 'Silence', labelB: 'Song', A: abNewBucket(), B: abNewBucket(), lastNeuroTs: 0 };
+        const AB_METRICS = [
+            { key: 'alpha', label: 'Alpha %', dp: 1 },
+            { key: 'theta', label: 'Theta %', dp: 1 },
+            { key: 'coherence', label: 'Coherence %', dp: 1 },
+            { key: 'meditation', label: 'Meditation %', dp: 1 },
+            { key: 'hcrAlpha', label: 'HCR alpha', dp: 2 },
+            { key: 'hcrTheta', label: 'HCR theta', dp: 2 },
+            { key: 'fd', label: 'Fractal dim', dp: 2 },
+            { key: 'sampEn', label: 'Sample entropy', dp: 2 },
+        ];
+
+        // Called every data event; collects into the active condition's bucket.
+        function abSample(data) {
+            if (!abTest.active || !data) return;
+            if (data.artifact && data.artifact.deltaArtifactLikely) return; // skip movement-contaminated
+            const bucket = abTest[abTest.active];
+            const b = data.bandpowers, m = data.metrics, sp = data.spiral;
+            if (b) { bucket.alpha.push(b.alpha); bucket.theta.push(b.theta); }
+            if (m) { bucket.coherence.push((m.coherence || 0) * 100); bucket.meditation.push((m.meditation || 0) * 100); }
+            if (sp && sp.hcr) {
+                if (sp.hcr.alpha) bucket.hcrAlpha.push(sp.hcr.alpha.hcr);
+                if (sp.hcr.theta) bucket.hcrTheta.push(sp.hcr.theta.hcr);
+            }
+            // Fractal/entropy are heavier — sample every ~5 s.
+            const now = Date.now();
+            if (now - abTest.lastNeuroTs > 5000 && eegIntegration && typeof eegIntegration.computeNeurodynamics === 'function') {
+                abTest.lastNeuroTs = now;
+                const nd = eegIntegration.computeNeurodynamics();
+                if (nd && nd.mean) {
+                    if (nd.mean.higuchiFD != null) bucket.fd.push(nd.mean.higuchiFD);
+                    if (nd.mean.sampleEntropy != null) bucket.sampEn.push(nd.mean.sampleEntropy);
+                }
+            }
+        }
+
+        function abStats(arr) {
+            if (!arr || !arr.length) return null;
+            const n = arr.length;
+            const mean = arr.reduce((s, v) => s + v, 0) / n;
+            const sd = Math.sqrt(arr.reduce((s, v) => s + (v - mean) * (v - mean), 0) / Math.max(1, n - 1));
+            return { n, mean, sd };
+        }
+        function abCohensD(a, b) {
+            const sa = abStats(a), sb = abStats(b);
+            if (!sa || !sb || sa.n < 2 || sb.n < 2) return null;
+            const pooled = Math.sqrt(((sa.n - 1) * sa.sd * sa.sd + (sb.n - 1) * sb.sd * sb.sd) / (sa.n + sb.n - 2));
+            return pooled < 1e-9 ? 0 : (sa.mean - sb.mean) / pooled;
+        }
+        // Common-language effect size: P(random A-sample > random B-sample). 0.5 = no difference.
+        function abCLES(a, b) {
+            if (!a.length || !b.length) return null;
+            let wins = 0, ties = 0;
+            for (let i = 0; i < a.length; i++) for (let j = 0; j < b.length; j++) {
+                if (a[i] > b[j]) wins++; else if (a[i] === b[j]) ties++;
+            }
+            return (wins + 0.5 * ties) / (a.length * b.length);
+        }
+
+        function abSetCondition(c) {
+            abTest.active = c;
+            showStatus(c ? `Now tagging samples as ${c === 'A' ? abTest.labelA : abTest.labelB}` : 'A/B tagging paused', 'info');
+            abRefresh();
+        }
+        function abReset() {
+            abTest.A = abNewBucket(); abTest.B = abNewBucket(); abTest.active = null; abTest.lastNeuroTs = 0;
+            showStatus('A/B comparison reset', 'success');
+            abRefresh();
+        }
+
+        function abRefresh() {
+            const body = document.getElementById('abTestBody');
+            if (!body) return;
+            const A = abTest.A, B = abTest.B;
+            const act = abTest.active;
+            const btn = (c, label, color) => {
+                const on = act === c;
+                return `<button class="btn btn-small" onclick="abSetCondition('${c}')" style="flex:1;${on ? `background:${color};border-color:${color};color:#000;font-weight:700;` : ''}">${on ? '● ' : ''}Tag ${label}</button>`;
+            };
+            let html = '';
+            html += '<div style="display:flex;gap:6px;margin-bottom:6px;">';
+            html += `<input id="abLabelA" value="${abTest.labelA}" onchange="abTest.labelA=this.value||'A';abRefresh()" style="flex:1;min-width:0;padding:4px;background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.15);color:#fff;border-radius:4px;">`;
+            html += `<input id="abLabelB" value="${abTest.labelB}" onchange="abTest.labelB=this.value||'B';abRefresh()" style="flex:1;min-width:0;padding:4px;background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.15);color:#fff;border-radius:4px;">`;
+            html += '</div>';
+            html += '<div style="display:flex;gap:6px;margin-bottom:6px;">';
+            html += btn('A', abTest.labelA, '#00ccff');
+            html += btn('B', abTest.labelB, '#ff6b9d');
+            html += `<button class="btn btn-small" onclick="abSetCondition(null)" style="flex:0 0 auto;">⏸</button>`;
+            html += '</div>';
+            html += `<div style="color:#888;margin-bottom:8px;">${abTest.labelA}: <strong>${A.alpha.length}</strong> samples · ${abTest.labelB}: <strong>${B.alpha.length}</strong> samples${act ? ` · <span style="color:#2ecc71;">recording ${act === 'A' ? abTest.labelA : abTest.labelB}</span>` : ''}</div>`;
+
+            const minN = 5;
+            if (A.alpha.length < minN || B.alpha.length < minN) {
+                html += `<div style="color:#ffb84d;">Tag one condition, then the other — aim for 15+ samples each (≈8+ min per block) for a trustworthy read. Need at least ${minN} in each to compare.</div>`;
+            } else {
+                html += '<div style="font-weight:600;color:#4A7C59;margin:6px 0 4px;">Comparison</div>';
+                html += `<div style="display:grid;grid-template-columns:1.1fr 1fr 1fr 0.8fr;gap:2px;font-size:0.72rem;color:#888;border-bottom:1px solid rgba(255,255,255,0.1);padding-bottom:2px;">
+                    <span>Metric</span><span>${abTest.labelA}</span><span>${abTest.labelB}</span><span>verdict</span></div>`;
+                AB_METRICS.forEach(mt => {
+                    const a = A[mt.key], b = B[mt.key];
+                    const sa = abStats(a), sb = abStats(b);
+                    if (!sa || !sb || sa.n < 3 || sb.n < 3) return;
+                    const d = abCohensD(a, b);
+                    const cles = abCLES(a, b);
+                    const mag = d == null ? '' : Math.abs(d) < 0.2 ? 'negligible' : Math.abs(d) < 0.5 ? 'small' : Math.abs(d) < 0.8 ? 'medium' : 'large';
+                    let verdict;
+                    if (d == null || Math.abs(d) < 0.2) {
+                        verdict = '<span style="color:#888;">overlapping</span>';
+                    } else {
+                        const higher = sa.mean > sb.mean ? abTest.labelA : abTest.labelB;
+                        const c = Math.abs(d) >= 0.8 ? '#2ecc71' : Math.abs(d) >= 0.5 ? '#9ccc65' : '#c5c56a';
+                        verdict = `<span style="color:${c};" title="Cohen's d ${d.toFixed(2)} · superiority ${(cles * 100).toFixed(0)}%">${higher} ↑ ${mag}</span>`;
+                    }
+                    const fmt = (s) => `${s.mean.toFixed(mt.dp)}<span style="color:#666;">±${s.sd.toFixed(mt.dp)}</span>`;
+                    html += `<div style="display:grid;grid-template-columns:1.1fr 1fr 1fr 0.8fr;gap:2px;font-size:0.74rem;padding:2px 0;">
+                        <span>${mt.label}</span><span>${fmt(sa)}</span><span>${fmt(sb)}</span><span>${verdict}</span></div>`;
+                });
+                html += '<div style="color:#888;font-size:0.72rem;margin-top:8px;">Exploratory, not a controlled trial: single-session, small n, and order/time effects aren\'t accounted for. "↑ medium/large" means a real-looking gap; "overlapping" means the conditions can\'t be told apart. For confidence, alternate A/B/A/B blocks and gather many samples. Effect size (Cohen\'s d): 0.2 small · 0.5 medium · 0.8 large.</div>';
+            }
+            html += '<div style="margin-top:8px;"><button class="btn btn-small btn-secondary" onclick="abReset()" style="width:100%;">↺ Reset</button></div>';
+            body.innerHTML = html;
+        }
+
+        function showABTest() {
+            document.getElementById('abTestModal').classList.add('active');
+            abRefresh();
+        }
+        function closeABTest() {
+            document.getElementById('abTestModal').classList.remove('active');
+        }
+
         function exportEEGData() {
             if (!currentEEGData && aetheriaTimeline.length === 0) {
                 showStatus('No EEG data to export', 'error');
@@ -14567,12 +15113,33 @@ Use this data to personalize your response. Comment on their current state when 
             const aethPos = currentAetheriaPosition || (bandpowers ? getAetheriaPosition(bandpowers) : null);
             const sessionSummary = computeSessionSummary(aetheriaTimeline);
 
+            // Neurodynamics snapshot (Takens + fractal metrics), portrait arrays
+            // stripped to keep the file lean — the scalar "datascape" is the payload.
+            let neurodynamics = null;
+            if (eegIntegration && typeof eegIntegration.computeNeurodynamics === 'function') {
+                const nd = eegIntegration.computeNeurodynamics();
+                if (nd) {
+                    const perCh = {};
+                    Object.keys(nd.perChannel).forEach(ch => {
+                        const c = Object.assign({}, nd.perChannel[ch]);
+                        delete c._portrait;
+                        perCh[ch] = c;
+                    });
+                    neurodynamics = {
+                        timestamp: nd.timestamp, portraitChannel: nd.portraitChannel,
+                        tau: nd.tau, embeddingDim: nd.embeddingDim, mean: nd.mean, perChannel: perCh,
+                    };
+                }
+            }
+
             const exportData = {
                 exportVersion: 2,
                 timestamp: new Date().toISOString(),
                 device: eegIntegration?.getDeviceInfo()?.name || 'Unknown',
                 sessionSummary: sessionSummary,
                 insights: generateSessionInsights(sessionSummary),
+                channelDiagnostic: (eegIntegration && typeof eegIntegration.diagnoseChannels === 'function') ? eegIntegration.diagnoseChannels() : null,
+                neurodynamics: neurodynamics,
                 session: {
                     dataPoints: aetheriaTimeline.length,
                     firstReading: aetheriaTimeline.length > 0 ? aetheriaTimeline[0].t : null,

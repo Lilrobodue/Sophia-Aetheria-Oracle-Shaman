@@ -193,6 +193,71 @@
     return phaseDiff > 0 ? 'front-to-back' : 'back-to-front';
   }
 
+  // ---- 2D traveling-wave vector --------------------------------------------
+  // The 4 electrodes form a rough rectangle (x = right+, y = front+). Fitting a
+  // planar phase gradient across them yields an actual propagation direction and
+  // (approximate) speed — the closest a 4-electrode headband can get to "spin".
+  var ELECTRODE_XY = {
+    AF7: { x: -1, y: 1 }, AF8: { x: 1, y: 1 },   // forehead L / R
+    TP9: { x: -1, y: -1 }, TP10: { x: 1, y: -1 }, // behind ears L / R
+  };
+  var HALF_W_M = 0.05; // ~half the AF7<->AF8 span (m), for speed scaling
+  var HALF_H_M = 0.06; // ~half the front<->back span (m)
+
+  function wrapDeg180(d) {
+    while (d > 180) d -= 360;
+    while (d <= -180) d += 360;
+    return d;
+  }
+
+  function waveDirectionLabel(deg) {
+    var dirs = [[0, 'rightward'], [45, 'front-right'], [90, 'forward'], [135, 'front-left'],
+                [180, 'leftward'], [-135, 'back-left'], [-90, 'backward'], [-45, 'back-right']];
+    var best = '', bd = 999;
+    for (var i = 0; i < dirs.length; i++) {
+      var diff = Math.abs(wrapDeg180(deg - dirs[i][0]));
+      if (diff < bd) { bd = diff; best = dirs[i][1]; }
+    }
+    return best;
+  }
+
+  // phases: { ch: { band: Float32Array } }. Returns the planar-fit wave vector.
+  function computeTravelingWave(phases, band, edgeTrim) {
+    var ref = phases.AF7[band];
+    var rel = { AF7: 0 };
+    var strengths = [];
+    ['AF8', 'TP9', 'TP10'].forEach(function (ch) {
+      var r = plvFromPhases(phases[ch][band], ref, edgeTrim);
+      rel[ch] = r.phaseDiff;   // mean phase of ch relative to AF7 (radians)
+      strengths.push(r.plv);
+    });
+    var meanStrength = strengths.reduce(function (a, b) { return a + b; }, 0) / strengths.length;
+
+    // Closed-form least-squares plane fit (orthogonal 2x2 layout).
+    var a = (rel.AF7 + rel.AF8 + rel.TP9 + rel.TP10) / 4;
+    var gx = ((rel.AF8 - rel.AF7) + (rel.TP10 - rel.TP9)) / 4; // rad per x-unit
+    var gy = ((rel.AF7 - rel.TP9) + (rel.AF8 - rel.TP10)) / 4; // rad per y-unit
+
+    // Planarity (R^2): how well the 4 phases fit a single plane.
+    var ssRes = 0, ssTot = 0;
+    ['AF7', 'AF8', 'TP9', 'TP10'].forEach(function (ch) {
+      var c = ELECTRODE_XY[ch];
+      var pred = a + gx * c.x + gy * c.y;
+      ssRes += (rel[ch] - pred) * (rel[ch] - pred);
+      ssTot += (rel[ch] - a) * (rel[ch] - a);
+    });
+    var goodness = ssTot > 1e-9 ? Math.max(0, 1 - ssRes / ssTot) : 1;
+
+    // Physical wavenumber & propagation direction (wave travels along -gradient).
+    var kx = gx / HALF_W_M, ky = gy / HALF_H_M;
+    var kmag = Math.sqrt(kx * kx + ky * ky);
+    var angleDeg = Math.atan2(-ky, -kx) * 180 / Math.PI; // 0=right, 90=front
+    var f = BAND_CENTERS[band] || 10;
+    var speed = kmag > 1e-3 ? (TWO_PI * f) / kmag : null; // m/s; null = near-standing
+
+    return { angleDeg: angleDeg, speedMps: speed, goodness: goodness, strength: meanStrength };
+  }
+
   // ---- Analyzer ------------------------------------------------------------
 
   function SpiralWaveAnalyzer(opts) {
@@ -289,14 +354,36 @@
       if (interHemi > bestInter) { bestInter = interHemi; dominantBand = hb; }
     }
 
+    // 4) 2D traveling-wave vector (direction + speed), plus a cross-window
+    //    rotation rate — the "spin" proxy: how fast the propagation direction
+    //    turns between updates (+ = counter-clockwise).
+    var tw = computeTravelingWave(phases, dBand, edgeTrim);
+    var nowTs = timestamp || (typeof performance !== 'undefined' ? performance.now() : 0);
+    var rotationDegPerSec = null;
+    if (this._lastWave && tw.strength >= 0.2 && this._lastWave.strength >= 0.2) {
+      var dt = (nowTs - this._lastWave.t) / 1000;
+      if (dt > 0 && dt < 6) rotationDegPerSec = wrapDeg180(tw.angleDeg - this._lastWave.angleDeg) / dt;
+    }
+    this._lastWave = { angleDeg: tw.angleDeg, t: nowTs, strength: tw.strength };
+    var travelingWave = {
+      band: dBand,
+      angleDeg: Math.round(tw.angleDeg),
+      direction: waveDirectionLabel(tw.angleDeg),
+      speedMps: tw.speedMps != null ? Math.round(tw.speedMps * 100) / 100 : null,
+      planarity: Math.round(tw.goodness * 100) / 100,
+      strength: Math.round(tw.strength * 100) / 100,
+      rotationDegPerSec: rotationDegPerSec != null ? Math.round(rotationDegPerSec) : null,
+    };
+
     return {
-      timestamp: timestamp || (typeof performance !== 'undefined' ? performance.now() : 0),
+      timestamp: nowTs,
       windowSamples: N,
       windowSeconds: N / this.sampleRate,
       plvMatrix: plvMatrix,
       phaseLag: phaseLag,
       hcr: hcr,
       dominantBand: dominantBand,
+      travelingWave: travelingWave,
     };
   };
 
@@ -331,6 +418,7 @@
       phase_lag_bilateral: { lagMs: r2(pl.bilateral.lagMs), direction: pl.bilateral.direction, symmetry: r2(pl.bilateral.symmetry) },
       hcr: hcrOut,
       dominant_band: result.dominantBand,
+      traveling_wave: result.travelingWave || null,
     };
   };
 

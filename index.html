@@ -1581,7 +1581,7 @@
                     Export
                 </button>
             </div>
-            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v49</div>
+            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v50</div>
             </div><!-- end sidebar-scroll -->
         </div>
 
@@ -14586,6 +14586,22 @@ Use this data to personalize your response. Comment on their current state when 
         let aetheriaTimeline = [];
         const AETHERIA_TIMELINE_MAX = 354; // ~3 hours at 30s intervals
 
+        // Strip the bulky portrait point-clouds, keeping the scalar metrics.
+        // Shared by per-epoch timeline records and the top-level export snapshot.
+        function compactNeurodynamics(nd) {
+            if (!nd) return null;
+            const perCh = {};
+            Object.keys(nd.perChannel || {}).forEach(ch => {
+                const c = Object.assign({}, nd.perChannel[ch]);
+                delete c._portrait;
+                perCh[ch] = c;
+            });
+            return {
+                timestamp: nd.timestamp, portraitChannel: nd.portraitChannel,
+                tau: nd.tau, embeddingDim: nd.embeddingDim, mean: nd.mean, perChannel: perCh,
+            };
+        }
+
         function recordAetheriaPosition() {
             if (!currentEEGData || !eegStreaming || !currentAetheriaPosition) return;
             const bp = currentEEGData.bandpowers;
@@ -14617,6 +14633,11 @@ Use this data to personalize your response. Comment on their current state when 
             // Include delta-artifact flag so high-delta epochs can be filtered later
             if (currentEEGData.artifact) {
                 timelineEntry.artifact = currentEEGData.artifact;
+            }
+            // Per-epoch neurodynamics (Takens + fractal/complexity), portrait stripped.
+            if (eegIntegration && typeof eegIntegration.computeNeurodynamics === 'function') {
+                const nd = eegIntegration.computeNeurodynamics();
+                if (nd) timelineEntry.neurodynamics = compactNeurodynamics(nd);
             }
             // Include Athena fNIRS/PPG snapshot in timeline if available
             if (eegIntegration && eegIntegration.lastConnectionMethod === 'athena') {
@@ -15115,22 +15136,9 @@ Use this data to personalize your response. Comment on their current state when 
 
             // Neurodynamics snapshot (Takens + fractal metrics), portrait arrays
             // stripped to keep the file lean — the scalar "datascape" is the payload.
-            let neurodynamics = null;
-            if (eegIntegration && typeof eegIntegration.computeNeurodynamics === 'function') {
-                const nd = eegIntegration.computeNeurodynamics();
-                if (nd) {
-                    const perCh = {};
-                    Object.keys(nd.perChannel).forEach(ch => {
-                        const c = Object.assign({}, nd.perChannel[ch]);
-                        delete c._portrait;
-                        perCh[ch] = c;
-                    });
-                    neurodynamics = {
-                        timestamp: nd.timestamp, portraitChannel: nd.portraitChannel,
-                        tau: nd.tau, embeddingDim: nd.embeddingDim, mean: nd.mean, perChannel: perCh,
-                    };
-                }
-            }
+            const neurodynamics = (eegIntegration && typeof eegIntegration.computeNeurodynamics === 'function')
+                ? compactNeurodynamics(eegIntegration.computeNeurodynamics())
+                : null;
 
             const exportData = {
                 exportVersion: 2,

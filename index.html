@@ -1581,7 +1581,7 @@
                     Export
                 </button>
             </div>
-            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v50</div>
+            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v51</div>
             </div><!-- end sidebar-scroll -->
         </div>
 
@@ -2552,7 +2552,18 @@ return result;</textarea>
                     <button class="btn btn-small btn-secondary" onclick="testAllFrequencies()" style="padding: 4px 10px;">🧪 Test All</button>
                     <button class="btn btn-small btn-secondary" onclick="forceFrequencyChange()" style="padding: 4px 10px;">🔄 Force Switch</button>
                 </div>
-                
+
+                <!-- Frequency Mode Toggle: Solfeggio (adaptive, all 27) vs Lo Shu walk -->
+                <div style="margin: 10px 0; display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                    <strong style="font-size: 0.85rem;">Frequency Mode:</strong>
+                    <div style="display: inline-flex; border: 1px solid #444; border-radius: 6px; overflow: hidden;">
+                        <button id="modeSolfeggioBtn" class="btn btn-small" onclick="setFrequencyMode('solfeggio')" style="padding: 4px 12px; border-radius: 0; background: #2a6e4f; color: #fff;">🎵 Solfeggio</button>
+                        <button id="modeLoShuBtn" class="btn btn-small" onclick="setFrequencyMode('loshu')" style="padding: 4px 12px; border-radius: 0; background: transparent; color: #aaa;">洛書 Lo Shu</button>
+                    </div>
+                    <button id="loShuWalkBtn" class="btn btn-small btn-secondary" onclick="cycleLoShuWalk()" style="padding: 4px 10px; display: none;">洛書 Ascent</button>
+                    <span id="frequencyModeHint" style="font-size: 0.72rem; color: #888;">Brain-adaptive across all 27 frequencies</span>
+                </div>
+
                 <!-- Mobile Browser Compatibility Alert -->
                 <div id="mobileCompatAlert" style="display: none; background: rgba(255,107,0,0.2); padding: 10px; border-radius: 6px; margin-top: 10px; font-size: 0.85rem; border: 1px solid #ff6b00;">
                     <strong>📱 Mobile Browser Note:</strong> For best experience on mobile, tap screen to enable audio, then test volume before activating adaptive mode.
@@ -4790,6 +4801,8 @@ return result;</textarea>
             adaptationRate: 30,
             frequencyDuration: 60,
             enableSolfeggioAdaptation: true,
+            frequencyMode: 'solfeggio',   // 'solfeggio' (adaptive, all 27) | 'loshu' (magic-square walk)
+            loShuWalk: 'A',               // A=Ascent · B=Pillar · C=Vortex
             // Auto-Optimization Configuration
             autoOptimization: true,
             manualDeviceType: 'desktop',
@@ -4828,6 +4841,55 @@ return result;</textarea>
             {pos:27, freq:6336, regime:'HEAD',  geo:'Unified Field',     hex:1,  hexName:'The Creative',         script:'The Summit',      state:'SUMMIT COHERENCE',      keyword:'Unity'},
         ];
 
+        // ── Lo Shu magic-square walk paths (traverse all 27) ──
+        // Standard Lo Shu square — every row/column/diagonal sums to 15:
+        //     4 9 2
+        //     3 5 7      Each Aetheria regime holds 9 positions (1-9); POS_DIR
+        //     8 1 6      maps a position to its nine-palace compass direction.
+        // (Numerology note from Joseph: the solfeggio rows offset onto the Lo
+        //  Shu square — 174→ +99 ladders and the 417→639 row offset by 9 — which
+        //  is why the 3-6-9 frequencies fall on the magic-square palaces.)
+        const POS_DIR = {1:'N', 2:'SW', 3:'E', 4:'SE', 5:'Center', 6:'NW', 7:'W', 8:'NE', 9:'S'};
+
+        // Walk A — Layer Ascent: 1→9 through GUT, then HEART, then HEAD. Ground before you rise.
+        const LOSHU_WALK_A = [174,285,396,417,528,639,741,852,963, 1206,1449,1692,1935,2178,2421,2664,2907,3150, 3504,3858,4212,4566,4920,5274,5628,5982,6336];
+        // Walk B — Pillar Walk: for each position 1→9 play GUT→HEART→HEAD (nine vertical pillars).
+        const LOSHU_WALK_B = [174,1206,3504, 285,1449,3858, 396,1692,4212, 417,1935,4566, 528,2178,4920, 639,2421,5274, 741,2664,5628, 852,2907,5982, 963,3150,6336];
+        // Walk C — Flying Star Vortex: nine-palace path 5→6→7→8→9→1→2→3→4 per layer, center-outward.
+        const LOSHU_WALK_C = [528,639,741,852,963,174,285,396,417, 2178,2421,2664,2907,3150,1206,1449,1692,1935, 4920,5274,5628,5982,6336,3504,3858,4212,4566];
+        // Ouroboros — closed figure-8 through all 27, crossing SOURCE (2178 = HEART
+        // pos 5) ×3: start, centre crossing, return. 29 steps. Two lobes (left/right
+        // halves of the cube) traced in angular order; sequence computed from the
+        // canonical RCT cube-path algorithm so the audio matches the 3D figure.
+        const LOSHU_WALK_O = [2178,396,417,852,174,528,963,1206,4212,4566,5982,1692,1935,2907, 2178, 3150,285,639,741,1449,2421,2664,3858,5274,5628,3504,4920,6336, 2178];
+        // Composite walks. CAB = Vortex→Ascent→Pillar (81 = the cube from every
+        // angle, 3 passes per frequency). CABI = CAB then Ouroboros (110 = full
+        // circuit, then the loop home). SOURCE is visited 6× across CABI.
+        const LOSHU_WALK_CAB  = [...LOSHU_WALK_C, ...LOSHU_WALK_A, ...LOSHU_WALK_B];
+        const LOSHU_WALK_CABI = [...LOSHU_WALK_CAB, ...LOSHU_WALK_O];
+        const LOSHU_WALKS = {
+            A:    {name:'Ascent',    seq: LOSHU_WALK_A},
+            B:    {name:'Pillar',    seq: LOSHU_WALK_B},
+            C:    {name:'Vortex',    seq: LOSHU_WALK_C},
+            CAB:  {name:'CAB',       seq: LOSHU_WALK_CAB},
+            O:    {name:'Ouroboros', seq: LOSHU_WALK_O},
+            CABI: {name:'CABI',      seq: LOSHU_WALK_CABI},
+        };
+        const LOSHU_WALK_ORDER = ['A', 'B', 'C', 'CAB', 'O', 'CABI']; // cycle order
+
+        // The 9 Lo Shu position-locked triads (one GUT + HEART + HEAD per palace).
+        const LOSHU_TRIADS = [
+            { pos:1, dir:'N',      gut:174, heart:1206, head:3504 },
+            { pos:2, dir:'SW',     gut:285, heart:1449, head:3858 },
+            { pos:3, dir:'E',      gut:396, heart:1692, head:4212 },
+            { pos:4, dir:'SE',     gut:417, heart:1935, head:4566 },
+            { pos:5, dir:'Center', gut:528, heart:2178, head:4920 },
+            { pos:6, dir:'NW',     gut:639, heart:2421, head:5274 },
+            { pos:7, dir:'W',      gut:741, heart:2664, head:5628 },
+            { pos:8, dir:'NE',     gut:852, heart:2907, head:5982 },
+            { pos:9, dir:'S',      gut:963, heart:3150, head:6336 },
+        ];
+
         // Tarot Major Arcana for Reading of the Day
         const MAJOR_ARCANA = [
             'The Fool', 'The Magician', 'The High Priestess', 'The Empress', 'The Emperor',
@@ -4863,107 +4925,196 @@ return result;</textarea>
             ));
         }
 
-        // Map brainwave state to one of 27 Aetheria frequency positions
+        // ═══════════════════════════════════════════════════
+        // CONTINUOUS RESONANCE PLACEMENT  (ported from Aetheria RCT)
+        // ───────────────────────────────────────────────────
+        // Replaces the former 27-way threshold bucket. A bucket/state-machine
+        // can only sit in whichever discrete state it last latched, so it PARKS
+        // by design (observed: stuck at 1/3/11 even with clean contact). This
+        // computes a single continuous resonance score from the live brain data
+        // and maps it smoothly across all 27 positions, so placement slides
+        // instead of latching.
+        //   score    = alpha·0.30 + theta·0.25 + gamma·0.10 + coherence·0.35
+        //   position = round( clamp( score · 26 / RESCALE , 0, 26 ) )
+        // See sophia_resonance_port_PROMPT.md. (Old bucket lives in git history.)
+
+        // CALIBRATION KNOB. The RCT uses 0.35 because its bands are 0–1
+        // fractions. Sophia's bands are log-PSD *percentages* (alpha peaks
+        // ~15–20, theta ~25–30) and calcCoherence returns 0–100, so realistic
+        // scores live roughly in the 9–25 range. RESCALE = 26 maps that ~1:1
+        // into 0–26 (so position ≈ score). This is an ESTIMATE — confirm it
+        // against a real session via the AETH_DEBUG log below and retune so a
+        // relaxed state lands low and a deep/coherent state lands high. If the
+        // low end stays bunched (Sophia's score has a non-zero floor), the
+        // documented next step is a floor offset:
+        //   position = round( clamp( (score - FLOOR) / (CEIL - FLOOR) · 26, 0, 26 ) )
+        const RESONANCE_RESCALE = 26;
+        // Step 7 — Sophia-native PLV field coherence runs on a higher magnitude
+        // than the scalar calcCoherence, so it needs its own divisor. ESTIMATE;
+        // calibrate with AETH_DEBUG the same way. Active source defaults to PLV.
+        const RESONANCE_RESCALE_PLV = 32;
+        // Rolling-average window. The update path fires a few times/sec, so
+        // ~30 samples ≈ a multi-second "signature" (mirrors the RCT's windowed
+        // average). Removes per-frame jitter without the old dwell debounce.
+        const RESONANCE_WINDOW = 30;
+
+        // Coherence source: 'plv' (default, Sophia-native field coherence) or
+        // 'scalar' (calcCoherence parity). Flip at runtime: window.AETH_COHERENCE='scalar'.
+        function coherenceSource() {
+            return (typeof window !== 'undefined' && window.AETH_COHERENCE === 'scalar') ? 'scalar' : 'plv';
+        }
+        function activeRescale() {
+            return coherenceSource() === 'plv' ? RESONANCE_RESCALE_PLV : RESONANCE_RESCALE;
+        }
+        // Mean pairwise PLV across all channel pairs & bands → a 0..1 field-
+        // organization scalar, independent of the band-power channel.
+        function meanSpiralPLV(spiral) {
+            if (!spiral || !spiral.plvMatrix) return null;
+            let sum = 0, n = 0;
+            for (const pair in spiral.plvMatrix) {
+                const perBand = spiral.plvMatrix[pair];
+                for (const b in perBand) {
+                    const v = perBand[b] && perBand[b].plv;
+                    if (typeof v === 'number' && isFinite(v)) { sum += v; n++; }
+                }
+            }
+            return n ? sum / n : null;
+        }
+        // Coherence channel fed to the resonance score. Prefers the PLV field
+        // coherence (Step 7); falls back to scalar calcCoherence when spiral data
+        // is unavailable or the 'scalar' flag is set. Returned on a 0..100 scale
+        // to match the band percentages.
+        function fieldCoherence(bands) {
+            if (coherenceSource() === 'plv') {
+                const spiral = (typeof currentEEGData !== 'undefined' && currentEEGData) ? currentEEGData.spiral : null;
+                const plv = meanSpiralPLV(spiral);
+                if (plv != null) return plv * 100;
+            }
+            return calcCoherence(bands);
+        }
+
+        /**
+         * Canonical Aetheria resonance placement (ported from the RCT).
+         * Maps live brain data to a continuous position 0–26 across the 27
+         * frequencies. Data-driven — NOT a state bucket.
+         * @param {{alpha:number, theta:number, gamma:number}} bands
+         * @param {number} coherence
+         * @param {number} [rescale=RESONANCE_RESCALE] calibration divisor
+         * @returns {{score:number, position:number}}
+         */
+        function resonancePosition(bands, coherence, rescale = activeRescale()) {
+            const score =
+                (bands.alpha || 0) * 0.30 +
+                (bands.theta || 0) * 0.25 +
+                (bands.gamma || 0) * 0.10 +
+                (coherence    || 0) * 0.35;
+            const position = Math.round(Math.min(26, Math.max(0, score * 26 / rescale)));
+            return { score, position };
+        }
+
+        // Rolling-average smoother — placement reflects a window, not one frame.
+        class ResonanceSmoother {
+            constructor(windowSamples = RESONANCE_WINDOW) { this.win = windowSamples; this.buf = []; }
+            push(bands, coherence) {
+                this.buf.push({ alpha: bands.alpha||0, theta: bands.theta||0, gamma: bands.gamma||0, coherence: coherence||0 });
+                if (this.buf.length > this.win) this.buf.shift();
+            }
+            get full() { return this.buf.length >= this.win; }
+            current(rescale = activeRescale()) {
+                if (!this.buf.length) return { score: 0, position: 0, coherence: 0 };
+                const n = this.buf.length;
+                const a = this.buf.reduce((acc, s) => ({
+                    alpha: acc.alpha + s.alpha, theta: acc.theta + s.theta,
+                    gamma: acc.gamma + s.gamma, coherence: acc.coherence + s.coherence
+                }), { alpha:0, theta:0, gamma:0, coherence:0 });
+                const r = resonancePosition(
+                    { alpha:a.alpha/n, theta:a.theta/n, gamma:a.gamma/n },
+                    a.coherence/n, rescale
+                );
+                return { ...r, coherence: a.coherence/n };
+            }
+        }
+
+        // Map brainwave state to one of 27 Aetheria positions (0–26) — now a
+        // continuous resonance score, instantaneous (no smoothing). All one-shot
+        // callers (prescription tool, context injection) go through here.
         function getAetheriaState(bands) {
-            // bands = {delta, theta, alpha, beta, gamma} as log-PSD normalized percentages
-            const d = bands.delta, t = bands.theta, a = bands.alpha, b = bands.beta, g = bands.gamma;
-
-            // NOTE: Alpha thresholds recalibrated 2026-06-19. In the log-PSD
-            // normalized percentages, alpha realistically peaks ~15-20% (not the
-            // 30-40% the original a>20/a>25/a>30 gates assumed), so 19 of the 27
-            // positions were effectively unreachable and the classifier collapsed
-            // onto a few low-alpha states. Alpha gates rescaled to a>11 / a>13 /
-            // a>15 and the a<15 upper bounds tightened to a<11 so moderate-alpha
-            // states correctly escape the low-alpha positions. Theta>30 (rare) →
-            // theta>26. Other bands (delta/theta/beta/gamma) reach their gates
-            // routinely and are unchanged.
-
-            // GUT REGIME (positions 0-8) — body, grounding, survival states
-            if (d > 35 && a < 11 && g < 10)               return 0;  // Scattered Field (174Hz)
-            if (d > 30 && t > 20 && a < 11)               return 1;  // Body Restoring (285Hz)
-            if (b > 30 && g > 15 && a < 11)               return 2;  // Sympathetic Activation (396Hz)
-            if (Math.abs(a - b) < 8 && t > 15 && t < 25)  return 3;  // State Transition (417Hz)
-            if (t > 26 && d > 25 && a < 11)               return 4;  // Subconscious Drift (528Hz)
-            if (a > 11 && a < 18 && d > 20 && b < 25)     return 5;  // Grounding (639Hz)
-            if (a > 13 && t > 20 && b < 20)               return 6;  // Awakening (741Hz)
-            if (a > 15 && b < 15 && t > 15)               return 7;  // Inner Stillness (852Hz)
-            if (a > 13 && t > 20 && g > 10 && b < 25)     return 8;  // Coherence Building (963Hz)
-
-            // HEART REGIME (positions 9-17) — emotion, connection, flow states
-            if (t > 25 && b > 20 && a < 13)               return 9;  // Pain Processing (1206Hz)
-            if (d > 25 && b > 20 && a < 11 && t < 20)     return 10; // Sensory Fog (1449Hz)
-            if (a > 11 && g > 12 && t > 15)               return 11; // Field Extension (1692Hz)
-            if (t > 25 && a > 11 && g > 10)               return 12; // Intuitive Perception (1935Hz)
-            if (t > 26 && a > 13 && b < 15)               return 13; // Deep Meditation (2178Hz)
-            if (t > 20 && a > 11 && b > 15 && b < 25)     return 14; // Emotional Release (2421Hz)
-            if (a > 13 && g > 15 && b < 20)               return 15; // Transmutation (2664Hz)
-            if (a > 11 && t > 15 && g > 12 && b > 15)     return 16; // Creative Flow (2907Hz)
-            if (a > 13 && g > 15 && t > 15 && b < 20)     return 17; // Renewal (3150Hz)
-
-            // HEAD REGIME (positions 18-26) — awareness, mastery, creation states
-            if (b > 25 && a > 11 && g > 10)               return 18; // Focused Attention (3504Hz)
-            if (a > 13 && g > 12 && b > 15 && b < 25)     return 19; // Receptive State (3858Hz)
-            if (g > 18 && a > 11 && b > 15)               return 20; // Field Broadcast (4212Hz)
-            if (a > 13 && t > 20 && g > 15 && b < 20)     return 21; // Collective Harmony (4566Hz)
-            if (g > 20 && a > 11 && t > 15)               return 22; // Expanded Awareness (4920Hz)
-            if (a > 13 && g > 18 && t > 15 && b < 20)     return 23; // Healing Resonance (5274Hz)
-            if (g > 22 && a > 11 && t > 15)               return 24; // Peak Vision (5628Hz)
-            if (g > 20 && a > 13 && t > 20 && b < 15)     return 25; // Integration (5982Hz)
-            if (g > 25 && a > 13 && t > 20)               return 26; // Summit Coherence (6336Hz)
-
-            // Default fallback
-            if (a > 11) return 5;    // Grounding
-            if (t > 20) return 4;    // Subconscious Drift
-            if (b > 25) return 2;    // Sympathetic Activation
-            return 0;                 // Scattered Field
+            // bands = {delta, theta, alpha, beta, gamma} log-PSD percentages.
+            // Coherence is fieldCoherence(): mean PLV from currentEEGData.spiral
+            // (an independent channel — Step 7), falling back to scalar
+            // calcCoherence when spiral data is unavailable.
+            return resonancePosition(bands, fieldCoherence(bands)).position;
         }
 
         // Get the full Aetheria frequency object for a given brain state
         function getAetheriaPosition(bands) {
-            const stateIdx = getAetheriaState(bands);
+            const coherence = fieldCoherence(bands);
+            const r = resonancePosition(bands, coherence);
+            const stateIdx = r.position;
             const freq = AETHERIA_FREQUENCIES[stateIdx];
-            const coherence = calcCoherence(bands);
-            return { ...freq, coherence, stateIdx };
+            return { ...freq, coherence: Math.round(coherence), stateIdx, score: r.score };
         }
 
         // Track the current Aetheria position globally for context injection
         let currentAetheriaPosition = null;
 
-        // ── Position de-bounce ──
-        // The raw classifier runs on instantaneous bandpowers and can jitter
-        // between states as bands cross thresholds. Require a new state to
-        // persist for AETH_MIN_DWELL_MS before committing, so the displayed
-        // position is stable instead of ping-ponging every update.
-        let _aethCommittedIdx = -1, _aethCandidateIdx = -1, _aethCandidateSince = 0;
-        const AETH_MIN_DWELL_MS = 2500;
-        function stabilizeAetheriaIndex(rawIdx, now) {
-            if (_aethCommittedIdx === -1) {
-                _aethCommittedIdx = _aethCandidateIdx = rawIdx;
-                _aethCandidateSince = now;
-                return rawIdx;
-            }
-            if (rawIdx === _aethCommittedIdx) {
-                // Still in the committed state — reset any pending candidate.
-                _aethCandidateIdx = rawIdx;
-                _aethCandidateSince = now;
-            } else if (rawIdx !== _aethCandidateIdx) {
-                // New contender — start its dwell timer.
-                _aethCandidateIdx = rawIdx;
-                _aethCandidateSince = now;
-            } else if (now - _aethCandidateSince >= AETH_MIN_DWELL_MS) {
-                // Contender held long enough — commit the switch.
-                _aethCommittedIdx = rawIdx;
-            }
-            return _aethCommittedIdx;
+        // ── Live placement: rolling-average smoother + baseline ──
+        // The continuous score is windowed (not reacted-to per frame). This
+        // SUPERSEDES the old dwell-debounce state machine — there is now exactly
+        // one placement system live, so the two can't fight (which would have
+        // reintroduced the stuck behavior).
+        const _resonanceSmoother = new ResonanceSmoother();
+
+        // Baseline + movement (Step 6) — Sophia's closest thing to ground truth.
+        let resonanceBaseline = null;
+        function captureResonanceBaseline() {
+            resonanceBaseline = _resonanceSmoother.current();
+            return resonanceBaseline;
+        }
+        function movementFromBaseline() {
+            if (!resonanceBaseline) return null;
+            const now = _resonanceSmoother.current();
+            return { from: resonanceBaseline.position, to: now.position, delta: now.position - resonanceBaseline.position };
         }
 
-        // Like getAetheriaPosition but de-bounced for the live display path.
+        // Set window.AETH_DEBUG = true in the console to stream the live inputs,
+        // raw score, and running min/max — use this to CALIBRATE RESONANCE_RESCALE
+        // and to confirm (Step 0) the inputs are actually changing, not frozen.
+        let _aethScoreMin = Infinity, _aethScoreMax = -Infinity, _aethLogThrottle = 0;
+
+        // Smoothed live-display placement. Feeds the rolling average, auto-
+        // captures a baseline once the window first fills, returns the windowed
+        // position. Replaces getAetheriaState's instantaneous value on this path.
         function getStableAetheriaPosition(bands) {
-            const rawIdx = getAetheriaState(bands);
-            const stateIdx = stabilizeAetheriaIndex(rawIdx, Date.now());
+            const coherence = fieldCoherence(bands);
+            _resonanceSmoother.push(bands, coherence);
+            const sm = _resonanceSmoother.current();
+            const stateIdx = sm.position;
+
+            // Auto-capture a baseline one full window after a clean connection.
+            if (!resonanceBaseline && _resonanceSmoother.full) captureResonanceBaseline();
+
+            if (typeof window !== 'undefined' && window.AETH_DEBUG) {
+                const raw = resonancePosition(bands, coherence);
+                _aethScoreMin = Math.min(_aethScoreMin, raw.score);
+                _aethScoreMax = Math.max(_aethScoreMax, raw.score);
+                const now = Date.now();
+                if (now - _aethLogThrottle > 1000) {
+                    _aethLogThrottle = now;
+                    const mv = movementFromBaseline();
+                    console.log('[AETH]',
+                        'd', Math.round(bands.delta), 't', Math.round(bands.theta),
+                        'a', Math.round(bands.alpha), 'b', Math.round(bands.beta),
+                        'g', Math.round(bands.gamma), '| coh', Math.round(coherence),
+                        '| score', raw.score.toFixed(1),
+                        '(min', _aethScoreMin.toFixed(1), 'max', _aethScoreMax.toFixed(1) + ')',
+                        '| pos', stateIdx, '→', AETHERIA_FREQUENCIES[stateIdx].freq + 'Hz',
+                        '| Δbaseline', mv ? mv.delta : '–');
+                }
+            }
+
             const freq = AETHERIA_FREQUENCIES[stateIdx];
-            const coherence = calcCoherence(bands);
-            return { ...freq, coherence, stateIdx };
+            return { ...freq, coherence: Math.round(sm.coherence), stateIdx, score: sm.score, movement: movementFromBaseline() };
         }
 
         // ═══════════════════════════════════════════════════
@@ -6457,7 +6608,13 @@ return result;</textarea>
             } else {
                 console.warn("System prompt element not found. Using default config value.");
             }
-            
+
+            // Restore frequency mode + active Lo Shu walk for the audio engine.
+            if (typeof solfeggioSettings !== 'undefined') {
+                solfeggioSettings.frequencyMode = config.frequencyMode === 'loshu' ? 'loshu' : 'solfeggio';
+                solfeggioSettings.loShuWalk = config.loShuWalk || 'A';
+            }
+
             updateRagStatus();
         }
 
@@ -11238,6 +11395,12 @@ Use this data to personalize your response. Comment on their current state when 
                 // Set up event listeners
                 eegIntegration.addEventListener('connected', (event) => {
                     eegConnected = true;
+                    // Fresh placement window per connection — clears the rolling
+                    // average and the old baseline so a new one is captured once
+                    // this session's window fills (Step 6).
+                    _resonanceSmoother.buf = [];
+                    resonanceBaseline = null;
+                    _aethScoreMin = Infinity; _aethScoreMax = -Infinity;
                     const devName = event.detail?.name || 'Unknown Device';
                     const isAthena = eegIntegration.lastConnectionMethod === 'athena';
                     updateEEGStatus('Connected: ' + devName, 'success');
@@ -11937,7 +12100,13 @@ Use this data to personalize your response. Comment on their current state when 
             document.getElementById('enableSolfeggioAdaptation').checked = config.enableSolfeggioAdaptation !== undefined ? config.enableSolfeggioAdaptation : true;
             document.getElementById('solfeggioVolumeValue').textContent = config.solfeggioVolume || 1;
             document.getElementById('fineTuneValue').textContent = config.solfeggioFineTune || 0;
-            
+
+            // Frequency mode toggle — reflect saved state without firing a toast.
+            solfeggioSettings.loShuWalk = config.loShuWalk || 'A';
+            const _walkBtn = document.getElementById('loShuWalkBtn');
+            if (_walkBtn) _walkBtn.textContent = '洛書 ' + (LOSHU_WALKS[solfeggioSettings.loShuWalk] || LOSHU_WALKS.A).name;
+            setFrequencyMode(config.frequencyMode || 'solfeggio', true);
+
             // Update solfeggio display
             updateSolfeggioDisplay();
             
@@ -11997,6 +12166,12 @@ Use this data to personalize your response. Comment on their current state when 
             adaptationActive: false, // Current adaptation status
             totalVolume: 0.01,      // Calculated total volume (1% default)
             intelligentAdaptation: true, // Enhanced AI-driven adaptation
+            // ── Frequency mode (toggle) ──
+            frequencyMode: 'solfeggio', // 'solfeggio' = brain-adaptive free-select across ALL 27;
+                                        // 'loshu'     = brain-state-nudged magic-square walk (all 27)
+            loShuWalk: 'A',             // active walk: A=Ascent · B=Pillar · C=Vortex
+            loShuIndex: 0,              // current step within the active walk
+            loShuHoldCoherence: 60,     // field-coherence % above which the walk HOLDS instead of advancing
             frequencyLock: null,     // Lock specific frequency for focused sessions
             sessionStartTime: null,  // Track session duration for personalization
             personalizedWeights: {   // Personal weighting for frequency selection
@@ -12299,6 +12474,56 @@ Use this data to personalize your response. Comment on their current state when 
             updateNeuroMiniDisplay();
         }
 
+        // ── Frequency mode toggle (Solfeggio adaptive ⟷ Lo Shu magic-square walk) ──
+        function setFrequencyMode(mode, silent) {
+            if (mode !== 'loshu') mode = 'solfeggio';
+            solfeggioSettings.frequencyMode = mode;
+            if (mode === 'loshu' && !silent) solfeggioSettings.loShuIndex = 0;
+
+            // Reflect in the segmented toggle.
+            const sBtn = document.getElementById('modeSolfeggioBtn');
+            const lBtn = document.getElementById('modeLoShuBtn');
+            const walkBtn = document.getElementById('loShuWalkBtn');
+            const hint = document.getElementById('frequencyModeHint');
+            if (sBtn && lBtn) {
+                const on = '#2a6e4f', onLo = '#6b4fa0';
+                sBtn.style.background = mode === 'solfeggio' ? on : 'transparent';
+                sBtn.style.color = mode === 'solfeggio' ? '#fff' : '#aaa';
+                lBtn.style.background = mode === 'loshu' ? onLo : 'transparent';
+                lBtn.style.color = mode === 'loshu' ? '#fff' : '#aaa';
+            }
+            if (walkBtn) walkBtn.style.display = mode === 'loshu' ? 'inline-block' : 'none';
+            if (hint) hint.textContent = mode === 'loshu'
+                ? 'Magic-square walk — holds when coherent, steps when state shifts'
+                : 'Brain-adaptive across all 27 frequencies';
+
+            if (silent) { updateSolfeggioDisplay(); return; }
+
+            // Persist.
+            config.frequencyMode = mode;
+            localStorage.setItem('sophiaUnifiedConfig', JSON.stringify(config));
+
+            showStatus(mode === 'loshu'
+                ? '洛書 Lo Shu walk — traversing all 27 (' + (LOSHU_WALKS[solfeggioSettings.loShuWalk] || LOSHU_WALKS.A).name + ')'
+                : '🎵 Solfeggio adaptive mode — all 27 frequencies', 'success');
+            updateSolfeggioDisplay();
+        }
+
+        // Cycle the active Lo Shu walk: Ascent → Pillar → Vortex → …
+        function cycleLoShuWalk() {
+            const order = LOSHU_WALK_ORDER;
+            const i = order.indexOf(solfeggioSettings.loShuWalk);
+            solfeggioSettings.loShuWalk = order[(i + 1) % order.length];
+            solfeggioSettings.loShuIndex = 0;
+            const walk = LOSHU_WALKS[solfeggioSettings.loShuWalk];
+            const walkBtn = document.getElementById('loShuWalkBtn');
+            if (walkBtn) walkBtn.textContent = '洛書 ' + walk.name;
+            config.loShuWalk = solfeggioSettings.loShuWalk;
+            localStorage.setItem('sophiaUnifiedConfig', JSON.stringify(config));
+            showStatus('洛書 Lo Shu · ' + walk.name + ' walk', 'success');
+            updateSolfeggioDisplay();
+        }
+
         // Update the header mini display
         function updateNeuroMiniDisplay() {
             const miniDisplay = document.getElementById('neuroMiniDisplay');
@@ -12315,6 +12540,13 @@ Use this data to personalize your response. Comment on their current state when 
                 // "Now Playing" makes clear this is the audible tone, distinct from
                 // the Aetheria position frequency shown in the side panel.
                 frequencyText = `🎵 Now Playing: ${solfeggioSettings.currentFrequency}Hz`;
+
+                // In Lo Shu mode, annotate with the walk + magic-square palace.
+                if (solfeggioSettings.frequencyMode === 'loshu') {
+                    const info = loShuInfoForFreq(solfeggioSettings.currentFrequency);
+                    const walkName = (LOSHU_WALKS[solfeggioSettings.loShuWalk] || LOSHU_WALKS.A).name;
+                    if (info) frequencyText += ` · 洛書 ${walkName} · pos ${info.pos} ${info.dir}`;
+                }
 
                 // Show transition if crossfading
                 if (solfeggioSettings.isTransitioning && solfeggioSettings.pendingFrequency) {
@@ -13242,36 +13474,74 @@ Use this data to personalize your response. Comment on their current state when 
             return Math.min(1.0, finalConfidence);
         }
 
+        // Lo Shu mode selector: step the active magic-square walk one position,
+        // unless the field is highly coherent (then HOLD the current step so a
+        // strong state can settle). Loops at the end of the 27-step walk.
+        function nextLoShuFrequency() {
+            const walk = LOSHU_WALKS[solfeggioSettings.loShuWalk] || LOSHU_WALKS.A;
+            const seq = walk.seq;
+            const cur = solfeggioSettings.currentFrequency;
+            const coh = (currentAetheriaPosition && currentAetheriaPosition.coherence) || 0;
+            // Track by INDEX, not frequency value — composite walks (CAB/Ouroboros/
+            // CABI) repeat frequencies, so indexOf() would stall on the first copy.
+            let i = solfeggioSettings.loShuIndex;
+            // Fresh start, or the stored step no longer matches what's playing
+            // (walk changed, lock/manual override) → begin at step 0.
+            if (cur == null || i == null || i < 0 || i >= seq.length || seq[i] !== cur) {
+                solfeggioSettings.loShuIndex = 0;
+                return seq[0];
+            }
+            // Hold when coherent — let the current palace deepen.
+            if (coh >= solfeggioSettings.loShuHoldCoherence) return seq[i];
+            // Otherwise advance one palace along the walk (loops at the end).
+            solfeggioSettings.loShuIndex = (i + 1) % seq.length;
+            return seq[solfeggioSettings.loShuIndex];
+        }
+
+        // Look up the Lo Shu position (1-9) + compass palace for a frequency.
+        function loShuInfoForFreq(freq) {
+            const f = AETHERIA_FREQUENCIES.find(x => x.freq === freq);
+            if (!f) return null;
+            const posInRegime = ((f.pos - 1) % 9) + 1; // 1-9 within the regime
+            return { pos: posInRegime, dir: POS_DIR[posInRegime], regime: f.regime };
+        }
+
         // Enhanced intelligent frequency selection with personalization
         function selectOptimalFrequencyIntelligent(brainState, eegData) {
             // Intelligent multi-factor frequency selection
             const candidates = [];
-            
-            console.log('🎯 Selecting frequency for brain state:', brainState);
-            
-            // Primary therapeutic frequencies for each brain state
-            const stateFrequencyMap = {
-                'high_beta': [174, 285, 396], // Stress relief progression
-                'high_gamma': [174, 528],     // Grounding and balance
-                'high_theta': [417, 741, 528], // Focus restoration
-                'delta': [285, 528],          // Healing and balance
-                'theta': [852, 528, 639],     // Spiritual and heart connection
-                'alpha': [528, 639, 432],     // Love, harmony, universal tuning
-                'high_alpha': [528, 741],     // Enhanced focus with intuition
-                'beta': [741, 528, 417],      // Problem-solving and transformation
-                'gamma': [963, 852, 528],     // Divine consciousness and awareness
-                'balanced': [432, 528, 639]  // Universal harmony frequencies
-            };
 
-            // Get candidate frequencies for current state with fallback
-            const stateFreqs = stateFrequencyMap[brainState.state] || [528];
+            // ── Lo Shu mode: brain-state-nudged magic-square walk through all 27.
+            // The adaptation engine only calls this once it has decided to move
+            // (state shifted past threshold), so stepping one palace per call IS
+            // the nudge; high field coherence holds the current step.
+            if (solfeggioSettings.frequencyMode === 'loshu') {
+                return nextLoShuFrequency();
+            }
+
+            console.log('🎯 Selecting frequency for brain state:', brainState);
+
+            // ── Solfeggio mode: brain-state-adaptive across ALL 27. Candidates are
+            // a neighborhood centered on the live resonance position (the placement
+            // engine), so selection tracks brain state across the full spectrum
+            // instead of the old GUT-only (174-963) map. The scoring below then
+            // personalizes and adds variety within that neighborhood.
+            const centerPos = (currentAetheriaPosition && typeof currentAetheriaPosition.stateIdx === 'number')
+                ? currentAetheriaPosition.stateIdx
+                : getAetheriaState((eegData && eegData.bandpowers) || {});
+            const NEIGHBORHOOD = 2; // ±2 positions around the resonance center
+            const centerFreq = AETHERIA_FREQUENCIES[centerPos].freq;
+            const stateFreqs = [];
+            for (let p = Math.max(0, centerPos - NEIGHBORHOOD); p <= Math.min(26, centerPos + NEIGHBORHOOD); p++) {
+                stateFreqs.push(AETHERIA_FREQUENCIES[p].freq);
+            }
             console.log('🎵 DETAILED FREQUENCY SELECTION:', {
                 brainState: brainState.state,
                 description: brainState.description,
                 confidence: brainState.confidence,
+                resonancePos: centerPos,
                 candidateFreqs: stateFreqs,
-                currentFreq: solfeggioSettings.currentFrequency,
-                stateFrequencyMap: stateFrequencyMap
+                currentFreq: solfeggioSettings.currentFrequency
             });
             
             // Score each candidate frequency
@@ -13287,7 +13557,12 @@ Use this data to personalize your response. Comment on their current state when 
                 
                 // Base score for state match
                 score += 10;
-                
+
+                // Strong bias toward the exact resonance-position frequency, so
+                // selection centers on the live brain state but can drift to a
+                // neighbor for variety.
+                if (freq === centerFreq) score += 8;
+
                 // Personalization based on session history
                 if (solfeggioSettings.adaptationHistory.length > 0) {
                     const successRate = calculateFrequencySuccessRate(freq);

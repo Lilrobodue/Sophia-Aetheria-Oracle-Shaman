@@ -2560,7 +2560,14 @@ return result;</textarea>
                         <button id="modeSolfeggioBtn" class="btn btn-small" onclick="setFrequencyMode('solfeggio')" style="padding: 4px 12px; border-radius: 0; background: #2a6e4f; color: #fff;">🎵 Solfeggio</button>
                         <button id="modeLoShuBtn" class="btn btn-small" onclick="setFrequencyMode('loshu')" style="padding: 4px 12px; border-radius: 0; background: transparent; color: #aaa;">洛書 Lo Shu</button>
                     </div>
-                    <button id="loShuWalkBtn" class="btn btn-small btn-secondary" onclick="cycleLoShuWalk()" style="padding: 4px 10px; display: none;">洛書 Ascent</button>
+                    <select id="loShuWalkSelect" onchange="selectLoShuWalk(this.value)" title="Choose a Lo Shu walk path" style="padding: 4px 8px; display: none; background:#1a1622; color:#cbb6e6; border:1px solid #6b4fa0; border-radius:6px; font-size:0.8rem;">
+                        <option value="A">洛書 Layer Ascent · ground before you rise (27)</option>
+                        <option value="B">洛書 Pillar Walk · integrate each quality (27)</option>
+                        <option value="C">洛書 Flying Star Vortex · emanate from the heart (27)</option>
+                        <option value="CAB">洛書 Calling a CAB · the cube from every angle (81)</option>
+                        <option value="O">洛書 Ouroboros ♾️ · crosses SOURCE ×3 (29)</option>
+                        <option value="CABI">洛書 Calling a CABI · the full circuit (110)</option>
+                    </select>
                     <span id="frequencyModeHint" style="font-size: 0.72rem; color: #888;">Brain-adaptive across all 27 frequencies</span>
                 </div>
 
@@ -4882,14 +4889,25 @@ return result;</textarea>
         const LOSHU_WALK_CAB  = [...LOSHU_WALK_C, ...LOSHU_WALK_A, ...LOSHU_WALK_B];
         const LOSHU_WALK_CABI = [...LOSHU_WALK_CAB, ...LOSHU_WALK_O];
         const LOSHU_WALKS = {
-            A:    {name:'Ascent',    seq: LOSHU_WALK_A},
-            B:    {name:'Pillar',    seq: LOSHU_WALK_B},
-            C:    {name:'Vortex',    seq: LOSHU_WALK_C},
-            CAB:  {name:'CAB',       seq: LOSHU_WALK_CAB},
-            O:    {name:'Ouroboros', seq: LOSHU_WALK_O},
-            CABI: {name:'CABI',      seq: LOSHU_WALK_CABI},
+            A:    {name:'Ascent',    label:'Layer Ascent',       sub:'Ground before you rise',                seq: LOSHU_WALK_A},
+            B:    {name:'Pillar',    label:'Pillar Walk',        sub:'Integrate each quality fully',          seq: LOSHU_WALK_B},
+            C:    {name:'Vortex',    label:'Flying Star Vortex', sub:'Emanate from the heart',                seq: LOSHU_WALK_C},
+            CAB:  {name:'CAB',       label:'Calling a CAB',      sub:'Vortex→Ascent→Pillar · every angle',    seq: LOSHU_WALK_CAB},
+            O:    {name:'Ouroboros', label:'Ouroboros ♾️',       sub:'Closed figure-8 · crosses SOURCE ×3',   seq: LOSHU_WALK_O},
+            CABI: {name:'CABI',      label:'Calling a CABI',     sub:'CAB then Ouroboros · the full circuit', seq: LOSHU_WALK_CABI},
         };
         const LOSHU_WALK_ORDER = ['A', 'B', 'C', 'CAB', 'O', 'CABI']; // cycle order
+
+        // Octave-shift ANY frequency down into the sub-bass band (20–60 Hz) so the
+        // tones are felt in the body rather than heard — same digit-root "message",
+        // gentler on the ears. Every live tone path routes through this (the
+        // diagnostic "Test" buttons stay at true pitch for speaker checks).
+        function toSubBass(freq) {
+            let f = freq;
+            while (f > 60) f /= 2;
+            while (f < 20) f *= 2;
+            return f;
+        }
 
         // The 9 Lo Shu position-locked triads (one GUT + HEART + HEAD per palace).
         const LOSHU_TRIADS = [
@@ -7514,14 +7532,8 @@ return result;</textarea>
                                 };
                             }
 
-                            // Octave-shift frequencies above 963Hz down to sub-bass range (20-60Hz)
-                            function toSubBass(freq) {
-                                if (freq <= 963) return freq;
-                                let f = freq;
-                                while (f > 60) f /= 2;
-                                while (f < 20) f *= 2;
-                                return f;
-                            }
+                            // toSubBass() is defined globally — octave-shifts every
+                            // frequency into the 20–60 Hz felt-not-heard band.
 
                             function playFrequency(context, freq, dur, wave) {
                                 try {
@@ -12117,8 +12129,8 @@ Use this data to personalize your response. Comment on their current state when 
 
             // Frequency mode toggle — reflect saved state without firing a toast.
             solfeggioSettings.loShuWalk = config.loShuWalk || 'A';
-            const _walkBtn = document.getElementById('loShuWalkBtn');
-            if (_walkBtn) _walkBtn.textContent = '洛書 ' + (LOSHU_WALKS[solfeggioSettings.loShuWalk] || LOSHU_WALKS.A).name;
+            const _walkSel = document.getElementById('loShuWalkSelect');
+            if (_walkSel) _walkSel.value = solfeggioSettings.loShuWalk;
             setFrequencyMode(config.frequencyMode || 'solfeggio', true);
 
             // Update solfeggio display
@@ -12506,7 +12518,7 @@ Use this data to personalize your response. Comment on their current state when 
             // Reflect in the segmented toggle.
             const sBtn = document.getElementById('modeSolfeggioBtn');
             const lBtn = document.getElementById('modeLoShuBtn');
-            const walkBtn = document.getElementById('loShuWalkBtn');
+            const walkSel = document.getElementById('loShuWalkSelect');
             const hint = document.getElementById('frequencyModeHint');
             if (sBtn && lBtn) {
                 const on = '#2a6e4f', onLo = '#6b4fa0';
@@ -12515,7 +12527,10 @@ Use this data to personalize your response. Comment on their current state when 
                 lBtn.style.background = mode === 'loshu' ? onLo : 'transparent';
                 lBtn.style.color = mode === 'loshu' ? '#fff' : '#aaa';
             }
-            if (walkBtn) walkBtn.style.display = mode === 'loshu' ? 'inline-block' : 'none';
+            if (walkSel) {
+                walkSel.style.display = mode === 'loshu' ? 'inline-block' : 'none';
+                walkSel.value = solfeggioSettings.loShuWalk || 'A';
+            }
             if (hint) hint.textContent = mode === 'loshu'
                 ? 'Magic-square walk — holds when coherent, steps when state shifts'
                 : 'Brain-adaptive across all 27 frequencies';
@@ -12532,19 +12547,26 @@ Use this data to personalize your response. Comment on their current state when 
             updateSolfeggioDisplay();
         }
 
-        // Cycle the active Lo Shu walk: Ascent → Pillar → Vortex → …
+        // Set the active Lo Shu walk from the dropdown selector.
+        function selectLoShuWalk(key) {
+            if (!LOSHU_WALKS[key]) key = 'A';
+            solfeggioSettings.loShuWalk = key;
+            solfeggioSettings.loShuIndex = 0; // restart the walk from step 0
+            const walk = LOSHU_WALKS[key];
+            const walkSel = document.getElementById('loShuWalkSelect');
+            if (walkSel) walkSel.value = key;
+            config.loShuWalk = key;
+            localStorage.setItem('sophiaUnifiedConfig', JSON.stringify(config));
+            showStatus('洛書 Lo Shu · ' + (walk.label || walk.name) + ' — ' + walk.sub, 'success');
+            updateSolfeggioDisplay();
+            updateNeuroMiniDisplay();
+        }
+
+        // Cycle the active Lo Shu walk: Ascent → Pillar → Vortex → … (delegates to selectLoShuWalk).
         function cycleLoShuWalk() {
             const order = LOSHU_WALK_ORDER;
             const i = order.indexOf(solfeggioSettings.loShuWalk);
-            solfeggioSettings.loShuWalk = order[(i + 1) % order.length];
-            solfeggioSettings.loShuIndex = 0;
-            const walk = LOSHU_WALKS[solfeggioSettings.loShuWalk];
-            const walkBtn = document.getElementById('loShuWalkBtn');
-            if (walkBtn) walkBtn.textContent = '洛書 ' + walk.name;
-            config.loShuWalk = solfeggioSettings.loShuWalk;
-            localStorage.setItem('sophiaUnifiedConfig', JSON.stringify(config));
-            showStatus('洛書 Lo Shu · ' + walk.name + ' walk', 'success');
-            updateSolfeggioDisplay();
+            selectLoShuWalk(order[(i + 1) % order.length]);
         }
 
         // Update the header mini display
@@ -14535,8 +14557,9 @@ Use this data to personalize your response. Comment on their current state when 
                 // Create oscillator for the solfeggio frequency
                 solfeggioSettings.oscillator = solfeggioSettings.audioContext.createOscillator();
                 solfeggioSettings.oscillator.type = 'sine';
-                solfeggioSettings.oscillator.frequency.setValueAtTime(frequency, solfeggioSettings.audioContext.currentTime);
-                
+                // Felt, not heard — octave-shift into the sub-bass band (20–60 Hz).
+                solfeggioSettings.oscillator.frequency.setValueAtTime(toSubBass(frequency), solfeggioSettings.audioContext.currentTime);
+
                 // Connect oscillator to gain node
                 solfeggioSettings.oscillator.connect(solfeggioSettings.gainNode);
                 
@@ -14571,7 +14594,8 @@ Use this data to personalize your response. Comment on their current state when 
                     console.log('🎵 FIXED: Oscillator ended naturally, cleaning up...');
                     
                     // Only cleanup if this is still the current oscillator
-                    if (solfeggioSettings.oscillator && solfeggioSettings.oscillator.frequency.value === frequency) {
+                    // (compare against the sub-bass-shifted value actually set above).
+                    if (solfeggioSettings.oscillator && solfeggioSettings.oscillator.frequency.value === toSubBass(frequency)) {
                         try {
                             solfeggioSettings.oscillator.disconnect();
                             console.log('✅ FIXED: Oscillator disconnected cleanly');

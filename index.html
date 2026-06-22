@@ -1581,7 +1581,7 @@
                     Export
                 </button>
             </div>
-            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v53</div>
+            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v54</div>
             </div><!-- end sidebar-scroll -->
         </div>
 
@@ -3061,6 +3061,12 @@ return result;</textarea>
                         const metrics = self.calculateMetricsFromRealData(bandpowers);
                         const spiral = self._updateSpiralMetrics(Date.now());
 
+                        // Derive real quality metrics from the buffered core EEG
+                        // (filled by onEEG) instead of hardcoding them, so the
+                        // Data Quality panel reflects the live Athena signal.
+                        const contact = self.computeRealContactQuality();
+                        const connectedElectrodes = contact.connected;
+
                         const processedData = {
                             bandpowers: bandpowers,
                             metrics: metrics,
@@ -3069,9 +3075,18 @@ return result;</textarea>
                             raw_eeg: self._athenaLatestRaw || [0, 0, 0, 0, 0, 0, 0, 0],
                             timestamp: Date.now(),
                             source: 'athena_bluetooth',
-                            connected_electrodes: ['TP9', 'AF7', 'AF8', 'TP10', 'AUX1', 'AUX2', 'AUX3', 'AUX4'],
-                            dataQuality: 'GOOD',
-                            realDataConfidence: 0.9,
+                            connected_electrodes: connectedElectrodes,
+                            dataQuality: connectedElectrodes.length
+                                ? self.assessDataQuality(connectedElectrodes)
+                                : 'NO_DATA',
+                            realDataConfidence: connectedElectrodes.length
+                                ? self.calculateRealDataConfidence(connectedElectrodes)
+                                : 0,
+                            headsetStatus: {
+                                isOnHead: true,
+                                contactQuality: contact.average,
+                                electrodes: { ...contact.perElectrode }
+                            },
                             fnirs: self.athenaFNIRS || null,
                             ppg: self.athenaPPG || null
                         };
@@ -3908,7 +3923,11 @@ return result;</textarea>
                     // Spiral wave metrics (PLV matrix, phase-lag direction, HCR).
                     // Needs all four channels and the raw time series; throttled.
                     this._updateSpiralMetrics(Date.now());
-                    
+
+                    // Real contact quality from the live signal (averageContactQuality
+                    // is otherwise never recomputed and would report a stale value).
+                    const contact = this.computeRealContactQuality();
+
                     // Create processed data object
                     const processedData = {
                         bandpowers: avgBandpowers,
@@ -3926,11 +3945,11 @@ return result;</textarea>
                         realDataConfidence: this.calculateRealDataConfidence(connectedElectrodes),
                         headsetStatus: {
                             isOnHead: true,
-                            contactQuality: this.headsetStatus.averageContactQuality,
-                            electrodes: { ...this.headsetStatus.electrodeContactQuality }
+                            contactQuality: contact.average,
+                            electrodes: { ...contact.perElectrode }
                         }
                     };
-                    
+
                     // Emit real data event
                     this.dispatchEvent(new CustomEvent('data', {
                         detail: processedData
@@ -4222,6 +4241,55 @@ return result;</textarea>
             }
             
             // Assess overall data quality
+            // Compute real per-electrode contact quality, the list of channels
+            // actually carrying signal, and the average — straight from the
+            // buffered core EEG. Used by both the Muse 2 and Athena data paths so
+            // the Data Quality panel reflects the live signal rather than a
+            // hardcoded/stuck value. Scores each electrode with the same
+            // signal-health checks as assessDataQuality().
+            computeRealContactQuality() {
+                const core = ['TP9', 'AF7', 'AF8', 'TP10'];
+                const perElectrode = {};
+                const connected = [];
+                let qualitySum = 0;
+
+                for (const electrode of core) {
+                    const samples = this.realEEGData[electrode];
+                    if (!Array.isArray(samples) || samples.length < 64) {
+                        perElectrode[electrode] = 0;
+                        continue;
+                    }
+
+                    const recent = samples.slice(-256);
+                    const mean = recent.reduce((a, b) => a + b, 0) / recent.length;
+                    const variance = recent.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / recent.length;
+
+                    const checks = {
+                        hasVariance: variance > 50,
+                        notSaturated: recent.every(s => Math.abs(s) < 1500),
+                        notFlat: recent.some((s, i) => i > 0 && Math.abs(s - recent[i - 1]) > 5),
+                        reasonableRange: recent.every(s => Math.abs(s) > 0.1)
+                    };
+
+                    const passed = Object.values(checks).filter(Boolean).length;
+                    const quality = passed / Object.keys(checks).length;
+                    perElectrode[electrode] = quality;
+
+                    if (quality > 0) {
+                        connected.push(electrode);
+                        qualitySum += quality;
+                    }
+                }
+
+                const average = connected.length ? qualitySum / connected.length : 0;
+
+                // Keep headsetStatus in sync so any other consumer sees real values.
+                this.headsetStatus.electrodeContactQuality = perElectrode;
+                this.headsetStatus.averageContactQuality = average;
+
+                return { perElectrode, connected, average };
+            }
+
             assessDataQuality(connectedElectrodes) {
                 if (connectedElectrodes.length === 0) return 'NO_DATA';
                 

@@ -1581,7 +1581,7 @@
                     Export
                 </button>
             </div>
-            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v51</div>
+            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v52</div>
             </div><!-- end sidebar-scroll -->
         </div>
 
@@ -4851,17 +4851,31 @@ return result;</textarea>
         //  is why the 3-6-9 frequencies fall on the magic-square palaces.)
         const POS_DIR = {1:'N', 2:'SW', 3:'E', 4:'SE', 5:'Center', 6:'NW', 7:'W', 8:'NE', 9:'S'};
 
+        // ── Perfect Lo Shu GUT row ──────────────────────────────────────────
+        // In Lo Shu mode the GUT layer switches from the standard solfeggio row
+        // to its "perfect" form: a clean 111-step arithmetic ladder whose digit
+        // roots run 3·6·9·3·6·9·3·6·9. Pull each solfeggio GUT value onto the
+        // ladder by:  pos 1-3 (174·285·396) −99 → 75·186·297;
+        //             pos 4-6 (417·528·639)  −9 → 408·519·630;
+        //             pos 7-9 (741·852·963) unchanged.
+        // HEART (1206-3150) and HEAD (3504-6336) are NOT offset — only GUT.
+        // Result: 75·186·297·408·519·630·741·852·963 (each +111 from the last).
+        const LOSHU_GUT_SWAP   = {174:75, 285:186, 396:297, 417:408, 528:519, 639:630};
+        const LOSHU_GUT_UNSWAP = {75:174, 186:285, 297:396, 408:417, 519:528, 630:639};
+        const toPerfectGut = f => LOSHU_GUT_SWAP[f] || f; // non-GUT passes through
+
         // Walk A — Layer Ascent: 1→9 through GUT, then HEART, then HEAD. Ground before you rise.
-        const LOSHU_WALK_A = [174,285,396,417,528,639,741,852,963, 1206,1449,1692,1935,2178,2421,2664,2907,3150, 3504,3858,4212,4566,4920,5274,5628,5982,6336];
+        const LOSHU_WALK_A = [174,285,396,417,528,639,741,852,963, 1206,1449,1692,1935,2178,2421,2664,2907,3150, 3504,3858,4212,4566,4920,5274,5628,5982,6336].map(toPerfectGut);
         // Walk B — Pillar Walk: for each position 1→9 play GUT→HEART→HEAD (nine vertical pillars).
-        const LOSHU_WALK_B = [174,1206,3504, 285,1449,3858, 396,1692,4212, 417,1935,4566, 528,2178,4920, 639,2421,5274, 741,2664,5628, 852,2907,5982, 963,3150,6336];
+        const LOSHU_WALK_B = [174,1206,3504, 285,1449,3858, 396,1692,4212, 417,1935,4566, 528,2178,4920, 639,2421,5274, 741,2664,5628, 852,2907,5982, 963,3150,6336].map(toPerfectGut);
         // Walk C — Flying Star Vortex: nine-palace path 5→6→7→8→9→1→2→3→4 per layer, center-outward.
-        const LOSHU_WALK_C = [528,639,741,852,963,174,285,396,417, 2178,2421,2664,2907,3150,1206,1449,1692,1935, 4920,5274,5628,5982,6336,3504,3858,4212,4566];
+        // (GUT center is 519 in perfect form — the solfeggio 528 −9.)
+        const LOSHU_WALK_C = [528,639,741,852,963,174,285,396,417, 2178,2421,2664,2907,3150,1206,1449,1692,1935, 4920,5274,5628,5982,6336,3504,3858,4212,4566].map(toPerfectGut);
         // Ouroboros — closed figure-8 through all 27, crossing SOURCE (2178 = HEART
         // pos 5) ×3: start, centre crossing, return. 29 steps. Two lobes (left/right
         // halves of the cube) traced in angular order; sequence computed from the
         // canonical RCT cube-path algorithm so the audio matches the 3D figure.
-        const LOSHU_WALK_O = [2178,396,417,852,174,528,963,1206,4212,4566,5982,1692,1935,2907, 2178, 3150,285,639,741,1449,2421,2664,3858,5274,5628,3504,4920,6336, 2178];
+        const LOSHU_WALK_O = [2178,396,417,852,174,528,963,1206,4212,4566,5982,1692,1935,2907, 2178, 3150,285,639,741,1449,2421,2664,3858,5274,5628,3504,4920,6336, 2178].map(toPerfectGut);
         // Composite walks. CAB = Vortex→Ascent→Pillar (81 = the cube from every
         // angle, 3 passes per frequency). CABI = CAB then Ouroboros (110 = full
         // circuit, then the loop home). SOURCE is visited 6× across CABI.
@@ -12196,6 +12210,15 @@ Use this data to personalize your response. Comment on their current state when 
                 position: f.pos
             };
         });
+        // Lo Shu mode plays the "perfect" GUT row (75/186/297/408/519/630 +
+        // the unchanged 741/852/963). Alias each perfect-GUT value onto its
+        // standard solfeggio twin's metadata so every solfeggioFrequencies[...]
+        // lookup resolves — the name shows the actual playing Hz.
+        Object.keys(LOSHU_GUT_UNSWAP).forEach(pf => {
+            const std = LOSHU_GUT_UNSWAP[pf];
+            const base = solfeggioFrequencies[std];
+            if (base) solfeggioFrequencies[pf] = { ...base, name: pf + ' Hz - ' + base.name.split(' - ').slice(1).join(' - ') };
+        });
 
         function updateSolfeggioSettings() {
             // Update settings from sliders
@@ -13500,7 +13523,10 @@ Use this data to personalize your response. Comment on their current state when 
 
         // Look up the Lo Shu position (1-9) + compass palace for a frequency.
         function loShuInfoForFreq(freq) {
-            const f = AETHERIA_FREQUENCIES.find(x => x.freq === freq);
+            // Perfect-GUT values (75/186/…) map back to their standard solfeggio
+            // twin so the metadata table (geometry/hexagram/keyword) still resolves.
+            const stdFreq = LOSHU_GUT_UNSWAP[freq] || freq;
+            const f = AETHERIA_FREQUENCIES.find(x => x.freq === stdFreq);
             if (!f) return null;
             const posInRegime = ((f.pos - 1) % 9) + 1; // 1-9 within the regime
             return { pos: posInRegime, dir: POS_DIR[posInRegime], regime: f.regime };

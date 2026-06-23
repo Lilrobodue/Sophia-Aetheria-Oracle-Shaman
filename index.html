@@ -1584,7 +1584,7 @@
                     Export
                 </button>
             </div>
-            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v58</div>
+            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v59</div>
             </div><!-- end sidebar-scroll -->
         </div>
 
@@ -5451,6 +5451,9 @@ return result;</textarea>
         }
         function captureResonanceBaseline() {
             resonanceBaseline = _resonanceSmoother.current();
+            // Capture the fNIRS variability baseline at the same (post-settle,
+            // tone-free) moment so settledness is self-calibrated per person.
+            if (typeof _fnirsIndex !== 'undefined') _fnirsIndex.captureBaseline();
             // Audit flag: the window was tone-suppressed, so the baseline is clean.
             // tonesActive reflects whether any adaptive tone actually played during
             // the window (false when suppression held, as designed).
@@ -5475,6 +5478,107 @@ return result;</textarea>
             if (!resonanceBaseline) return null;
             const now = _resonanceSmoother.current();
             return { from: resonanceBaseline.position, to: now.position, delta: now.position - resonanceBaseline.position };
+        }
+
+        // ═══════════════════════════════════════════════════════════════════
+        // fNIRS-DRIVEN PLACEMENT (candidate, Athena-only) — Selah's guide
+        // ───────────────────────────────────────────────────────────────────
+        // Finding (Athena block test, 2026-06-23): the rolling STD of ΔHbO
+        // ordered calm < focused < scattered ~3×, across all four optodes with
+        // clean SQI — where EEG coherence stayed flat. So fNIRS is used as a 1-D
+        // settledness/PACE axis only: the WALK owns the 27-position path; fNIRS
+        // gates dwell/advance. Baseline→endstate delta is the robust readout.
+        // CANDIDATE: gating defaults OFF, and EEG/old-resonance stay logged in
+        // parallel, so any EEG+fNIRS fusion is decided by data in verification —
+        // not guessed. A signal earns its weight by reproducible discrimination.
+        // ═══════════════════════════════════════════════════════════════════
+        const FNIRS_CFG = {
+            window: 20,            // rolling samples for the variability estimate (tune to fNIRS rate)
+            minSamples: 8,         // need this many good-SQI samples to emit an index
+            sqiMin: 0.7,           // drop samples below this signal quality
+            optodes: ['LI', 'RI'],  // inner optodes carried the largest, cleanest effect
+            scatterRatio: 3.0,     // ~3× baseline ≈ "scattered" (seed from one block — RE-TUNE in verification)
+        };
+        const GATE_CFG = {
+            enabled: false,        // DEFAULT OFF — flip true only after the verification gate clears the index
+            minDwellSec: 20,       // always hold a position at least this long
+            maxDwellSec: 90,       // advance no later than this (timeout)
+            timerDwellSec: 45,     // used when gating is off / fNIRS unavailable (fallback pacing)
+            settledThreshold: 0.35, // advance when settledness drops to/below this (re-tune in verification)
+        };
+        const _fnClamp = (x, a, b) => Math.max(a, Math.min(b, x));
+        const _fnStdev = a => { const m = a.reduce((s, v) => s + v, 0) / a.length;
+            return Math.sqrt(a.reduce((s, v) => s + (v - m) ** 2, 0) / a.length); };
+
+        // Rolling variability of prefrontal oxygenation. ΔHbO is baseline-relative
+        // (mean ≈ 0 by construction) so we use STD over a window, SQI-gated, and
+        // normalize against this session's tone-free baseline (self-calibrating).
+        class FnirsIndex {
+            constructor(cfg = FNIRS_CFG) { this.cfg = cfg; this.buf = []; this.baseline = null; }
+            push(sample) { if (!sample) return; this.buf.push(sample); if (this.buf.length > this.cfg.window) this.buf.shift(); }
+            current() {
+                if (this.buf.length < this.cfg.minSamples) return null;
+                const stds = [];
+                for (const opt of this.cfg.optodes) {
+                    const vals = this.buf.filter(s => s[opt] && s[opt].sqi >= this.cfg.sqiMin && s[opt].hbo != null)
+                                         .map(s => s[opt].hbo);
+                    if (vals.length >= this.cfg.minSamples) stds.push(_fnStdev(vals));
+                }
+                return stds.length ? stds.reduce((a, b) => a + b, 0) / stds.length : null; // null = no usable optode
+            }
+            captureBaseline() { this.baseline = this.current(); return this.baseline; }
+            settledness() { // 0 ≈ baseline-calm, 1 ≈ scattered-like; null when not computable
+                const v = this.current();
+                if (v == null || !this.baseline) return null;
+                const ratio = v / this.baseline;
+                return _fnClamp((ratio - 1) / (this.cfg.scatterRatio - 1), 0, 1);
+            }
+            reset() { this.buf = []; this.baseline = null; }
+        }
+        const _fnirsIndex = new FnirsIndex();
+        let _lastWalkAdvanceBy = null; // 'minDwell'|'timer'|'settled'|'timeout' — logged as advancedBy (Task 4)
+        // Per-frame raw fNIRS buffer for OFFLINE VERIFICATION replay. The 30s timeline
+        // only stores downsampled centers; this captures the actual per-update stream
+        // the live windowed index sees, so tools/fnirs_replay.mjs can replay it and the
+        // verification bootstrap has hundreds of samples instead of ~15. Dedup'd to
+        // genuine fNIRS updates, capped to bound export size. Athena-only.
+        const _fnirsRaw = [];
+        const FNIRS_RAW_CAP = 8000;
+
+        // Build a FnirsIndex sample from the live Athena optodes (representative
+        // center value per optode + SQI). Returns null off-Athena / when no fNIRS.
+        function _fnirsSampleFromLive() {
+            const f = (typeof eegIntegration !== 'undefined' && eegIntegration &&
+                       eegIntegration.lastConnectionMethod === 'athena') ? eegIntegration.athenaFNIRS : null;
+            if (!f) return null;
+            const s = {};
+            for (const opt of ['LI', 'RI', 'LO', 'RO']) {
+                if (f[opt]) s[opt] = { hbo: getFnirsCenter(f[opt].hbo), sqi: f[opt].sqi };
+            }
+            return Object.keys(s).length ? s : null;
+        }
+
+        // Walk-pacing gate (Task 2). Default OFF → existing/timer pacing (no behavior
+        // change). When ON (verification), advance once hemodynamics settle into the
+        // position. Returns {advance, by} where `by` is logged as advancedBy.
+        function shouldAdvanceWalk(dwellSec, cfg = GATE_CFG) {
+            if (dwellSec < cfg.minDwellSec) return { advance: false, by: 'minDwell' };
+            if (dwellSec >= cfg.maxDwellSec) return { advance: true, by: 'timeout' };
+            if (!cfg.enabled) return { advance: dwellSec >= cfg.timerDwellSec, by: 'timer' };
+            const s = _fnirsIndex.settledness();
+            if (s == null) return { advance: dwellSec >= cfg.timerDwellSec, by: 'timer' };
+            return { advance: s <= cfg.settledThreshold, by: 'settled' };
+        }
+
+        // Baseline→endstate delta — the robust readout (did the session settle the
+        // hemodynamics?). Surfaced prominently in the session summary.
+        function fnirsSessionDelta() {
+            const end = _fnirsIndex.current();
+            const r6 = x => Math.round(x * 1e6) / 1e6;
+            return (_fnirsIndex.baseline != null && end != null)
+                ? { baselineVar: r6(_fnirsIndex.baseline), endVar: r6(end),
+                    delta: r6(end - _fnirsIndex.baseline), settledMore: end < _fnirsIndex.baseline }
+                : null;
         }
 
         // Set window.AETH_DEBUG = true in the console to stream the live inputs,
@@ -11818,6 +11922,8 @@ Use this data to personalize your response. Comment on their current state when 
                     resonanceBaselineMeta = null;
                     _baselineSuppressedTones = 0;
                     _baselineSettleStart = null; // restart the settle clock for this connection
+                    _fnirsIndex.reset();         // fresh fNIRS variability window + baseline per connection
+                    _fnirsRaw.length = 0;        // fresh per-frame replay buffer per connection
                     _aethScoreMin = Infinity; _aethScoreMax = -Infinity;
                     // Re-arm any Lo Shu walk from step 0 for the new session.
                     solfeggioSettings.loShuIndex = 0;
@@ -11949,6 +12055,23 @@ Use this data to personalize your response. Comment on their current state when 
                     updateEEGHeaderIndicator(true, true);
                     updateNeuroMiniDisplay();
                     updateAthenaPanel();
+
+                    // fNIRS settledness index — feed a sample every frame (no-op
+                    // off-Athena / when no optodes). PACE signal only; see guide.
+                    const _fnSample = _fnirsSampleFromLive();
+                    _fnirsIndex.push(_fnSample);
+                    // Log the per-frame stream for offline replay, dedup'd to genuine
+                    // fNIRS updates (consecutive data events can carry the same optode
+                    // values between processInterval ticks — duplicates would distort
+                    // the variability estimate).
+                    if (_fnSample) {
+                        const _last = _fnirsRaw.length ? _fnirsRaw[_fnirsRaw.length - 1] : null;
+                        const _liNow = _fnSample.LI ? _fnSample.LI.hbo : null;
+                        if (!_last || (_last.s.LI ? _last.s.LI.hbo : null) !== _liNow) {
+                            _fnirsRaw.push({ t: Date.now(), s: _fnSample });
+                            if (_fnirsRaw.length > FNIRS_RAW_CAP) _fnirsRaw.shift();
+                        }
+                    }
 
                     // Sleep mode data accumulation (use summaries, not raw arrays)
                     if (sleepMode.active && event.detail.bandpowers) {
@@ -13418,8 +13541,20 @@ Use this data to personalize your response. Comment on their current state when 
             solfeggioSettings.stateConfidence = stateConfidence;
             
             // Determine if adaptation is needed based on multiple factors
-            const shouldAdapt = evaluateAdaptationNeed(brainState, stateConfidence, currentTime);
-            
+            let shouldAdapt = evaluateAdaptationNeed(brainState, stateConfidence, currentTime);
+
+            // ── fNIRS-gated walk pacing (Task 2) — Lo Shu mode only, default OFF ──
+            // The WALK owns the path; fNIRS only paces dwell/advance. When
+            // GATE_CFG.enabled is false (default), this is a NO-OP and the walk
+            // paces exactly as before. When enabled (verification), advance is
+            // driven by hemodynamic settledness (min/max dwell bounded).
+            if (solfeggioSettings.frequencyMode === 'loshu' && GATE_CFG.enabled && !solfeggioSettings.loShuComplete) {
+                const dwellSec = (currentTime - (solfeggioSettings.currentFrequencyStartTime || currentTime)) / 1000;
+                const gate = shouldAdvanceWalk(dwellSec);
+                _lastWalkAdvanceBy = gate.by;
+                shouldAdapt = { adapt: gate.advance, reason: 'fnirs-gate:' + gate.by };
+            }
+
             console.log('🧠 FIXED Intelligent monitoring:', {
                 brainState: brainState.state,
                 confidence: (stateConfidence * 100).toFixed(1) + '%',
@@ -15660,6 +15795,18 @@ Use this data to personalize your response. Comment on their current state when 
                 timelineEntry.resonanceScore = Math.round(p.score * 100) / 100;
                 timelineEntry.rescale = activeRescale();
             }
+            // fNIRS pace-axis instrumentation (Task 4). Logged in parallel with the
+            // EEG/resonance score so the fusion question is answerable from data.
+            // null off-Athena / before the window fills — that's expected.
+            const _fnIdx = _fnirsIndex.current();
+            if (_fnIdx != null) {
+                timelineEntry.fnirsIndex = Math.round(_fnIdx * 1e6) / 1e6;
+                const _fnSet = _fnirsIndex.settledness();
+                if (_fnSet != null) timelineEntry.fnirsSettledness = Math.round(_fnSet * 1000) / 1000;
+                if (_fnirsIndex.baseline != null) timelineEntry.fnirsBaselineVar = Math.round(_fnirsIndex.baseline * 1e6) / 1e6;
+            }
+            timelineEntry.dwellSec = Math.round((Date.now() - (solfeggioSettings.currentFrequencyStartTime || Date.now())) / 1000);
+            if (_lastWalkAdvanceBy) timelineEntry.advancedBy = _lastWalkAdvanceBy;
             // Include spiral wave metrics snapshot if available
             if (currentEEGData.spiral && eegIntegration && eegIntegration.spiralAnalyzer) {
                 timelineEntry.spiral = eegIntegration.spiralAnalyzer.summarize(currentEEGData.spiral);
@@ -15776,13 +15923,34 @@ Use this data to personalize your response. Comment on their current state when 
                 };
             }
 
+            // fNIRS pace-axis summary (Task 3/4): baseline→endstate delta (the
+            // robust readout — did the session settle the hemodynamics?) plus the
+            // index distribution. delta from the live index; min/median/max from
+            // the logged per-point values. Null/absent off-Athena.
+            let fnirs = null;
+            const fIdx = tl.map(e => e.fnirsIndex).filter(v => typeof v === 'number' && isFinite(v)).sort((a, b) => a - b);
+            const fDelta = (typeof fnirsSessionDelta === 'function') ? fnirsSessionDelta() : null;
+            if (fIdx.length || fDelta) {
+                const mid = fIdx.length >> 1;
+                fnirs = {
+                    delta: fDelta,
+                    index: fIdx.length ? {
+                        min: Math.round(fIdx[0] * 1e6) / 1e6,
+                        median: Math.round((fIdx.length % 2 ? fIdx[mid] : (fIdx[mid - 1] + fIdx[mid]) / 2) * 1e6) / 1e6,
+                        max: Math.round(fIdx[fIdx.length - 1] * 1e6) / 1e6,
+                        samples: fIdx.length,
+                    } : null,
+                    gateEnabled: GATE_CFG.enabled,
+                };
+            }
+
             return {
                 durationMin: Math.round(durationMin * 10) / 10, dataPoints: n,
                 regimePct, topPositions, meanBands,
                 meanCoherence: Math.round(avg(e => e.coherence)),
                 meanFocus: Math.round(avg(e => e.focus)),
                 meanMeditation: Math.round(avg(e => e.meditation)),
-                alphaTrend, cohTrend, spiral, resonanceScore, artifactPct
+                alphaTrend, cohTrend, spiral, resonanceScore, fnirs, artifactPct
             };
         }
 
@@ -16288,6 +16456,15 @@ Use this data to personalize your response. Comment on their current state when 
                     bandPowers: eegIntegration._athenaDevice ? eegIntegration._athenaDevice.bandPowers : null,
                 } : undefined,
                 deviceType: (deviceIdent && deviceIdent.type) || eegIntegration?.lastConnectionMethod || 'unknown',
+                // Per-frame fNIRS stream for offline verification (tools/fnirs_replay.mjs).
+                // Compact columnar form to bound size. Present only on Athena sessions.
+                fnirsRaw: _fnirsRaw.length ? {
+                    columns: ['t_ms', 'LI_hbo', 'LI_sqi', 'RI_hbo', 'RI_sqi', 'LO_hbo', 'LO_sqi', 'RO_hbo', 'RO_sqi'],
+                    samples: _fnirsRaw.map(r => {
+                        const g = o => r.s[o] ? [Math.round(r.s[o].hbo * 1e4) / 1e4, Math.round(r.s[o].sqi * 1e3) / 1e3] : [null, null];
+                        return [r.t, ...g('LI'), ...g('RI'), ...g('LO'), ...g('RO')];
+                    }),
+                } : undefined,
                 frequencyReference: AETHERIA_FREQUENCIES.map(f => ({
                     pos: f.pos, freq: f.freq, regime: f.regime,
                     geo: f.geo, state: f.state, keyword: f.keyword,
@@ -16328,7 +16505,8 @@ Use this data to personalize your response. Comment on their current state when 
                     'fnirs_LI_hbo', 'fnirs_LI_hbr', 'fnirs_LI_sqi',
                     'fnirs_RI_hbo', 'fnirs_RI_hbr', 'fnirs_RI_sqi',
                     'fnirs_LO_hbo', 'fnirs_LO_hbr', 'fnirs_LO_sqi',
-                    'fnirs_RO_hbo', 'fnirs_RO_hbr', 'fnirs_RO_sqi');
+                    'fnirs_RO_hbo', 'fnirs_RO_hbr', 'fnirs_RO_sqi',
+                    'fnirs_index', 'fnirs_settledness', 'dwell_sec', 'advanced_by');
             }
 
             const rows = [headers.join(',')];
@@ -16349,6 +16527,7 @@ Use this data to personalize your response. Comment on their current state when 
                             row.push('', '', '');
                         }
                     }
+                    row.push(e.fnirsIndex ?? '', e.fnirsSettledness ?? '', e.dwellSec ?? '', e.advancedBy ?? '');
                 }
                 rows.push(row.join(','));
             }
@@ -16380,6 +16559,10 @@ Use this data to personalize your response. Comment on their current state when 
                                 summaryRow.push('', '', '');
                             }
                         }
+                        const _liveIdx = _fnirsIndex.current();
+                        const _liveSet = _fnirsIndex.settledness();
+                        summaryRow.push(_liveIdx != null ? Math.round(_liveIdx * 1e6) / 1e6 : '',
+                                        _liveSet != null ? Math.round(_liveSet * 1000) / 1000 : '', '', '');
                     }
                     rows.push(summaryRow.join(','));
                 }

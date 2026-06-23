@@ -1581,7 +1581,7 @@
                     Export
                 </button>
             </div>
-            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v55</div>
+            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v56</div>
             </div><!-- end sidebar-scroll -->
         </div>
 
@@ -3741,13 +3741,38 @@ return result;</textarea>
             // spread evenly, often with a 60 Hz mains spike. Returns the log-log
             // slope, low-frequency power ratio, a 60 Hz line-noise ratio, and an
             // eegLike verdict.
+            // Remove the least-squares linear trend (DC offset + slow drift) from a
+            // window. Subtracting only the mean leaves a within-window drift/ramp,
+            // which dumps power into the low bins, flattens the apparent 1/f slope
+            // and inflates RMS — making real EEG fail the eegLike test. A proper
+            // detrend before measuring slope/RMS is the standard fix (Selah, 2026-06).
+            _detrendLinear(w) {
+                const n = w.length;
+                if (n < 2) return Array.prototype.slice.call(w);
+                let sx = 0, sy = 0, sxx = 0, sxy = 0;
+                for (let i = 0; i < n; i++) { sx += i; sy += w[i]; sxx += i * i; sxy += i * w[i]; }
+                const denom = n * sxx - sx * sx;
+                const slope = denom !== 0 ? (n * sxy - sx * sy) / denom : 0;
+                const intercept = (sy - slope * sx) / n;
+                const out = new Array(n);
+                for (let i = 0; i < n; i++) out[i] = w[i] - (slope * i + intercept);
+                return out;
+            }
+
             analyzeChannelSpectrum(samples) {
                 if (!samples || samples.length < 128) return null;
                 const w = samples.slice(-256);
                 const N = w.length;
-                const mean = w.reduce((a, b) => a + b, 0) / N;
-                // Detrend + Hamming window before the periodogram.
-                const win = w.map((s, i) => (s - mean) * (0.54 - 0.46 * Math.cos(2 * Math.PI * i / (N - 1))));
+                // Linear detrend (removes DC + drift) before the periodogram, so the
+                // slope/RMS reflect the EEG, not a baseline ramp. Then Hamming window.
+                const d = this._detrendLinear(w);
+                const win = d.map((s, i) => s * (0.54 - 0.46 * Math.cos(2 * Math.PI * i / (N - 1))));
+                // RMS on the detrended signal — if this collapses vs the raw RMS the
+                // amplitude was drift/common-mode; if it stays high it's genuine
+                // broadband (EMG/poor contact). Surfaced to tell the two apart.
+                let sv = 0;
+                for (let i = 0; i < N; i++) sv += d[i] * d[i];
+                const rmsDetrended = Math.sqrt(sv / N);
                 const ps = this.calculatePowerSpectrum(win, N); // power per bin, length ~N/2
                 const freqRes = 256 / N; // Hz per bin
 
@@ -3783,6 +3808,7 @@ return result;</textarea>
                     slope: Math.round(slope * 100) / 100,
                     lowFreqRatio: Math.round(lowFreqRatio * 100) / 100,
                     lineNoiseRatio: Math.round(lineNoiseRatio * 100) / 100,
+                    rmsDetrended: Math.round(rmsDetrended * 1000) / 1000,
                     eegLike: eegLike,
                 };
             }
@@ -3804,7 +3830,12 @@ return result;</textarea>
                         const mean = w.reduce((a, b) => a + b, 0) / w.length;
                         const varc = w.reduce((s, v) => s + (v - mean) * (v - mean), 0) / w.length;
                         const rms = Math.sqrt(varc);
-                        stats[ch] = { rms: Math.round(rms * 1000) / 1000, samples: w.length, active: rms > 1e-3, spectrum: this.analyzeChannelSpectrum(w) };
+                        const spectrum = this.analyzeChannelSpectrum(w);
+                        stats[ch] = {
+                            rms: Math.round(rms * 1000) / 1000,
+                            rmsDetrended: spectrum ? spectrum.rmsDetrended : null,
+                            samples: w.length, active: rms > 1e-3, spectrum: spectrum
+                        };
                     } else {
                         stats[ch] = { rms: 0, samples: buf ? buf.length : 0, active: false, spectrum: null };
                     }
@@ -3877,6 +3908,34 @@ return result;</textarea>
                     verdict = 'AUX channels mirror the scalp electrodes (reference/derived) — no new information.';
                 }
 
+                // Signal-quality tell (Selah, 2026-06): when the scalp channels are
+                // active but none look EEG-like AND their amplitudes are near-
+                // identical, a common-mode component (reference drift / poor contact)
+                // is swamping the real signal — four independent cortical sites would
+                // not match within a couple percent. Surface it as actionable guidance
+                // rather than a silent eegLike:false. rmsDetrended (per channel) tells
+                // drift from EMG: if it collapsed vs rms the amplitude was drift.
+                let signalQuality = null;
+                const liveScalp = main.filter(ch => stats[ch] && stats[ch].active && stats[ch].spectrum);
+                if (scalpCaptured && liveScalp.length >= 2) {
+                    const anyEegLike = liveScalp.some(ch => stats[ch].spectrum.eegLike);
+                    const rmsVals = liveScalp.map(ch => stats[ch].rms);
+                    const mRms = rmsVals.reduce((a, b) => a + b, 0) / rmsVals.length;
+                    const sdRms = Math.sqrt(rmsVals.reduce((a, b) => a + (b - mRms) * (b - mRms), 0) / rmsVals.length);
+                    const cv = mRms > 0 ? sdRms / mRms : 1; // coefficient of variation across electrodes
+                    const nearIdentical = cv < 0.05;        // <5% spread between supposedly independent sites
+                    signalQuality = {
+                        eegLikeChannels: liveScalp.filter(ch => stats[ch].spectrum.eegLike),
+                        rmsSpreadCV: Math.round(cv * 1000) / 1000,
+                        commonModeSuspected: !anyEegLike && nearIdentical,
+                    };
+                    if (!anyEegLike) {
+                        verdict += nearIdentical
+                            ? ' ⚠️ Signal check: none of the scalp channels look EEG-like and their amplitudes are near-identical (≈ common-mode / reference drift). Re-seat the band, wet the temporal sensors, sit still and get off mains power before trusting placements.'
+                            : ' ⚠️ Signal check: scalp channels are active but not yet EEG-like (flat 1/f) — likely contact or drift. Re-seat and wet the sensors.';
+                    }
+                }
+
                 const ident = (typeof this.getDeviceIdentity === 'function') ? this.getDeviceIdentity() : null;
                 const result = {
                     timestamp: Date.now(),
@@ -3885,6 +3944,7 @@ return result;</textarea>
                     deviceWarning: ident ? ident.warning : null,
                     scalpCaptured: scalpCaptured,
                     scalpActive: scalpActive,
+                    signalQuality: signalQuality,
                     stats: stats,
                     auxCorr: auxCorr,
                     lineNoise: lineNoise,
@@ -15512,8 +15572,16 @@ Use this data to personalize your response. Comment on their current state when 
             html += '<div style="font-weight:600;color:#4A7C59;margin:8px 0 4px;">Scalp electrodes (reference baseline)</div>';
             main.forEach(ch => {
                 const s = d.stats[ch];
-                html += `<div>${dot(s.active)} <strong>${ch}</strong> — RMS ${s.rms}<br><span style="margin-left:16px;font-size:0.78rem;">${specTag(s.spectrum)}</span></div>`;
+                // Show detrended RMS too — if it's far below raw RMS the amplitude
+                // was drift/common-mode; if it stays high it's EMG/poor contact.
+                const dt = (s.rmsDetrended != null) ? ` <span style="color:#888;">· detrended ${s.rmsDetrended}</span>` : '';
+                html += `<div>${dot(s.active)} <strong>${ch}</strong> — RMS ${s.rms}${dt}<br><span style="margin-left:16px;font-size:0.78rem;">${specTag(s.spectrum)}</span></div>`;
             });
+            // Common-mode / contact tell — near-identical amplitudes across the four
+            // supposedly-independent electrodes (Selah, 2026-06).
+            if (d.signalQuality && d.signalQuality.commonModeSuspected) {
+                html += `<div style="background:rgba(255,153,102,0.12);border:1px solid #ff9966;border-radius:6px;padding:8px;margin:6px 0;color:#ffb380;">⚠️ Scalp channels are near-identical in amplitude (spread ${Math.round(d.signalQuality.rmsSpreadCV * 100)}%) and none look EEG-like — a common-mode component (reference drift / poor contact) is likely swamping the brain signal. Re-seat &amp; wet the sensors, sit still, get off mains power.</div>`;
+            }
 
             html += '<div style="font-weight:600;color:#4A7C59;margin:12px 0 4px;">Auxiliary channels (AUX)</div>';
             aux.forEach(ch => {

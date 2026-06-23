@@ -1411,6 +1411,9 @@
                         <div style="font-size: 0.7rem; color: #ff6b9d; margin-top: 2px;" id="aetheriaGeoLabel">—</div>
                         <div style="font-size: 0.7rem; color: #ccc; margin-top: 2px;" id="aetheriaStateLabel">—</div>
                         <div style="font-size: 0.7rem; color: #888; margin-top: 4px;" id="aetheriaHexLabel">—</div>
+                        <!-- Sophia v2 collider stack readout (§13) -->
+                        <div style="font-family: 'JetBrains Mono', monospace; font-size: 0.6rem; color: #a050d4; margin-top: 6px; letter-spacing: 0.2px;" id="aetheriaColliderLabel">collider: idle</div>
+                        <div style="font-size: 0.58rem; color: #666; margin-top: 2px;">🎧 headphones for the binaural layer</div>
                     </div>
                     <!-- Spiral Wave Detection Display -->
                     <div id="spiralWaveDisplay" style="display: none; background: rgba(0,0,0,0.4); padding: 10px; border-radius: 6px; margin-top: 8px; border: 1px solid rgba(74,124,89,0.35);">
@@ -1581,7 +1584,7 @@
                     Export
                 </button>
             </div>
-            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v56</div>
+            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v57</div>
             </div><!-- end sidebar-scroll -->
         </div>
 
@@ -5173,6 +5176,20 @@ return result;</textarea>
             while (f < 20) f *= 2;
             return f;
         }
+
+        // ── Sophia v2 collider register-folds ──────────────────────────────
+        // Sub-bass (toSubBass) is felt, not heard. A BINAURAL carrier, by
+        // contrast, must be AUDIBLE — binaural beats do nothing at 20–60 Hz.
+        // toAudible folds any root into ~256–512 Hz, octave-pure (2:1), so the
+        // carrier/pad stay the same "note" as the sub-bass root.
+        function toAudible(freq) {
+            let f = freq;
+            while (f > 512) f /= 2;
+            while (f < 256) f *= 2;
+            return f;
+        }
+        // Just-locked partials of the audible carrier (root, perfect fifth, octave).
+        function padPartials(freq) { const c = toAudible(freq); return [c, c * 3/2, c * 2]; }
 
         // The 9 Lo Shu position-locked triads (one GUT + HEART + HEAD per palace).
         const LOSHU_TRIADS = [
@@ -11732,6 +11749,9 @@ Use this data to personalize your response. Comment on their current state when 
                     resonanceBaselineMeta = null;
                     _baselineSuppressedTones = 0;
                     _aethScoreMin = Infinity; _aethScoreMax = -Infinity;
+                    // Re-arm any Lo Shu walk from step 0 for the new session.
+                    solfeggioSettings.loShuIndex = 0;
+                    solfeggioSettings.loShuComplete = false;
                     const devName = event.detail?.name || 'Unknown Device';
                     const isAthena = eegIntegration.lastConnectionMethod === 'athena';
                     updateEEGStatus('Connected: ' + devName, 'success');
@@ -12279,6 +12299,17 @@ Use this data to personalize your response. Comment on their current state when 
                 const aethPos = getStableAetheriaPosition(bandpowers);
                 currentAetheriaPosition = aethPos;
 
+                // ── Sophia v2 — coherence-reactive reward + adaptive binaural Δ ──
+                // Drive the collider's layer gains/AM depth from windowed coherence
+                // (richness blooms as the field organizes) and let Δ answer the
+                // current regime. Both are internally throttled/rate-limited.
+                try {
+                    if (typeof applyColliderReward === 'function') applyColliderReward();
+                    if (typeof maybeAdaptDelta === 'function') {
+                        maybeAdaptDelta(bandpowers, smoothedCoh01(), aethPos.regime);
+                    }
+                } catch (rewardErr) { /* never let audio shaping break the placement UI */ }
+
                 const posDisplay = document.getElementById('aetheriaPositionDisplay');
                 if (posDisplay) posDisplay.style.display = 'block';
 
@@ -12484,6 +12515,12 @@ Use this data to personalize your response. Comment on their current state when 
             crossfadeTimer: null,    // Timer for 2-second crossfade
             crossfadeDuration: 2000, // 2-second crossfade duration
             isTransitioning: false,  // Flag to prevent overlapping transitions
+            // ── Sophia v2 three-input regime collider ──
+            currentStack: null,      // active collider stack handles (sub + binaural + pad/AM)
+            pendingStack: null,      // incoming stack during a crossfade
+            binauralDelta: 10,       // binaural beat offset Δ (Hz), state-adapted (§5)
+            colliderDetuneCents: 0,  // research A/B detune (0 = coherent) (§7)
+            colliderTriadPos: null,  // §6 Lo Shu triad mode: 1–9 palace, or null (single-root)
             nextAdaptationTime: null,
             adaptationTimer: null,
             currentBrainState: 'analyzing',
@@ -12501,7 +12538,8 @@ Use this data to personalize your response. Comment on their current state when 
             frequencyMode: 'solfeggio', // 'solfeggio' = brain-adaptive free-select across ALL 27;
                                         // 'loshu'     = brain-state-nudged magic-square walk (all 27)
             loShuWalk: 'A',             // active walk: A=Ascent · B=Pillar · C=Vortex
-            loShuIndex: 0,              // current step within the active walk
+            loShuIndex: 0,              // current step within the active walk (0-based)
+            loShuComplete: false,       // true once the walk has played its final step — playback then STOPS (no loop)
             loShuHoldCoherence: 60,     // field-coherence % above which the walk HOLDS instead of advancing
             frequencyLock: null,     // Lock specific frequency for focused sessions
             sessionStartTime: null,  // Track session duration for personalization
@@ -12818,7 +12856,8 @@ Use this data to personalize your response. Comment on their current state when 
         function setFrequencyMode(mode, silent) {
             if (mode !== 'loshu') mode = 'solfeggio';
             solfeggioSettings.frequencyMode = mode;
-            if (mode === 'loshu' && !silent) solfeggioSettings.loShuIndex = 0;
+            // Entering Lo Shu (re-)arms the walk from step 0.
+            if (mode === 'loshu' && !silent) { solfeggioSettings.loShuIndex = 0; solfeggioSettings.loShuComplete = false; }
 
             // Reflect in the segmented toggle.
             const sBtn = document.getElementById('modeSolfeggioBtn');
@@ -12856,7 +12895,8 @@ Use this data to personalize your response. Comment on their current state when 
         function selectLoShuWalk(key) {
             if (!LOSHU_WALKS[key]) key = 'A';
             solfeggioSettings.loShuWalk = key;
-            solfeggioSettings.loShuIndex = 0; // restart the walk from step 0
+            solfeggioSettings.loShuIndex = 0;       // restart the walk from step 0
+            solfeggioSettings.loShuComplete = false; // re-arm (a completed walk plays again)
             const walk = LOSHU_WALKS[key];
             const walkSel = document.getElementById('loShuWalkSelect');
             if (walkSel) walkSel.value = key;
@@ -12891,17 +12931,24 @@ Use this data to personalize your response. Comment on their current state when 
                 // the Aetheria position frequency shown in the side panel.
                 frequencyText = `🎵 Now Playing: ${solfeggioSettings.currentFrequency}Hz`;
 
-                // In Lo Shu mode, annotate with the walk + magic-square palace.
+                // In Lo Shu mode, annotate with the walk, step counter, and palace.
                 if (solfeggioSettings.frequencyMode === 'loshu') {
                     const info = loShuInfoForFreq(solfeggioSettings.currentFrequency);
-                    const walkName = (LOSHU_WALKS[solfeggioSettings.loShuWalk] || LOSHU_WALKS.A).name;
-                    if (info) frequencyText += ` · 洛書 ${walkName} · pos ${info.pos} ${info.dir}`;
+                    const walk = LOSHU_WALKS[solfeggioSettings.loShuWalk] || LOSHU_WALKS.A;
+                    const total = walk.seq.length;
+                    const step = Math.min(total, (solfeggioSettings.loShuIndex || 0) + 1); // 1-based for display
+                    frequencyText += ` · 洛書 ${walk.name} · step ${step}/${total}`;
+                    if (info) frequencyText += ` · pos ${info.pos} ${info.dir}`;
                 }
 
                 // Show transition if crossfading
                 if (solfeggioSettings.isTransitioning && solfeggioSettings.pendingFrequency) {
                     frequencyText += ` → ${solfeggioSettings.pendingFrequency}Hz`;
                 }
+            } else if (solfeggioSettings.frequencyMode === 'loshu' && solfeggioSettings.loShuComplete) {
+                // Walk reached its end and playback stopped (no loop).
+                const walk = LOSHU_WALKS[solfeggioSettings.loShuWalk] || LOSHU_WALKS.A;
+                frequencyText = `🏁 洛書 ${walk.name} walk complete — ${walk.seq.length}/${walk.seq.length} steps`;
             }
             frequencyDisplay.textContent = frequencyText;
             
@@ -12971,6 +13018,13 @@ Use this data to personalize your response. Comment on their current state when 
                 return;
             }
             
+            // A manual trigger on a completed Lo Shu walk re-arms it from step 0.
+            if (solfeggioSettings.frequencyMode === 'loshu' && solfeggioSettings.loShuComplete) {
+                solfeggioSettings.loShuIndex = 0;
+                solfeggioSettings.loShuComplete = false;
+                console.log('🔁 Manual trigger re-armed completed Lo Shu walk from step 0');
+            }
+
             // Comprehensive diagnostic
             const brainState = analyzeBrainStateWithConfidence(currentData.bandpowers, currentData.metrics || {});
             const stateConfidence = calculateStateConfidence();
@@ -13366,6 +13420,21 @@ Use this data to personalize your response. Comment on their current state when 
                 return;
             }
 
+            // BASELINE-FIRST GUARD. On a fresh Muse connection the rolling
+            // placement window is empty and resonanceBaseline is null; tone output
+            // must be held until a clean, intervention-free baseline is captured
+            // (one full window). Skip adaptation entirely — not just the play call —
+            // so NO tone is requested before the baseline exists. The baseline is
+            // captured independently from the EEG data path (getStableAetheriaPosition),
+            // so skipping here does not block it. Tones resume on the next tick once
+            // the window fills and captureResonanceBaseline() runs.
+            if (isBaselineWindowActive()) {
+                const have = _resonanceSmoother.buf.length, need = RESONANCE_WINDOW;
+                console.log(`🔇 Baseline capture in progress (${have}/${need}) — holding tones until baseline is set`);
+                if (typeof showStatus === 'function') showStatus(`🧘 Capturing baseline… ${Math.min(have, need)}/${need}`, 'info');
+                return;
+            }
+
             const currentData = eegIntegration.getCurrentData() || currentEEGData;
             if (!currentData || !currentData.bandpowers) return;
 
@@ -13399,7 +13468,24 @@ Use this data to personalize your response. Comment on their current state when 
             if (shouldAdapt.adapt) {
                 try {
                     const selectedFreq = selectOptimalFrequencyIntelligent(brainState, currentData);
-                    
+
+                    // Lo Shu walk finished → stop playback (do NOT loop). The walk
+                    // stays complete until re-armed (mode/walk re-select, reconnect,
+                    // or manual trigger).
+                    if (solfeggioSettings.frequencyMode === 'loshu' &&
+                        selectedFreq == null && solfeggioSettings.loShuComplete) {
+                        const walk = LOSHU_WALKS[solfeggioSettings.loShuWalk] || LOSHU_WALKS.A;
+                        if (solfeggioSettings.currentFrequency != null) {
+                            stopCurrentFrequency();
+                            showStatus(`洛書 ${walk.name} walk complete — ${walk.seq.length} steps played`, 'success');
+                            console.log(`🏁 Lo Shu ${walk.name} walk complete (${walk.seq.length} steps) — playback stopped`);
+                        }
+                        solfeggioSettings.isTransitioning = false;
+                        updateSolfeggioDisplay();
+                        updateNeuroMiniDisplay();
+                        return;
+                    }
+
                     if (selectedFreq && selectedFreq !== solfeggioSettings.currentFrequency) {
                         console.log('🎵 FIXED: Intelligent adaptation triggered:', {
                             from: solfeggioSettings.currentFrequency,
@@ -13826,12 +13912,16 @@ Use this data to personalize your response. Comment on their current state when 
 
         // Lo Shu mode selector: step the active magic-square walk one position,
         // unless the field is highly coherent (then HOLD the current step so a
-        // strong state can settle). Loops at the end of the 27-step walk.
+        // strong state can settle). STOPS at the end of the walk (does not loop) —
+        // returns null and sets loShuComplete; the caller then stops playback.
         function nextLoShuFrequency() {
             const walk = LOSHU_WALKS[solfeggioSettings.loShuWalk] || LOSHU_WALKS.A;
             const seq = walk.seq;
             const cur = solfeggioSettings.currentFrequency;
             const coh = (currentAetheriaPosition && currentAetheriaPosition.coherence) || 0;
+            // Walk already finished — stay silent until it is re-armed (mode/walk
+            // re-select, reconnect, or a manual trigger).
+            if (solfeggioSettings.loShuComplete) return null;
             // Track by INDEX, not frequency value — composite walks (CAB/Ouroboros/
             // CABI) repeat frequencies, so indexOf() would stall on the first copy.
             let i = solfeggioSettings.loShuIndex;
@@ -13839,12 +13929,18 @@ Use this data to personalize your response. Comment on their current state when 
             // (walk changed, lock/manual override) → begin at step 0.
             if (cur == null || i == null || i < 0 || i >= seq.length || seq[i] !== cur) {
                 solfeggioSettings.loShuIndex = 0;
+                solfeggioSettings.loShuComplete = false;
                 return seq[0];
             }
             // Hold when coherent — let the current palace deepen.
             if (coh >= solfeggioSettings.loShuHoldCoherence) return seq[i];
-            // Otherwise advance one palace along the walk (loops at the end).
-            solfeggioSettings.loShuIndex = (i + 1) % seq.length;
+            // Reached the final step → complete the walk and STOP (no wrap-around).
+            if (i + 1 >= seq.length) {
+                solfeggioSettings.loShuComplete = true;
+                return null;
+            }
+            // Otherwise advance one palace along the walk.
+            solfeggioSettings.loShuIndex = i + 1;
             return seq[solfeggioSettings.loShuIndex];
         }
 
@@ -14429,18 +14525,20 @@ Use this data to personalize your response. Comment on their current state when 
             });
             
             try {
-                // Create new oscillator and gain node for the incoming frequency
-                solfeggioSettings.pendingOscillator = solfeggioSettings.audioContext.createOscillator();
+                // Sophia v2 — build the full 3-layer collider stack into the
+                // pending bus gain instead of a single oscillator. The existing
+                // crossfade envelope on pendingGainNode now fades the WHOLE stack
+                // in. The previous (outgoing) stack is torn down after the fade.
+                const oldStack = solfeggioSettings.currentStack;
                 solfeggioSettings.pendingGainNode = solfeggioSettings.audioContext.createGain();
-                
-                // Configure the new oscillator
-                solfeggioSettings.pendingOscillator.type = 'sine';
-                // Frequencies above 963Hz play as sub-bass octave equivalents
-                solfeggioSettings.pendingOscillator.frequency.setValueAtTime(toSubBass(newFrequency), currentTime);
-
-                // Connect new audio chain
-                solfeggioSettings.pendingOscillator.connect(solfeggioSettings.pendingGainNode);
+                solfeggioSettings.pendingStack = buildColliderStack(
+                    solfeggioSettings.audioContext, newFrequency,
+                    solfeggioSettings.binauralDelta ?? 10, solfeggioSettings.pendingGainNode
+                );
                 solfeggioSettings.pendingGainNode.connect(solfeggioSettings.audioContext.destination);
+                // Keep pendingOscillator pointing at the sub layer for back-compat
+                // with the legacy cleanup paths that reference it.
+                solfeggioSettings.pendingOscillator = solfeggioSettings.pendingStack.oscs[0];
 
                 let crossfadeVolume = solfeggioSettings.totalVolume || 0.01;
 
@@ -14461,12 +14559,14 @@ Use this data to personalize your response. Comment on their current state when 
                     );
                     solfeggioSettings.gainNode.gain.linearRampToValueAtTime(0, currentTime + crossfadeDuration);
                     
-                    // Stop old oscillator after fade out
+                    // Tear down the whole OUTGOING stack after fade out (the
+                    // legacy single-osc path only stopped one oscillator; the
+                    // collider has binaural + pad + AM + LFO layers too).
                     setTimeout(() => {
                         try {
+                            teardownStack(oldStack);
                             if (solfeggioSettings.oscillator) {
-                                solfeggioSettings.oscillator.stop();
-                                solfeggioSettings.oscillator.disconnect();
+                                try { solfeggioSettings.oscillator.stop(); solfeggioSettings.oscillator.disconnect(); } catch (e) {}
                                 solfeggioSettings.oscillator = null;
                             }
                             if (solfeggioSettings.gainNode && solfeggioSettings.gainNode !== solfeggioSettings.pendingGainNode) {
@@ -14474,13 +14574,13 @@ Use this data to personalize your response. Comment on their current state when 
                                 solfeggioSettings.gainNode = null;
                             }
                         } catch (error) {
-                            console.log('🎵 Old oscillator cleanup:', error.message);
+                            console.log('🎵 Old stack cleanup:', error.message);
                         }
                     }, crossfadeDuration * 1000 + 100);
                 }
-                
-                // Start new oscillator
-                solfeggioSettings.pendingOscillator.start(currentTime);
+
+                // NOTE: the stack's oscillators were already started inside
+                // buildColliderStack — do NOT call start() again here.
                 
                 // Set up completion handler
                 solfeggioSettings.crossfadeTimer = setTimeout(() => {
@@ -14512,7 +14612,14 @@ Use this data to personalize your response. Comment on their current state when 
                 solfeggioSettings.gainNode = solfeggioSettings.pendingGainNode;
                 solfeggioSettings.pendingGainNode = null;
             }
-            
+
+            // Sophia v2 — promote the incoming collider stack to active. The old
+            // stack is torn down by the fade-out timer in executeCrossfadeTransition.
+            if (solfeggioSettings.pendingStack) {
+                solfeggioSettings.currentStack = solfeggioSettings.pendingStack;
+                solfeggioSettings.pendingStack = null;
+            }
+
             // Update frequency tracking
             solfeggioSettings.currentFrequency = newFrequency;
             solfeggioSettings.currentFrequencyName = solfeggioFrequencies[newFrequency].name;
@@ -14546,6 +14653,290 @@ Use this data to personalize your response. Comment on their current state when 
                     initiateCrossfadeTransition(queuedFreq, { description: 'Queued transition' });
                 }, 1000); // 1 second delay before next transition
             }
+        }
+
+        // ═══════════════════════════════════════════════════════════════════
+        // SOPHIA v2 — THREE-INPUT REGIME COLLIDER + COHERENCE-REACTIVE STACK
+        // ───────────────────────────────────────────────────────────────────
+        // Layers the existing felt sub-bass with an AUDIBLE binaural carrier and
+        // a music pad carrying 40 Hz amplitude modulation (the ASSR driver). All
+        // three are octave/just-locked to the active root, so the stack stays one
+        // "note." Layer richness is gated by live field coherence (the reward
+        // curve, §4), so texture blooms as the brain organizes. See
+        // SOPHIA_REGIME_COLLIDER_CLOSED_LOOP_v2.md.
+        //
+        // GAIN MODEL (important — corrects a double-attenuation in the guide):
+        // the BUS gain (pendingGainNode / gainNode) carries the crossfade
+        // envelope to solfeggioSettings.totalVolume, exactly as the single-osc
+        // engine did. The per-LAYER gains below are RELATIVE multipliers (0..1)
+        // inside that bus. So sub = 1.0 reproduces today's felt level exactly
+        // (bus·1.0 = totalVolume), rather than the guide's literal sub:totalVolume
+        // which would give totalVolume² (~100× too quiet).
+        // ═══════════════════════════════════════════════════════════════════
+
+        function clamp01(x) { return Math.max(0, Math.min(1, x)); }
+
+        // Build the 3-layer collider into a single bus gain. Returns handles for
+        // live control. delta = binaural offset (Hz). Layer gains are seeded from
+        // the current reward curve so there is no pop on fade-in.
+        function buildColliderStack(ctx, rootFreq, deltaHz, busGain) {
+            const t = ctx.currentTime;
+            const g0 = rewardGains(smoothedCoh01());
+
+            // §6 Lo Shu Regime-Triad mode (Option A — reconciled). When
+            // solfeggioSettings.colliderTriadPos is 1–9, the three layers realize
+            // that palace's gut/heart/head — but snapped to just ratios of the gut
+            // root so the stack coheres instead of beating. Off by default: each
+            // layer is then a pure octave of the single active root (single-root
+            // collider). Whether the triad induces MORE coherence is a hypothesis
+            // to test in §7 (reconciled vs single-root / vs raw).
+            const triadPos = solfeggioSettings.colliderTriadPos;
+            let subRoot = rootFreq, carrierRoot = rootFreq, padRoot = rootFreq;
+            if (triadPos >= 1 && triadPos <= 9) {
+                const rec = reconciledTriad(LOSHU_TRIADS[triadPos - 1]);
+                subRoot = rec.subRoot; carrierRoot = rec.carrierRoot; padRoot = rec.padRoot;
+            }
+
+            const handles = {
+                oscs: [], rootFreq, deltaHz, triadPos: (triadPos >= 1 && triadPos <= 9) ? triadPos : null,
+                subGain: ctx.createGain(), binGain: ctx.createGain(),
+                padGain: ctx.createGain(), amDepth: ctx.createGain(),
+                amLFO: null, carrierL: null, carrierR: null,
+            };
+            handles.subGain.gain.value = g0.sub;
+            handles.binGain.gain.value = g0.bin;
+            handles.padGain.gain.value = g0.pad;   // base level the 40 Hz AM rides on
+            handles.amDepth.gain.value = g0.am;
+
+            // ── Layer 1: sub-bass (felt — matches the legacy single oscillator) ──
+            const sub = ctx.createOscillator(); sub.type = 'sine';
+            sub.frequency.setValueAtTime(toSubBass(subRoot), t);
+            sub.connect(handles.subGain).connect(busGain);
+            sub.start(); handles.oscs.push(sub);
+
+            // ── Layer 2: AUDIBLE binaural carrier (L = c, R = c + Δ) ──
+            const c = toAudible(carrierRoot), merger = ctx.createChannelMerger(2);
+            handles.carrierL = ctx.createOscillator(); handles.carrierL.type = 'sine';
+            handles.carrierR = ctx.createOscillator(); handles.carrierR.type = 'sine';
+            handles.carrierHz = c; // audible carrier base (Δ rides on the R channel)
+            handles.carrierL.frequency.setValueAtTime(c, t);
+            handles.carrierR.frequency.setValueAtTime(c + deltaHz, t);
+            handles.carrierL.connect(merger, 0, 0);
+            handles.carrierR.connect(merger, 0, 1);
+            merger.connect(handles.binGain).connect(busGain);
+            handles.carrierL.start(); handles.carrierR.start();
+            handles.oscs.push(handles.carrierL, handles.carrierR);
+
+            // ── Layer 3: pad partials + 40 Hz amplitude modulation (ASSR) ──
+            const padSum = ctx.createGain(); padSum.gain.value = 0.5;
+            padPartials(padRoot).forEach((pf, i) => {
+                const o = ctx.createOscillator(); o.type = 'sine';
+                o.frequency.setValueAtTime(pf, t);
+                const g = ctx.createGain(); g.gain.value = [0.6, 0.25, 0.15][i];
+                o.connect(g).connect(padSum); o.start(); handles.oscs.push(o);
+            });
+            // padGain.gain = padBase (set by reward) + amDepth·sin(2π·40·t). The
+            // LFO output SUMS into the param, so keep base ≥ depth (rewardGains does).
+            handles.amLFO = ctx.createOscillator(); handles.amLFO.type = 'sine';
+            handles.amLFO.frequency.setValueAtTime(40, t);   // ASSR sweet spot
+            handles.amLFO.connect(handles.amDepth).connect(handles.padGain.gain);
+            handles.amLFO.start(); handles.oscs.push(handles.amLFO);
+            padSum.connect(handles.padGain).connect(busGain);
+
+            // Apply the research detune (§7) if one is active.
+            if (solfeggioSettings.colliderDetuneCents) {
+                handles.oscs.forEach(o => { try { o.detune && o.detune.setValueAtTime(solfeggioSettings.colliderDetuneCents, t); } catch (e) {} });
+            }
+            return handles;
+        }
+
+        function teardownStack(handles) {
+            if (!handles) return;
+            (handles.oscs || []).forEach(o => { try { o.stop(); o.disconnect(); } catch (e) {} });
+        }
+
+        // 0..1 smoothed field coherence from the live placement window.
+        function smoothedCoh01() {
+            const c = _resonanceSmoother.current().coherence; // 0..100
+            return clamp01((c || 0) / 100);
+        }
+
+        // The reward curve. Layers fade in IN ORDER as coherence climbs:
+        // binaural → pad → 40 Hz AM (the AM is the earned, established-tier reward).
+        // Knees (0.2/0.4/0.6) are starting points — calibrate against the user's
+        // own resting coherence first (set RESONANCE_RESCALE via suggestRescale).
+        function rewardGains(coh) {
+            return {
+                sub: 1.0,                                 // full within the bus — steady grounding
+                bin: clamp01((coh - 0.2) / 0.4) * 0.6,    // fades in 0.2→0.6
+                pad: clamp01((coh - 0.4) / 0.4) * 0.5,    // fades in 0.4→0.8
+                am:  clamp01((coh - 0.6) / 0.4) * 0.4,    // 40 Hz AM engages 0.6→1.0 (earned)
+            };
+        }
+
+        // Smoothly ramp an AudioParam to target, superseding any prior automation
+        // without a click. Robust to being called several times per second.
+        function _rampParam(param, target, t0, rampSec) {
+            const v = Math.max(0, target);
+            try {
+                if (param.cancelAndHoldAtTime) param.cancelAndHoldAtTime(t0);
+                else { param.cancelScheduledValues(t0); param.setValueAtTime(param.value, t0); }
+            } catch (e) {}
+            try { param.linearRampToValueAtTime(v, t0 + rampSec); } catch (e) { try { param.value = v; } catch (e2) {} }
+        }
+
+        let _lastReward = 0;
+        // Drive the layer gains + AM depth from windowed coherence. Throttled to
+        // ~2/sec so gains follow the trend, never per-frame jitter.
+        function applyColliderReward(rampSec = 3, stack = solfeggioSettings.currentStack) {
+            const h = stack; if (!h || !solfeggioSettings.audioContext) return;
+            const now = Date.now();
+            if (rampSec > 0 && now - _lastReward < 450) return; // 0 = force (initial seed)
+            _lastReward = now;
+            const t0 = solfeggioSettings.audioContext.currentTime;
+            const { sub, bin, pad, am } = rewardGains(smoothedCoh01());
+            const r = Math.max(0.01, rampSec);
+            _rampParam(h.subGain.gain, sub, t0, r);
+            _rampParam(h.binGain.gain, bin, t0, r);
+            _rampParam(h.padGain.gain, pad, t0, r); // base the AM rides on
+            _rampParam(h.amDepth.gain, am,  t0, r);
+            updateColliderReadout();
+        }
+
+        // ── §5 Adaptive binaural Δ (state-aware, rate-limited) ──
+        // Δ answers the current state. Gamma is NOT pursued with binaural (it fails
+        // above ~30 Hz) — gamma comes from the 40 Hz AM in Layer 3.
+        let _lastDelta = 0; const DELTA_HOLD_SEC = 12;
+        function chooseDelta(bands, coh01, regime) {
+            if ((bands.beta || 0) > 28 && (bands.alpha || 0) < 17) return 10; // sympathetic → alpha, calm
+            if (coh01 < 0.3) return 8;
+            if (regime === 'HEART') return 6;      // theta-alpha
+            if (regime === 'HEAD')  return 10;     // alpha clarity (gamma via AM)
+            return 7.83;                           // GUT — Schumann-adjacent
+        }
+        function maybeAdaptDelta(bands, coh01, regime) {
+            if (Date.now() / 1000 - _lastDelta < DELTA_HOLD_SEC) return;
+            const d = chooseDelta(bands || {}, coh01, regime);
+            solfeggioSettings.binauralDelta = d;
+            const h = solfeggioSettings.currentStack;
+            if (h && h.carrierR && solfeggioSettings.audioContext) {
+                const c = h.carrierHz ?? toAudible(h.rootFreq); // honors triad-mode carrier root
+                h.deltaHz = d;
+                try {
+                    h.carrierR.frequency.linearRampToValueAtTime(c + d, solfeggioSettings.audioContext.currentTime + 4);
+                } catch (e) {}
+            }
+            _lastDelta = Date.now() / 1000;
+        }
+
+        // ── §6 Lo Shu Regime-Triad mode (reconciled — Option A) ──
+        // The three regime frequencies of a palace are STRUCTURALLY locked (same
+        // palace) but NOT octave/just-coherent (e.g. 174/1206/3504 ratios 6.93 &
+        // 20.14 — inharmonic, would beat). Reconcile: keep gut as the sub-bass
+        // root; snap heart→carrier and head→pad to the nearest just ratio of the
+        // gut root after octave-folding. Whether the reconciled triad induces MORE
+        // coherence than the single-root collider is a HYPOTHESIS to test (§7).
+        const JUST_RATIOS = [1, 9/8, 5/4, 4/3, 3/2, 5/3, 15/8, 2];
+        function snapToJust(freq, root) {
+            let r = freq / root; while (r > 2) r /= 2; while (r < 1) r *= 2; // fold into one octave
+            const j = JUST_RATIOS.reduce((a, b) => Math.abs(b - r) < Math.abs(a - r) ? b : a);
+            return root * j;
+        }
+        function reconciledTriad(triad) {
+            const root = triad.gut;
+            return { subRoot: root, carrierRoot: snapToJust(triad.heart, root),
+                     padRoot: snapToJust(triad.head, root), raw: triad };
+        }
+        // Toggle the reconciled-triad mode (pos 1–9, or null/0 to return to the
+        // single-root collider). Rebuilds the live stack immediately if playing.
+        function setColliderTriad(pos) {
+            solfeggioSettings.colliderTriadPos = (pos >= 1 && pos <= 9) ? pos : null;
+            console.log('[Sophia v2 triad]', solfeggioSettings.colliderTriadPos
+                ? `palace ${pos} → ${JSON.stringify(reconciledTriad(LOSHU_TRIADS[pos - 1]))}`
+                : 'OFF (single-root collider)');
+            // Re-trigger the current frequency so the new roots take effect now.
+            const f = solfeggioSettings.currentFrequency;
+            if (f && typeof playFrequencyDirectly === 'function') {
+                playFrequencyDirectly(f, { description: 'triad mode change' }).catch(() => {});
+            }
+            return solfeggioSettings.colliderTriadPos;
+        }
+
+        // ── §7 Coherent-vs-detuned A/B (the collider test) ──
+        // Pre-registered null: if mean coherence in coherent blocks does NOT exceed
+        // detuned blocks by a set margin across sessions, "harmonic collision
+        // matters" is NOT supported — log the null and report it.
+        function setColliderDetune(cents) {
+            solfeggioSettings.colliderDetuneCents = cents || 0;
+            const h = solfeggioSettings.currentStack;
+            if (h && solfeggioSettings.audioContext) {
+                const t = solfeggioSettings.audioContext.currentTime;
+                h.oscs.forEach(o => { try { o.detune && o.detune.setValueAtTime(cents || 0, t); } catch (e) {} });
+            }
+            const entry = { condition: (cents ? 'detuned' : 'coherent'), cents: cents || 0, t: Date.now() };
+            (window._colliderResearchLog = window._colliderResearchLog || []).push(entry);
+            console.log('[Sophia v2 A/B]', entry);
+            return entry;
+        }
+
+        // ── §8 Entrainment-vs-evoked silent probe (honesty instrument) ──
+        // Mute carrier + AM (keep sub-bass + recording), measure whether the
+        // coherence signal PERSISTS (true entrainment) or vanishes (evoked-only).
+        // A low persistence is a FINDING, not a failure.
+        async function entrainmentProbe(silenceSec = 6) {
+            const h = solfeggioSettings.currentStack; if (!h || !solfeggioSettings.audioContext) return null;
+            const pre = smoothedCoh01();
+            const t = solfeggioSettings.audioContext.currentTime;
+            _rampParam(h.binGain.gain, 0, t, 1);
+            _rampParam(h.amDepth.gain, 0, t, 1);   // kill carrier + AM, keep sub-bass
+            await new Promise(r => setTimeout(r, silenceSec * 1000));
+            const post = smoothedCoh01();
+            applyColliderReward(3);                 // restore via reward curve
+            const persistence = post / Math.max(pre, 0.001);
+            const entry = { pre, post, persistence, silenceSec, t: Date.now() };
+            (window._colliderProbeLog = window._colliderProbeLog || []).push(entry);
+            console.log(`[Sophia v2 probe] coherence held at ${(persistence * 100).toFixed(0)}% of stimulus level for ${silenceSec}s after carrier+AM stopped`, entry);
+            return persistence;
+        }
+
+        // ── §13 Collider readout — small mono line under the Aetheria panel ──
+        function updateColliderReadout() {
+            try {
+                const el = document.getElementById('aetheriaColliderLabel');
+                if (!el) return;
+                const h = solfeggioSettings.currentStack;
+                if (!h) { el.textContent = 'collider: idle'; return; }
+                const root = h.rootFreq;
+                const g = rewardGains(smoothedCoh01());
+                el.textContent =
+                    `f ${root}Hz · sub ${toSubBass(root).toFixed(1)} · carrier ${(h.carrierHz ?? toAudible(root)).toFixed(0)} ` +
+                    `· Δ ${(h.deltaHz ?? solfeggioSettings.binauralDelta).toFixed(2)} · AM ${g.am > 0.001 ? 'on' : 'off'} ` +
+                    `· coh ${Math.round(smoothedCoh01() * 100)}%` +
+                    (h.triadPos ? ` · triad P${h.triadPos}` : '') +
+                    (solfeggioSettings.colliderDetuneCents ? ` · detune ${solfeggioSettings.colliderDetuneCents}¢` : '');
+            } catch (e) {}
+        }
+
+        // ── STEP 0 diagnostics — run during a live session, change nothing ──
+        // Call sophiaV2Diag() from the console; report the output. Gate before any
+        // verification: ctx running, stack present & folded, smoother returns
+        // numbers, crossfadeDuration 2000, 9 triads, 27 frequencies.
+        function sophiaV2Diag() {
+            console.group('[Sophia v2 Step 0]');
+            const ss = solfeggioSettings;
+            console.log('ctx state:', ss.audioContext && ss.audioContext.state);
+            console.log('legacy osc:', !!ss.oscillator, '→', ss.oscillator && ss.oscillator.frequency.value, 'Hz (folded)');
+            console.log('currentStack:', !!ss.currentStack, ss.currentStack ? `(root ${ss.currentStack.rootFreq}Hz, Δ ${ss.currentStack.deltaHz})` : '');
+            console.log('active freq:', ss.currentFrequency, ss.currentFrequencyName);
+            console.log('toSubBass(528) =', toSubBass(528), '| toAudible(528) =', toAudible(528), '| padPartials(528) =', padPartials(528));
+            console.log('placement:', _resonanceSmoother.current());
+            console.log('smoothedCoh01:', smoothedCoh01());
+            console.log('rewardGains(now):', rewardGains(smoothedCoh01()));
+            console.log('binauralDelta:', ss.binauralDelta, '| detune cents:', ss.colliderDetuneCents, '| triad pos:', ss.colliderTriadPos);
+            console.log('crossfadeDuration ms:', ss.crossfadeDuration);
+            console.log('baseline active?', isBaselineWindowActive());
+            console.log('LOSHU_TRIADS len:', LOSHU_TRIADS.length, '| AETHERIA_FREQUENCIES len:', AETHERIA_FREQUENCIES.length);
+            console.groupEnd();
         }
 
         // Keep original function for compatibility
@@ -14780,7 +15171,13 @@ Use this data to personalize your response. Comment on their current state when 
                     clearTimeout(solfeggioSettings.crossfadeTimer);
                     solfeggioSettings.crossfadeTimer = null;
                 }
-                
+
+                // Sophia v2 — tear down both collider stacks (all layers). The
+                // legacy oscillator/pendingOscillator handles below point at the
+                // sub layer of each stack, so they get stopped again harmlessly.
+                teardownStack(solfeggioSettings.currentStack); solfeggioSettings.currentStack = null;
+                teardownStack(solfeggioSettings.pendingStack); solfeggioSettings.pendingStack = null;
+
                 // Stop current oscillator with immediate stop (no fade to prevent conflicts)
                 if (solfeggioSettings.oscillator) {
                     try {
@@ -14877,67 +15274,60 @@ Use this data to personalize your response. Comment on their current state when 
                     console.log('✅ FIXED: New gain node created and connected');
                 }
                 
-                // Create oscillator for the solfeggio frequency
-                solfeggioSettings.oscillator = solfeggioSettings.audioContext.createOscillator();
-                solfeggioSettings.oscillator.type = 'sine';
-                // Felt, not heard — octave-shift into the sub-bass band (20–60 Hz).
-                solfeggioSettings.oscillator.frequency.setValueAtTime(toSubBass(frequency), solfeggioSettings.audioContext.currentTime);
+                // Sophia v2 — build the full 3-layer collider stack into the
+                // (preserved) gain-node bus instead of a single oscillator. The bus
+                // envelope below still carries the fade + master level exactly as
+                // before; the stack's per-layer gains carry the coherence-reactive
+                // reward mix (sub = full, binaural/pad/AM gated by §4).
+                teardownStack(solfeggioSettings.currentStack); // safety; also done in stopCurrentFrequencyPreservingSystem
+                const stack = buildColliderStack(
+                    solfeggioSettings.audioContext, frequency,
+                    solfeggioSettings.binauralDelta ?? 10, solfeggioSettings.gainNode
+                );
+                solfeggioSettings.currentStack = stack;
+                // Back-compat: legacy paths reference solfeggioSettings.oscillator (sub layer).
+                solfeggioSettings.oscillator = stack.oscs[0];
 
-                // Connect oscillator to gain node
-                solfeggioSettings.oscillator.connect(solfeggioSettings.gainNode);
-                
                 // Set up gain envelope with proper error handling
                 const currentTime = solfeggioSettings.audioContext.currentTime;
                 const fadeTime = 0.5;
                 const playbackDuration = duration / 1000;
                 const targetVolume = solfeggioSettings.totalVolume || 0.01;
-                
+
                 try {
                     solfeggioSettings.gainNode.gain.cancelScheduledValues(currentTime);
                     solfeggioSettings.gainNode.gain.setValueAtTime(0, currentTime);
                     solfeggioSettings.gainNode.gain.linearRampToValueAtTime(targetVolume, currentTime + fadeTime);
-                    
+
                     // Schedule fade out at the end
                     solfeggioSettings.gainNode.gain.setValueAtTime(targetVolume, currentTime + playbackDuration - fadeTime);
                     solfeggioSettings.gainNode.gain.linearRampToValueAtTime(0, currentTime + playbackDuration);
-                    
+
                     console.log(`✅ FIXED: Gain envelope set up - target volume: ${Math.round(targetVolume * 100)}%`);
                 } catch (gainError) {
                     console.error('❌ FIXED: Gain envelope setup failed:', gainError);
                     // Try with immediate volume setting as fallback
                     solfeggioSettings.gainNode.gain.setValueAtTime(targetVolume, currentTime);
                 }
-                
-                // Start oscillator
-                solfeggioSettings.oscillator.start(currentTime);
-                solfeggioSettings.oscillator.stop(currentTime + playbackDuration);
-                
-                // FIXED: Set up cleanup handler that doesn't interfere with frequency changes
-                solfeggioSettings.oscillator.onended = () => {
-                    console.log('🎵 FIXED: Oscillator ended naturally, cleaning up...');
-                    
-                    // Only cleanup if this is still the current oscillator
-                    // (compare against the sub-bass-shifted value actually set above).
-                    if (solfeggioSettings.oscillator && solfeggioSettings.oscillator.frequency.value === toSubBass(frequency)) {
-                        try {
-                            solfeggioSettings.oscillator.disconnect();
-                            console.log('✅ FIXED: Oscillator disconnected cleanly');
-                        } catch (error) {
-                            console.log('🔧 FIXED: Oscillator already disconnected:', error.message);
-                        }
+
+                // The stack oscillators were started inside buildColliderStack and
+                // run until torn down. Schedule a guarded teardown at the end of the
+                // playback window (mirrors the old onended cleanup) — but ONLY if
+                // this exact stack is still active (nothing crossfaded over it).
+                const thisStack = stack;
+                setTimeout(() => {
+                    if (solfeggioSettings.currentStack === thisStack) {
+                        teardownStack(thisStack);
+                        solfeggioSettings.currentStack = null;
                         solfeggioSettings.oscillator = null;
-                        
-                        // Don't reset current frequency info if we're transitioning
                         if (!solfeggioSettings.isTransitioning && !solfeggioSettings.frequencyLock) {
                             solfeggioSettings.currentFrequency = null;
                             solfeggioSettings.currentFrequencyName = 'None';
                             updateSolfeggioDisplay();
                         }
-                    } else {
-                        console.log('🎵 FIXED: Oscillator ended but not current one, ignoring cleanup');
                     }
-                };
-                
+                }, playbackDuration * 1000 + 200);
+
                 // Update state
                 solfeggioSettings.adaptationActive = true;
                 
@@ -14947,8 +15337,10 @@ Use this data to personalize your response. Comment on their current state when 
                 
             } catch (error) {
                 console.error('❌ FIXED: Error in enhanced frequency playback:', error);
-                
-                // Cleanup on error
+
+                // Cleanup on error — tear down any partially-built collider stack.
+                teardownStack(solfeggioSettings.currentStack);
+                solfeggioSettings.currentStack = null;
                 if (solfeggioSettings.oscillator) {
                     try {
                         solfeggioSettings.oscillator.stop();
@@ -14958,7 +15350,7 @@ Use this data to personalize your response. Comment on their current state when 
                     }
                     solfeggioSettings.oscillator = null;
                 }
-                
+
                 throw error;
             }
         }

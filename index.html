@@ -1581,7 +1581,7 @@
                     Export
                 </button>
             </div>
-            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v54</div>
+            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v55</div>
             </div><!-- end sidebar-scroll -->
         </div>
 
@@ -2740,6 +2740,16 @@ return result;</textarea>
                 this.reconnectTimeout = null;
                 this.isReconnecting = false;
                 this.lastConnectionMethod = null;
+                // Positively-identified device for this session. PERSISTS across a
+                // disconnect (unlike lastConnectionMethod, which is nulled on manual
+                // disconnect) so an export taken after stopping a real session still
+                // reports the device instead of "unknown". Overwritten on next connect.
+                this.deviceIdentity = null;
+                // Last channel diagnostic computed while the scalp electrodes still
+                // had live samples. Lets an export taken after disconnect (which
+                // clears the buffers) report the real per-channel picture instead of
+                // an all-zero post-disconnect snapshot. See diagnoseChannels().
+                this._lastGoodDiagnostic = null;
                 this.simulationMode = false;
                 this.simulationInterval = null;
                 this.dataProcessingInterval = null;
@@ -3168,6 +3178,17 @@ return result;</textarea>
                     name: this._athenaDevice.deviceName || 'Muse S Athena',
                     firmware: this._athenaDevice.firmware
                 };
+                // Positive identification (Task 1): connected through the Athena
+                // driver, which streams 8-ch EEG + fNIRS. Persist it so the export
+                // never reads "unknown" for a real Athena session.
+                this.deviceIdentity = {
+                    type: 'athena',
+                    name: this._athenaDevice.deviceName || 'Muse S Athena',
+                    channels: 8,
+                    hasFnirs: true,
+                    firmware: this._athenaDevice.firmware || null,
+                    identifiedBy: 'athena-driver',
+                };
 
                 this.dispatchEvent(new CustomEvent('connected', {
                     detail: { name: this._athenaDevice.deviceName || 'Muse S Athena' }
@@ -3274,7 +3295,18 @@ return result;</textarea>
                         server: server,
                         service: service
                     };
-                    
+                    // Positive identification (Task 1): connected via the Muse 2
+                    // raw-BLE path (4 scalp channels, no fNIRS). Persist so the
+                    // export reports the device after disconnect. An Athena name
+                    // here flags a possible mis-route (Athena should use its driver).
+                    this.deviceIdentity = {
+                        type: /athena/i.test(device.name || '') ? 'athena-via-muse-path' : 'muse',
+                        name: device.name || 'Muse Device',
+                        channels: 4,
+                        hasFnirs: false,
+                        identifiedBy: 'muse-ble',
+                    };
+
                     // Set connection state
                     this.connected = true;
                     this.streaming = false;
@@ -3359,11 +3391,15 @@ return result;</textarea>
                 console.log('🔵 Starting REAL Bluetooth EEG streaming...');
                 
                 try {
-                    // Clear any existing data
+                    // Clear any existing data — all channels symmetrically.
                     this.realEEGData.TP9 = [];
                     this.realEEGData.AF7 = [];
                     this.realEEGData.AF8 = [];
                     this.realEEGData.TP10 = [];
+                    this.realEEGData.AUX1 = [];
+                    this.realEEGData.AUX2 = [];
+                    this.realEEGData.AUX3 = [];
+                    this.realEEGData.AUX4 = [];
                     this.realEEGData.timestamps = [];
                     
                     // Get all available characteristics
@@ -3817,8 +3853,21 @@ return result;</textarea>
                 const auxActive = ['AUX1', 'AUX2', 'AUX3', 'AUX4'].filter(a => stats[a] && stats[a].active);
                 const auxUsable = Object.keys(auxCorr).filter(a => auxCorr[a].usable);
                 const auxIndependentNoise = Object.keys(auxCorr).filter(a => auxCorr[a].independent && !auxCorr[a].eegLike);
+
+                // Did the scalp electrodes actually carry samples this read?
+                const scalpCaptured = main.some(ch => stats[ch] && stats[ch].samples > 0);
+                const scalpActive = main.filter(ch => stats[ch] && stats[ch].active);
+
                 let verdict;
-                if (auxActive.length === 0) {
+                if (!scalpCaptured) {
+                    // CRITICAL (Task 1): scalp had zero samples. This is NOT evidence
+                    // that AUX "mirror" or replace the scalp — it means the scalp
+                    // electrodes were not captured (buffers cleared on disconnect, or
+                    // a device mismap). Never claim "AUX mirror scalp" here.
+                    verdict = auxActive.length
+                        ? 'Scalp channels (TP9/AF7/AF8/TP10) were not captured for this reading — possible device mismap or a post-disconnect snapshot. AUX activity does NOT indicate scalp signal; do not trust placements until a live scalp contact readout is green.'
+                        : 'No EEG channels captured for this reading (scalp and AUX both empty) — device not streaming or buffers cleared on disconnect.';
+                } else if (auxActive.length === 0) {
                     verdict = 'AUX channels carry no signal — only the 4 scalp electrodes are usable.';
                 } else if (auxUsable.length > 0) {
                     verdict = `${auxUsable.length} AUX channel(s) show EEG-like spectra and are independent of the scalp electrodes — genuinely usable: ${auxUsable.join(', ')}.`;
@@ -3827,14 +3876,39 @@ return result;</textarea>
                 } else {
                     verdict = 'AUX channels mirror the scalp electrodes (reference/derived) — no new information.';
                 }
-                return {
+
+                const ident = (typeof this.getDeviceIdentity === 'function') ? this.getDeviceIdentity() : null;
+                const result = {
                     timestamp: Date.now(),
-                    device: this.lastConnectionMethod || 'unknown',
+                    device: ident ? ident.type : (this.lastConnectionMethod || 'unknown'),
+                    deviceName: ident ? ident.name : null,
+                    deviceWarning: ident ? ident.warning : null,
+                    scalpCaptured: scalpCaptured,
+                    scalpActive: scalpActive,
                     stats: stats,
                     auxCorr: auxCorr,
                     lineNoise: lineNoise,
                     verdict: verdict,
                 };
+
+                // Snapshot integrity (Task 1): cache the diagnostic whenever the
+                // scalp electrodes are live, so an export taken after disconnect
+                // (buffers cleared) can fall back to the last real per-channel read
+                // instead of an alarming all-zero / AUX-only picture.
+                if (scalpCaptured) {
+                    this._lastGoodDiagnostic = result;
+                    return result;
+                }
+                if (this._lastGoodDiagnostic) {
+                    return {
+                        ...this._lastGoodDiagnostic,
+                        timestamp: Date.now(),
+                        stale: true,
+                        note: 'Live buffers were empty at export (e.g. exported after disconnect). This is the last reading taken while the scalp electrodes were live; the channel map was not mismapped.',
+                        liveVerdict: verdict,
+                    };
+                }
+                return result;
             }
 
             // Temporal-dynamics analysis: Takens attractor reconstruction + fractal/
@@ -4569,13 +4643,24 @@ return result;</textarea>
                 this.deviceInfo = null;
                 this.eegCharacteristics = {};
                 
-                // Clear data
+                // Snapshot the channel diagnostic while the scalp buffers are still
+                // full, so an export taken after this disconnect reports the real
+                // per-channel read instead of an all-zero picture (Task 1).
+                try { if (typeof this.diagnoseChannels === 'function') this.diagnoseChannels(); } catch (_) {}
+
+                // Clear data — ALL channels symmetrically. Clearing only the four
+                // scalp electrodes used to leave AUX1-4 populated, which made the
+                // post-disconnect diagnostic look like the session ran on AUX.
                 this.realEEGData.TP9 = [];
                 this.realEEGData.AF7 = [];
                 this.realEEGData.AF8 = [];
                 this.realEEGData.TP10 = [];
+                this.realEEGData.AUX1 = [];
+                this.realEEGData.AUX2 = [];
+                this.realEEGData.AUX3 = [];
+                this.realEEGData.AUX4 = [];
                 this.realEEGData.timestamps = [];
-                
+
                 // Emit disconnected event
                 this.dispatchEvent(new CustomEvent('disconnected', {
                     detail: { manual: manual }
@@ -4638,11 +4723,19 @@ return result;</textarea>
                     this.simulationInterval = null;
                 }
 
-                // Clear EEG data buffers
+                // Snapshot the diagnostic while scalp buffers are still full (Task 1),
+                // so an export after an unexpected disconnect keeps the real read.
+                try { if (typeof this.diagnoseChannels === 'function') this.diagnoseChannels(); } catch (_) {}
+
+                // Clear EEG data buffers — ALL channels symmetrically (see disconnect()).
                 this.realEEGData.TP9 = [];
                 this.realEEGData.AF7 = [];
                 this.realEEGData.AF8 = [];
                 this.realEEGData.TP10 = [];
+                this.realEEGData.AUX1 = [];
+                this.realEEGData.AUX2 = [];
+                this.realEEGData.AUX3 = [];
+                this.realEEGData.AUX4 = [];
                 this.realEEGData.timestamps = [];
 
                 // CRITICAL: Preserve the BluetoothDevice reference for reconnection
@@ -4733,7 +4826,51 @@ return result;</textarea>
             getDeviceInfo() {
                 return this.deviceInfo;
             }
-            
+
+            // Best-known device identity for this session (Task 1). Resolves in
+            // priority order so an export NEVER reports "unknown" for a real
+            // session and never silently mismaps:
+            //   1. The persisted positive identification from connect.
+            //   2. A live Athena driver instance (8-ch + fNIRS).
+            //   3. The live connection method.
+            //   4. Inference from captured signal (8 EEG channels / fNIRS ⇒ Athena).
+            //   5. Genuinely unresolved → unknown, with `warning` set so the UI/export
+            //      can surface "device unidentified — channel map may be wrong".
+            // Returns { type, name, source, hasFnirs, channels, warning }.
+            getDeviceIdentity() {
+                if (this.deviceIdentity) {
+                    return { ...this.deviceIdentity, source: 'identified-on-connect', warning: null };
+                }
+                if (this._athenaDevice) {
+                    return {
+                        type: 'athena', name: (this._athenaDevice.deviceName || 'Muse S Athena'),
+                        channels: 8, hasFnirs: true, source: 'live-athena-driver', warning: null,
+                    };
+                }
+                if (this.lastConnectionMethod) {
+                    const t = this.lastConnectionMethod;
+                    return {
+                        type: t, name: (this.deviceInfo && this.deviceInfo.name) || t,
+                        channels: t === 'athena' ? 8 : 4, hasFnirs: t === 'athena',
+                        source: 'connection-method', warning: null,
+                    };
+                }
+                // Infer from what was actually captured.
+                const auxSeen = ['AUX1', 'AUX2', 'AUX3', 'AUX4'].some(c => (this.realEEGData[c] || []).length > 0);
+                const hadFnirs = !!this.athenaFNIRS;
+                if (auxSeen || hadFnirs) {
+                    return {
+                        type: 'athena', name: 'Muse S Athena (inferred)',
+                        channels: 8, hasFnirs: hadFnirs, source: 'inferred-from-signal', warning: null,
+                    };
+                }
+                return {
+                    type: 'unknown', name: 'Unknown', channels: null, hasFnirs: false,
+                    source: 'unresolved',
+                    warning: 'device unidentified — channel map may be wrong; verify electrode placement before trusting placements',
+                };
+            }
+
             // Set focus calculation settings
             setFocusSettings(settings) {
                 this.focusSettings = {
@@ -5066,6 +5203,17 @@ return result;</textarea>
         function activeRescale() {
             return coherenceSource() === 'plv' ? RESONANCE_RESCALE_PLV : RESONANCE_RESCALE;
         }
+        // CALIBRATION HELPER (Task 3). Placement maps as round(score · 26 / rescale),
+        // so the observed high score lands near the top position (26) when the
+        // divisor ≈ that high score. Given a session's peak raw resonance score,
+        // suggest the rescale that would spread the score across positions 1–27.
+        // Surfaced in the export as sessionSummary.resonanceScore.suggestedRescale —
+        // use it to CALIBRATE RESONANCE_RESCALE / RESONANCE_RESCALE_PLV from real
+        // sessions; do NOT blind-edit the divisor or the 0.30/0.25/0.10/0.35 weights.
+        function suggestRescale(observedHigh) {
+            if (typeof observedHigh !== 'number' || !isFinite(observedHigh) || observedHigh <= 0) return null;
+            return Math.round(observedHigh);
+        }
         // Mean pairwise PLV across all channel pairs & bands → a 0..1 field-
         // organization scalar, independent of the band-power channel.
         function meanSpiralPLV(spiral) {
@@ -5167,8 +5315,35 @@ return result;</textarea>
 
         // Baseline + movement (Step 6) — Sophia's closest thing to ground truth.
         let resonanceBaseline = null;
+        // Task 2 — tone-free baseline. The baseline must be a clean, intervention-
+        // free reference, so the adaptive tone engine is auto-silenced for the
+        // capture window (from a fresh connection until the rolling window first
+        // fills and the baseline is captured). resonanceBaselineMeta records the
+        // audit flag (tonesActive) so a clean baseline can be confirmed from the
+        // export. _baselineSuppressedTones counts adaptive tone requests blocked
+        // during the window — evidence the silencing actually did something.
+        let resonanceBaselineMeta = null;
+        let _baselineSuppressedTones = 0;
+        // True while EEG is streaming for this session but the baseline hasn't been
+        // captured yet — the window during which tone output is suppressed.
+        function isBaselineWindowActive() {
+            return (typeof eegStreaming !== 'undefined' && eegStreaming) && !resonanceBaseline;
+        }
         function captureResonanceBaseline() {
             resonanceBaseline = _resonanceSmoother.current();
+            // Audit flag: the window was tone-suppressed, so the baseline is clean.
+            // tonesActive reflects whether any adaptive tone actually played during
+            // the window (false when suppression held, as designed).
+            resonanceBaselineMeta = {
+                // Adaptive tones were suppressed across the whole capture window
+                // (see playFrequencyDirectly), so the baseline is intervention-free.
+                tonesActive: false,
+                suppressedTones: _baselineSuppressedTones,
+                windowSamples: RESONANCE_WINDOW,
+                capturedAt: new Date().toISOString(),
+                position: resonanceBaseline.position,
+                score: Math.round((resonanceBaseline.score || 0) * 100) / 100,
+            };
             return resonanceBaseline;
         }
         function movementFromBaseline() {
@@ -11494,6 +11669,8 @@ Use this data to personalize your response. Comment on their current state when 
                     // this session's window fills (Step 6).
                     _resonanceSmoother.buf = [];
                     resonanceBaseline = null;
+                    resonanceBaselineMeta = null;
+                    _baselineSuppressedTones = 0;
                     _aethScoreMin = Infinity; _aethScoreMax = -Infinity;
                     const devName = event.detail?.name || 'Unknown Device';
                     const isAthena = eegIntegration.lastConnectionMethod === 'athena';
@@ -14064,6 +14241,16 @@ Use this data to personalize your response. Comment on their current state when 
         // FIXED: Enhanced direct frequency playback function
         async function playFrequencyDirectly(frequency, brainState, duration = 60000) {
             try {
+                // Task 2 — tone-free baseline. Suppress all adaptive tone output
+                // while the baseline is still being captured, so the baseline →
+                // endstate delta is a valid pre/post (the baseline is not itself an
+                // intervention state). Tones resume automatically on the next
+                // adaptation tick once the baseline window closes.
+                if (isBaselineWindowActive()) {
+                    _baselineSuppressedTones++;
+                    console.log('🔇 Baseline window active — suppressing adaptive tone (' + frequency + 'Hz) until baseline captured');
+                    return;
+                }
                 console.log(`🎵 FIXED Direct playback: ${frequency}Hz (${solfeggioFrequencies[frequency]?.name || 'Unknown'})`);
                 
                 // Initialize audio if needed with better error handling
@@ -14130,6 +14317,14 @@ Use this data to personalize your response. Comment on their current state when 
         }
 
         function initiateCrossfadeTransition(newFrequency, brainState) {
+            // Task 2 — tone-free baseline. The crossfade path runs its own
+            // oscillator (not playFrequencyDirectly), so it needs the same guard:
+            // no tone output while the baseline is still being captured.
+            if (isBaselineWindowActive()) {
+                _baselineSuppressedTones++;
+                console.log('🔇 Baseline window active — suppressing adaptive crossfade (' + newFrequency + 'Hz) until baseline captured');
+                return;
+            }
             if (solfeggioSettings.isTransitioning) {
                 console.log('🔄 Transition already in progress, queuing new frequency:', newFrequency);
                 solfeggioSettings.pendingFrequency = newFrequency;
@@ -15019,6 +15214,15 @@ Use this data to personalize your response. Comment on their current state when 
                 beta: Math.round(bp.beta),
                 gamma: Math.round(bp.gamma),
             };
+            // Raw resonance score (the pre-rescale weighted sum that drove this
+            // placement) + the rescale divisor used to map it onto positions 1–27.
+            // Logged per sample so the working score range is visible and
+            // RESONANCE_RESCALE can be calibrated from real data (see
+            // computeSessionSummary → resonanceScore min/median/max + suggestedRescale).
+            if (typeof p.score === 'number' && isFinite(p.score)) {
+                timelineEntry.resonanceScore = Math.round(p.score * 100) / 100;
+                timelineEntry.rescale = activeRescale();
+            }
             // Include spiral wave metrics snapshot if available
             if (currentEEGData.spiral && eegIntegration && eegIntegration.spiralAnalyzer) {
                 timelineEntry.spiral = eegIntegration.spiralAnalyzer.summarize(currentEEGData.spiral);
@@ -15111,13 +15315,37 @@ Use this data to personalize your response. Comment on their current state when 
             const flagged = tl.filter(e => e.artifact && e.artifact.deltaArtifactLikely).length;
             const artifactPct = Math.round(flagged / n * 100);
 
+            // Resonance-score distribution — the raw pre-rescale weighted sums
+            // recorded per sample. Exposes the working range at a glance so the
+            // rescale divisor can be calibrated: ~98% in HEART may be a genuinely
+            // stable state OR the divisor compressing the range. suggestedRescale ≈
+            // the observed high would spread the score across positions 1–27.
+            const rScores = tl.map(e => e.resonanceScore)
+                .filter(v => typeof v === 'number' && isFinite(v))
+                .sort((a, b) => a - b);
+            let resonanceScore = null;
+            if (rScores.length) {
+                const mid = rScores.length >> 1;
+                const median = rScores.length % 2 ? rScores[mid] : (rScores[mid - 1] + rScores[mid]) / 2;
+                const rescaleUsed = tl.map(e => e.rescale).find(v => typeof v === 'number') ?? null;
+                const high = rScores[rScores.length - 1];
+                resonanceScore = {
+                    min: Math.round(rScores[0] * 100) / 100,
+                    median: Math.round(median * 100) / 100,
+                    max: Math.round(high * 100) / 100,
+                    rescale: rescaleUsed,
+                    suggestedRescale: suggestRescale(high),
+                    samples: rScores.length,
+                };
+            }
+
             return {
                 durationMin: Math.round(durationMin * 10) / 10, dataPoints: n,
                 regimePct, topPositions, meanBands,
                 meanCoherence: Math.round(avg(e => e.coherence)),
                 meanFocus: Math.round(avg(e => e.focus)),
                 meanMeditation: Math.round(avg(e => e.meditation)),
-                alphaTrend, cohTrend, spiral, artifactPct
+                alphaTrend, cohTrend, spiral, resonanceScore, artifactPct
             };
         }
 
@@ -15266,7 +15494,20 @@ Use this data to personalize your response. Comment on their current state when 
                 return `<span style="color:#888;">${line}</span>`;
             };
 
-            let html = `<div style="color:#888;margin-bottom:8px;">Device: ${d.device} · last ~1s of raw EEG</div>`;
+            let html = `<div style="color:#888;margin-bottom:8px;">Device: ${d.deviceName || d.device}${d.device && d.device !== d.deviceName ? ` (${d.device})` : ''} · last ~1s of raw EEG</div>`;
+
+            // Device-unidentified warning (Task 1) — surface before placements are trusted.
+            if (d.deviceWarning) {
+                html += `<div style="background:rgba(255,107,107,0.12);border:1px solid #ff6b6b;border-radius:6px;padding:8px;margin-bottom:8px;color:#ff8888;">⚠️ ${d.deviceWarning}</div>`;
+            }
+            // Stale snapshot (exported/viewed after disconnect cleared the buffers).
+            if (d.stale) {
+                html += `<div style="background:rgba(255,184,77,0.12);border:1px solid #ffb84d;border-radius:6px;padding:8px;margin-bottom:8px;color:#ffce80;">ℹ️ ${d.note || 'Showing the last reading taken while the scalp electrodes were live.'}</div>`;
+            }
+            // Scalp electrodes not captured this read — never read as "AUX mirror scalp".
+            if (d.scalpCaptured === false && !d.stale) {
+                html += `<div style="background:rgba(255,107,107,0.12);border:1px solid #ff6b6b;border-radius:6px;padding:8px;margin-bottom:8px;color:#ff8888;">⚠️ Scalp electrodes not captured — do not trust placements until the scalp contact readout below is green.</div>`;
+            }
 
             html += '<div style="font-weight:600;color:#4A7C59;margin:8px 0 4px;">Scalp electrodes (reference baseline)</div>';
             main.forEach(ch => {
@@ -15533,11 +15774,22 @@ Use this data to personalize your response. Comment on their current state when 
                 ? compactNeurodynamics(eegIntegration.computeNeurodynamics())
                 : null;
 
+            // Resolved device identity (Task 1) — persists across disconnect, so a
+            // real session never exports as "unknown". Carries a warning when the
+            // device genuinely couldn't be identified.
+            const deviceIdent = (eegIntegration && typeof eegIntegration.getDeviceIdentity === 'function')
+                ? eegIntegration.getDeviceIdentity() : null;
+
             const exportData = {
                 exportVersion: 2,
                 timestamp: new Date().toISOString(),
-                device: eegIntegration?.getDeviceInfo()?.name || 'Unknown',
+                device: (deviceIdent && deviceIdent.name) || eegIntegration?.getDeviceInfo()?.name || 'Unknown',
+                deviceWarning: deviceIdent ? deviceIdent.warning : null,
                 sessionSummary: sessionSummary,
+                // Tone-free baseline audit (Task 2): confirms the baseline reference
+                // was captured with adaptive tones silenced. null if no baseline was
+                // captured this session (window never filled).
+                baseline: resonanceBaselineMeta,
                 insights: generateSessionInsights(sessionSummary),
                 channelDiagnostic: (eegIntegration && typeof eegIntegration.diagnoseChannels === 'function') ? eegIntegration.diagnoseChannels() : null,
                 neurodynamics: neurodynamics,
@@ -15590,7 +15842,7 @@ Use this data to personalize your response. Comment on their current state when 
                     preset: eegIntegration._athenaDevice ? eegIntegration._athenaDevice.preset : null,
                     bandPowers: eegIntegration._athenaDevice ? eegIntegration._athenaDevice.bandPowers : null,
                 } : undefined,
-                deviceType: eegIntegration?.lastConnectionMethod || 'unknown',
+                deviceType: (deviceIdent && deviceIdent.type) || eegIntegration?.lastConnectionMethod || 'unknown',
                 frequencyReference: AETHERIA_FREQUENCIES.map(f => ({
                     pos: f.pos, freq: f.freq, regime: f.regime,
                     geo: f.geo, state: f.state, keyword: f.keyword,
@@ -16657,7 +16909,7 @@ Use this data to personalize your response. Comment on their current state when 
             const recordingData = {
                 timestamp: new Date().toISOString(),
                 duration: vizSettings.timeWindow,
-                device: eegIntegration?.getDeviceInfo()?.name || 'Unknown',
+                device: (eegIntegration && typeof eegIntegration.getDeviceIdentity === 'function' && eegIntegration.getDeviceIdentity().name) || eegIntegration?.getDeviceInfo()?.name || 'Unknown',
                 electrodesData: electrodesData,
                 brainwaveHistory: brainwaveHistory,
                 settings: vizSettings
@@ -17145,8 +17397,8 @@ Please give me a natural, warm sleep report with insights about my sleep quality
                 endTime: new Date().toISOString(),
                 stats: stats,
                 hypnogram: sleepMode.hypnogram,
-                device: eegIntegration?.getDeviceInfo()?.name || 'Unknown',
-                deviceType: eegIntegration?.lastConnectionMethod || 'unknown'
+                device: (eegIntegration && typeof eegIntegration.getDeviceIdentity === 'function' && eegIntegration.getDeviceIdentity().name) || eegIntegration?.getDeviceInfo()?.name || 'Unknown',
+                deviceType: (eegIntegration && typeof eegIntegration.getDeviceIdentity === 'function' && eegIntegration.getDeviceIdentity().type) || eegIntegration?.lastConnectionMethod || 'unknown'
             };
 
             const json = JSON.stringify(exportData, null, 2);

@@ -1584,7 +1584,7 @@
                     Export
                 </button>
             </div>
-            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v57</div>
+            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v58</div>
             </div><!-- end sidebar-scroll -->
         </div>
 
@@ -3591,16 +3591,28 @@ return result;</textarea>
                 }
                 
                 try {
-                    // Parse Muse 2 EEG data format (12 samples per packet, 16-bit signed integers)
+                    // Parse the Muse 2 EEG packet (canonical muse-js format):
+                    //   bytes 0-1  → 16-bit sample counter (skip)
+                    //   bytes 2..  → 12 samples packed as 12-bit UNSIGNED big-endian
+                    //                (every 3 bytes → two 12-bit samples), 18 bytes total.
+                    // Convert each to µV: (raw - 2048) * 0.48828125  (2048 = DC midpoint).
+                    //
+                    // NOTE (2026-06-23): the previous decode read this as 16-bit SIGNED
+                    // ints with no 12-bit unpack and no DC removal, which is why the
+                    // Muse-2 channelDiagnostic showed RMS ~12k (not µV), flat spectra
+                    // (eegLike:false) and near-identical channels (commonModeSuspected).
+                    // Athena (athena-core.js EEG_SCALE) was already correct. This path
+                    // is Muse-2 only — VERIFY on a real Muse-2 session: RMS should drop
+                    // into the µV range (~tens) and eegLike should improve.
                     const samples = [];
-                    for (let i = 0; i < dataView.byteLength; i += 2) {
-                        if (i + 1 < dataView.byteLength) {
-                            // Read 16-bit signed integer, little-endian
-                            const rawValue = dataView.getInt16(i, true);
-                            // Convert to microvolts (Muse 2 scale factor: 0.48828125 µV per LSB)
-                            const microvolts = rawValue * 0.48828125;
-                            samples.push(microvolts);
-                        }
+                    for (let i = 2; i + 2 < dataView.byteLength; i += 3) {
+                        const b0 = dataView.getUint8(i);
+                        const b1 = dataView.getUint8(i + 1);
+                        const b2 = dataView.getUint8(i + 2);
+                        const s0 = (b0 << 4) | (b1 >> 4);          // first 12-bit sample
+                        const s1 = ((b1 & 0x0f) << 8) | b2;        // second 12-bit sample
+                        samples.push((s0 - 2048) * 0.48828125);
+                        samples.push((s1 - 2048) * 0.48828125);
                     }
                     
                     // Store samples for this electrode
@@ -5172,6 +5184,8 @@ return result;</textarea>
         // diagnostic "Test" buttons stay at true pitch for speaker checks).
         function toSubBass(freq) {
             let f = freq;
+            // Guard: 0/NaN/null/negative would loop forever (0*2 === 0 < 20).
+            if (!Number.isFinite(f) || f <= 0) return f;
             while (f > 60) f /= 2;
             while (f < 20) f *= 2;
             return f;
@@ -5184,6 +5198,8 @@ return result;</textarea>
         // carrier/pad stay the same "note" as the sub-bass root.
         function toAudible(freq) {
             let f = freq;
+            // Guard: 0/NaN/null/negative would loop forever.
+            if (!Number.isFinite(f) || f <= 0) return f;
             while (f > 512) f /= 2;
             while (f < 256) f *= 2;
             return f;
@@ -5401,6 +5417,33 @@ return result;</textarea>
         // during the window — evidence the silencing actually did something.
         let resonanceBaselineMeta = null;
         let _baselineSuppressedTones = 0;
+        // ── Baseline capture quality (settle + clean-sample gating) ──
+        // The baseline must be a CLEAN resting reference. Two guards keep the
+        // settling/fitting period out of it: (1) a settle delay — ignore the
+        // first few seconds after a fresh connection (dry sensors stabilizing,
+        // headband adjustment, initial blinks); (2) clean-sample gating — only
+        // accumulate artifact-free samples into the baseline window. A failsafe
+        // relaxes the clean gate after a max wait so a persistently noisy fit
+        // can't leave the baseline (and thus tones) suppressed forever.
+        const BASELINE_SETTLE_MS = 5000;     // discard the first 5s of a new connection
+        const BASELINE_MAX_WAIT_MS = 60000;  // after this (post-settle), accept any sample so baseline still completes
+        let _baselineSettleStart = null;     // set on the first sample of a connection; reset in the 'connected' handler
+        // A sample is clean enough for the baseline when it isn't a likely
+        // movement/delta artifact and movement is low. deltaHigh ALONE is allowed
+        // (genuine slow-wave, esp. post-TBI — see assessDeltaArtifact).
+        function _baselineSampleClean() {
+            const a = (typeof currentEEGData !== 'undefined' && currentEEGData) ? currentEEGData.artifact : null;
+            if (!a) return true; // no artifact info → don't block
+            if (a.deltaArtifactLikely) return false;
+            if (typeof a.movementScore === 'number' && a.movementScore > 0.04) return false;
+            return true;
+        }
+        // Capture phase for status display: 'settling' | 'capturing' | null (done).
+        function baselineCapturePhase() {
+            if (resonanceBaseline) return null;
+            if (_baselineSettleStart == null) return 'settling';
+            return (Date.now() - _baselineSettleStart) < BASELINE_SETTLE_MS ? 'settling' : 'capturing';
+        }
         // True while EEG is streaming for this session but the baseline hasn't been
         // captured yet — the window during which tone output is suppressed.
         function isBaselineWindowActive() {
@@ -5411,6 +5454,7 @@ return result;</textarea>
             // Audit flag: the window was tone-suppressed, so the baseline is clean.
             // tonesActive reflects whether any adaptive tone actually played during
             // the window (false when suppression held, as designed).
+            const sinceStart = _baselineSettleStart ? (Date.now() - _baselineSettleStart) : null;
             resonanceBaselineMeta = {
                 // Adaptive tones were suppressed across the whole capture window
                 // (see playFrequencyDirectly), so the baseline is intervention-free.
@@ -5420,6 +5464,10 @@ return result;</textarea>
                 capturedAt: new Date().toISOString(),
                 position: resonanceBaseline.position,
                 score: Math.round((resonanceBaseline.score || 0) * 100) / 100,
+                // Settle + clean-gating audit (so a clean baseline is confirmable).
+                settleMs: BASELINE_SETTLE_MS,
+                captureMs: sinceStart != null ? Math.max(0, sinceStart - BASELINE_SETTLE_MS) : null,
+                forcedCapture: sinceStart != null && sinceStart >= (BASELINE_SETTLE_MS + BASELINE_MAX_WAIT_MS),
             };
             return resonanceBaseline;
         }
@@ -5439,6 +5487,27 @@ return result;</textarea>
         // position. Replaces getAetheriaState's instantaneous value on this path.
         function getStableAetheriaPosition(bands) {
             const coherence = fieldCoherence(bands);
+
+            // ── Baseline capture phase: settle delay + clean-sample gating ──
+            // Until the baseline is captured, keep settling noise and movement
+            // artifacts OUT of the rolling window so the reference is clean.
+            if (!resonanceBaseline) {
+                if (_baselineSettleStart == null) _baselineSettleStart = Date.now();
+                const sinceStart = Date.now() - _baselineSettleStart;
+                const settled = sinceStart >= BASELINE_SETTLE_MS;
+                // Failsafe: once we've waited long enough, stop requiring 'clean'
+                // so a persistently noisy fit can't suppress the baseline forever.
+                const forced = sinceStart >= (BASELINE_SETTLE_MS + BASELINE_MAX_WAIT_MS);
+                if (!settled || (!forced && !_baselineSampleClean())) {
+                    // Skip this sample — do not accumulate it into the baseline window.
+                    const part = _resonanceSmoother.current();
+                    const idxPart = part.position;
+                    const fPart = AETHERIA_FREQUENCIES[idxPart];
+                    return { ...fPart, coherence: Math.round(part.coherence), stateIdx: idxPart,
+                             score: part.score, movement: null, baselineSettling: true };
+                }
+            }
+
             _resonanceSmoother.push(bands, coherence);
             const sm = _resonanceSmoother.current();
             const stateIdx = sm.position;
@@ -11748,6 +11817,7 @@ Use this data to personalize your response. Comment on their current state when 
                     resonanceBaseline = null;
                     resonanceBaselineMeta = null;
                     _baselineSuppressedTones = 0;
+                    _baselineSettleStart = null; // restart the settle clock for this connection
                     _aethScoreMin = Infinity; _aethScoreMax = -Infinity;
                     // Re-arm any Lo Shu walk from step 0 for the new session.
                     solfeggioSettings.loShuIndex = 0;
@@ -12985,113 +13055,6 @@ Use this data to personalize your response. Comment on their current state when 
             }
         }
 
-        function manualAdaptationTrigger() {
-            if (!eegConnected || !eegStreaming) {
-                showStatus('⚠️ Connect EEG device first', 'error');
-                return;
-            }
-            
-            if (!solfeggioSettings.enabled) {
-                showStatus('⚠️ Enable adaptive system first', 'error');
-                return;
-            }
-            
-            // Mobile audio check
-            if (solfeggioSettings.isMobile && !solfeggioSettings.userInteracted) {
-                showMobileInteractionPrompt();
-                return;
-            }
-            
-            // Override confidence requirements for manual trigger
-            const originalMinConfidence = solfeggioSettings.minStateConfidence;
-            solfeggioSettings.minStateConfidence = 0.2; // Even lower threshold for manual triggers
-            
-            // Trigger immediate adaptation with enhanced debugging
-            console.log('🔄 Manual adaptation trigger activated with enhanced diagnostics');
-            
-            // Get current EEG data
-            const currentData = eegIntegration ? eegIntegration.getCurrentData() : currentEEGData;
-            
-            if (!currentData) {
-                console.error('❌ No EEG data available for manual adaptation');
-                showStatus('❌ No EEG data - make sure Muse is connected and streaming', 'error');
-                return;
-            }
-            
-            // A manual trigger on a completed Lo Shu walk re-arms it from step 0.
-            if (solfeggioSettings.frequencyMode === 'loshu' && solfeggioSettings.loShuComplete) {
-                solfeggioSettings.loShuIndex = 0;
-                solfeggioSettings.loShuComplete = false;
-                console.log('🔁 Manual trigger re-armed completed Lo Shu walk from step 0');
-            }
-
-            // Comprehensive diagnostic
-            const brainState = analyzeBrainStateWithConfidence(currentData.bandpowers, currentData.metrics || {});
-            const stateConfidence = calculateStateConfidence();
-            const timeSinceLastAdaptation = Date.now() - (solfeggioSettings.lastAdaptationTime || 0);
-            const selectedFreq = selectOptimalFrequencyIntelligent(brainState, currentData);
-            
-            console.log('🔍 FULL DIAGNOSTIC REPORT:', {
-                currentFrequency: solfeggioSettings.currentFrequency,
-                selectedFrequency: selectedFreq,
-                brainState: brainState,
-                stateConfidence: (stateConfidence * 100).toFixed(1) + '%',
-                minConfidenceThreshold: (solfeggioSettings.minStateConfidence * 100).toFixed(1) + '%',
-                timeSinceLastAdaptation: Math.round(timeSinceLastAdaptation / 1000) + 's',
-                frequencyLock: solfeggioSettings.frequencyLock,
-                isTransitioning: solfeggioSettings.isTransitioning,
-                bandpowers: currentData.bandpowers,
-                metrics: currentData.metrics,
-                adaptationHistory: solfeggioSettings.adaptationHistory.length
-            });
-            
-            // Force adaptation regardless of conditions
-            if (selectedFreq !== solfeggioSettings.currentFrequency) {
-                console.log('🎵 FORCING frequency change:', {
-                    from: solfeggioSettings.currentFrequency,
-                    to: selectedFreq,
-                    reason: 'Manual override'
-                });
-                
-                // Stop current frequency immediately
-                stopCurrentFrequency();
-                
-                // Clear any transition state
-                solfeggioSettings.isTransitioning = false;
-                
-                // Start new frequency
-                playFrequencyDirectly(selectedFreq, brainState).catch(error => {
-                    console.error('❌ Error playing selected frequency:', error);
-                    showStatus('⚠️ Error playing frequency: ' + error.message, 'error');
-                });
-                
-                solfeggioSettings.lastAdaptationTime = Date.now();
-                solfeggioSettings.currentFrequencyStartTime = Date.now();
-                
-                showStatus(`🎵 Forced frequency change: ${solfeggioSettings.currentFrequency || 'None'} → ${selectedFreq}Hz`, 'success');
-            } else {
-                console.log('🎵 Selected frequency same as current, testing different logic...');
-                
-                // Try a different frequency selection strategy
-                const allFreqs = Object.keys(solfeggioFrequencies).map(f => parseInt(f));
-                const randomFreq = allFreqs[Math.floor(Math.random() * allFreqs.length)];
-                
-                console.log('🎲 Testing with random frequency:', randomFreq);
-                
-                stopCurrentFrequency();
-                playFrequencyDirectly(randomFreq, brainState).catch(error => {
-                    console.error('❌ Error playing random frequency:', error);
-                });
-                
-                showStatus(`🎲 Testing random frequency: ${randomFreq}Hz`, 'success');
-            }
-            
-            // Restore original threshold after a delay
-            setTimeout(() => {
-                solfeggioSettings.minStateConfidence = originalMinConfidence;
-            }, 2000);
-        }
-
         // Additional control functions for the enhanced system
         function lockCurrentFrequency() {
             if (solfeggioSettings.currentFrequency) {
@@ -13430,8 +13393,14 @@ Use this data to personalize your response. Comment on their current state when 
             // the window fills and captureResonanceBaseline() runs.
             if (isBaselineWindowActive()) {
                 const have = _resonanceSmoother.buf.length, need = RESONANCE_WINDOW;
-                console.log(`🔇 Baseline capture in progress (${have}/${need}) — holding tones until baseline is set`);
-                if (typeof showStatus === 'function') showStatus(`🧘 Capturing baseline… ${Math.min(have, need)}/${need}`, 'info');
+                const phase = baselineCapturePhase();
+                if (phase === 'settling') {
+                    console.log('🔇 Sensors settling — holding tones + baseline accumulation');
+                    if (typeof showStatus === 'function') showStatus('🧘 Settling sensors…', 'info');
+                } else {
+                    console.log(`🔇 Baseline capture in progress (${have}/${need} clean samples) — holding tones until baseline is set`);
+                    if (typeof showStatus === 'function') showStatus(`🧘 Capturing baseline… ${Math.min(have, need)}/${need}`, 'info');
+                }
                 return;
             }
 
@@ -14194,11 +14163,26 @@ Use this data to personalize your response. Comment on their current state when 
                 // Analyze brain state
                 const brainState = analyzeBrainStateWithConfidence(currentData.bandpowers, currentData.metrics || {});
                 console.log('🧠 MANUAL: Current brain state:', brainState);
-                
+
+                // "Adapt Now" on a finished Lo Shu walk RE-ARMS it from step 0
+                // (otherwise nextLoShuFrequency returns null → null tone → freeze).
+                if (solfeggioSettings.frequencyMode === 'loshu' && solfeggioSettings.loShuComplete) {
+                    solfeggioSettings.loShuIndex = 0;
+                    solfeggioSettings.loShuComplete = false;
+                    console.log('🔁 MANUAL: re-armed completed Lo Shu walk from step 0');
+                }
+
                 // Select frequency
                 const selectedFreq = selectOptimalFrequencyIntelligent(brainState, currentData);
                 console.log('🎯 MANUAL: Selected frequency:', selectedFreq);
-                
+
+                // Guard: never feed a null/invalid frequency to the audio path
+                // (toSubBass/toAudible are now loop-safe, but bail cleanly anyway).
+                if (!Number.isFinite(selectedFreq) || selectedFreq <= 0) {
+                    showStatus('🏁 Lo Shu walk complete — nothing to play', 'info');
+                    return;
+                }
+
                 // Force play this frequency
                 playFrequencyDirectly(selectedFreq, brainState, 60000).then(() => {
                     console.log('✅ MANUAL: Adaptation completed successfully');
@@ -14838,6 +14822,7 @@ Use this data to personalize your response. Comment on their current state when 
         // coherence than the single-root collider is a HYPOTHESIS to test (§7).
         const JUST_RATIOS = [1, 9/8, 5/4, 4/3, 3/2, 5/3, 15/8, 2];
         function snapToJust(freq, root) {
+            if (!Number.isFinite(freq) || !Number.isFinite(root) || freq <= 0 || root <= 0) return freq; // never loop on bad input
             let r = freq / root; while (r > 2) r /= 2; while (r < 1) r *= 2; // fold into one octave
             const j = JUST_RATIOS.reduce((a, b) => Math.abs(b - r) < Math.abs(a - r) ? b : a);
             return root * j;

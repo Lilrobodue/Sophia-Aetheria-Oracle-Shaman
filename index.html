@@ -1273,6 +1273,15 @@
     <script src="spiral-wave.js"></script>
     <!-- Temporal dynamics: Takens attractor reconstruction + fractal/complexity metrics -->
     <script src="neurodynamics.js"></script>
+    <!-- Calibration & signal provenance: honest gate + extract-and-disclose -->
+    <script src="aetheria-signal.js"></script>
+    <!-- Sensor event bus + HRV analysis (used by the Polar H10 wiring below) -->
+    <script src="aetheria-bus.js"></script>
+    <script src="hrv-analysis.js"></script>
+    <!-- Polar H10: driver then wiring. Classic scripts (NOT modules) so they work
+         over file:// too; bus/hrv/signal above must load first. -->
+    <script src="polar-h10.js"></script>
+    <script src="polar-wiring.js"></script>
 </head>
 <body>
     <!-- Disclaimer Modal — shows on every app load -->
@@ -1469,6 +1478,29 @@
                 </div>
             </div>
 
+            <!-- Heart Rate & HRV (Polar H10) — ALWAYS visible; the H10 is an independent
+                 sensor and must not be gated behind an EEG headset (works on Muse 2 / no headset). -->
+            <div class="sidebar-section">
+                <h3>❤️ Heart Rate &amp; HRV</h3>
+                <div style="background: rgba(0,0,0,0.3); padding: 8px; border-radius: 6px; font-size: 0.85rem; display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+                    <span style="font-size: 1.1rem;">❤️</span>
+                    <span id="polarHrValue" style="font-weight: 700; color: #ff6b9d;">— BPM</span>
+                    <span id="polarHrSqi" style="font-size: 0.9rem;">●</span>
+                </div>
+                <button class="btn btn-small btn-secondary" id="polarConnectBtn"
+                        onclick="(window.PolarState && window.PolarState.connected) ? disconnectPolarH10() : connectPolarH10()"
+                        style="width: 100%;">
+                    ❤️ Connect Polar H10
+                </button>
+                <div id="polarStatus" style="font-size: 0.75rem; color: #888; margin-top: 4px;">Polar H10: disconnected</div>
+                <div id="polarGate" style="font-size: 0.72rem; color: #ffaa00; margin-top: 2px; display: none;"></div>
+                <div id="polarHRV" style="font-size: 0.72rem; color: #ff6b9d; margin-top: 2px; display: none;"></div>
+                <!-- One-click tones-off rest baseline (clean resting reference for the Transduction Solver) -->
+                <button onclick="startRestBaselineCapture()" class="btn btn-small btn-secondary" style="width:100%;margin-top:8px;">🧘 Capture Rest Baseline</button>
+                <!-- EEG analysis tool: predicts EEG bands from acoustic frequency and validates against Sophia session exports -->
+                <a href="./transduction-solver.html" target="_blank" class="btn btn-small btn-secondary" style="display:block;width:100%;margin-top:8px;text-align:center;text-decoration:none;">⚡ Transduction Solver</a>
+            </div>
+
             <!-- Athena fNIRS + Heart Rate Panel (visible only when Athena connected) -->
             <div class="sidebar-section" id="athenaDataPanel" style="display: none;">
                 <h3>🩸 Hemodynamic Response</h3>
@@ -1585,7 +1617,7 @@
                     Export
                 </button>
             </div>
-            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v60</div>
+            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v63</div>
             </div><!-- end sidebar-scroll -->
         </div>
 
@@ -5418,6 +5450,13 @@ return result;</textarea>
         // during the window — evidence the silencing actually did something.
         let resonanceBaselineMeta = null;
         let _baselineSuppressedTones = 0;
+        // Explicit user-triggered "tones-off rest baseline" capture (for the
+        // Transduction Solver). While true, ALL adaptive tone output is suppressed
+        // (same guards as the auto-baseline window) so the rest reference is
+        // genuinely intervention-free. Set/cleared by startRestBaselineCapture().
+        let baselineCaptureActive = false;
+        let _restCaptureState = null;
+        const REST_BASELINE_SEC = 60;   // guided capture length
         // ── Baseline capture quality (settle + clean-sample gating) ──
         // The baseline must be a CLEAN resting reference. Two guards keep the
         // settling/fitting period out of it: (1) a settle delay — ignore the
@@ -5482,6 +5521,140 @@ return result;</textarea>
         }
 
         // ═══════════════════════════════════════════════════════════════════
+        // ONE-CLICK TONES-OFF REST BASELINE  (for the Transduction Solver)
+        // ───────────────────────────────────────────────────────────────────
+        // A short guided rest capture with the adaptive tone engine silenced, so
+        // the exported CSV is a genuinely intervention-free resting reference.
+        // Load it in transduction-solver.html as the "tones-off baseline" — that
+        // is what lets the null-model / Δ-from-baseline tests be honest. The CSV
+        // uses the same column names as a Sophia session export but with
+        // frequency_hz=0 and state=REST, so it parses as a baseline (never as a
+        // played frequency). Clean-sample gating keeps blink/movement artifacts
+        // out of the reference; each row still discloses its clean flag.
+        // ═══════════════════════════════════════════════════════════════════
+        function startRestBaselineCapture() {
+            if (baselineCaptureActive) return;
+            if (!(typeof eegStreaming !== 'undefined' && eegStreaming) || !currentEEGData || !currentEEGData.bandpowers) {
+                showStatus('Connect your EEG device and wait for a live signal before capturing a baseline', 'error');
+                return;
+            }
+            baselineCaptureActive = true;
+            // Silence any playing tones now; the suppression flag keeps them off
+            // for the whole window (adaptation ticks return early — see guards).
+            try { stopCurrentFrequencyPreservingSystem(); } catch (e) { console.warn('baseline: tone silence failed', e); }
+
+            _restCaptureState = { rows: [], startedAt: Date.now(), secs: REST_BASELINE_SEC,
+                                  remaining: REST_BASELINE_SEC, cleanCount: 0, artifactCount: 0 };
+            showRestBaselineUI();
+            _restCaptureState.timer = setInterval(() => {
+                const st = _restCaptureState;
+                if (!st) return;
+                const d = currentEEGData;
+                if (d && d.bandpowers && d.metrics) {
+                    const bp = d.bandpowers, m = d.metrics;
+                    const clean = _baselineSampleClean();
+                    if (clean) st.cleanCount++; else st.artifactCount++;
+                    const hr = (window.PolarState && window.PolarState.isFresh()) ? window.PolarState.lastHR
+                             : ((eegIntegration && eegIntegration.athenaPPG && eegIntegration.athenaPPG.heartRate) || '');
+                    st.rows.push({
+                        t: new Date().toISOString(), clean,
+                        delta: Math.round(bp.delta || 0), theta: Math.round(bp.theta || 0),
+                        alpha: Math.round(bp.alpha || 0), beta: Math.round(bp.beta || 0), gamma: Math.round(bp.gamma || 0),
+                        coherence: Math.round((m.coherence || 0) * 100), focus: Math.round((m.focus || 0) * 100),
+                        meditation: Math.round((m.meditation || 0) * 100), hr: hr,
+                    });
+                }
+                st.remaining--;
+                updateRestBaselineUI();
+                if (st.remaining <= 0) finishRestBaselineCapture(true);
+            }, 1000);
+        }
+
+        function cancelRestBaselineCapture() { finishRestBaselineCapture(false); }
+
+        function finishRestBaselineCapture(success) {
+            const st = _restCaptureState;
+            if (st && st.timer) clearInterval(st.timer);
+            baselineCaptureActive = false;
+            hideRestBaselineUI();
+            _restCaptureState = null;
+            if (!success || !st || !st.rows.length) {
+                showStatus('Rest baseline capture cancelled', 'info');
+                return;
+            }
+            // Prefer clean-only rows; fall back to all rows if too few survived
+            // gating (disclosed either way via the clean_sample column + status).
+            const cleanRows = st.rows.filter(r => r.clean);
+            const useRows = cleanRows.length >= 10 ? cleanRows : st.rows;
+            const csv = buildRestBaselineCSV(useRows);
+            const stamp = new Date().toISOString().slice(0, 19).replace(/:/g, '-');
+            const blob = new Blob([csv], { type: 'text/csv' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url; a.download = `sophia-baseline-tonesoff-${stamp}.csv`;
+            document.body.appendChild(a); a.click();
+            setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 3000);
+            showStatus(`Rest baseline exported — ${useRows.length} samples (${st.cleanCount} clean). Load it in the Transduction Solver.`, 'success');
+        }
+
+        function buildRestBaselineCSV(rows) {
+            const header = ['timestamp', 'capture_mode', 'tones_active', 'frequency_hz', 'regime', 'state',
+                            'coherence_pct', 'focus_pct', 'meditation_pct',
+                            'delta_pct', 'theta_pct', 'alpha_pct', 'beta_pct', 'gamma_pct',
+                            'heart_rate_bpm', 'clean_sample'];
+            const lines = [header.join(',')];
+            for (const r of rows) {
+                lines.push([r.t, 'tones_off_baseline', 'false', 0, 'BASELINE', 'REST',
+                            r.coherence, r.focus, r.meditation,
+                            r.delta, r.theta, r.alpha, r.beta, r.gamma,
+                            r.hr, r.clean ? 1 : 0].join(','));
+            }
+            return lines.join('\n');
+        }
+
+        // ── Guided capture overlay (created/destroyed on demand) ──
+        function showRestBaselineUI() {
+            let el = document.getElementById('restBaselineOverlay');
+            if (!el) {
+                el = document.createElement('div');
+                el.id = 'restBaselineOverlay';
+                el.style.cssText = 'position:fixed;inset:0;background:rgba(6,6,16,0.92);z-index:10050;display:flex;align-items:center;justify-content:center;padding:20px;';
+                el.innerHTML = `
+                    <div style="max-width:420px;width:100%;background:#0c0c1a;border:1px solid #7b68ee44;border-radius:12px;padding:24px;text-align:center;font-family:inherit;">
+                        <div style="font-size:2rem;margin-bottom:6px;">🧘</div>
+                        <div style="font-size:1.05rem;color:#bb99ff;font-weight:600;margin-bottom:6px;">Capturing Rest Baseline</div>
+                        <div style="font-size:0.8rem;color:#00ff88;margin-bottom:12px;">🔇 Tones off — this is your clean resting reference</div>
+                        <div style="font-size:0.85rem;color:#cfc8dc;line-height:1.6;margin-bottom:16px;">
+                            Sit comfortably, eyes open, and relax. Breathe normally and try to stay still —
+                            avoid blinking hard, clenching, or moving. Just be.
+                        </div>
+                        <div style="font-family:monospace;font-size:2rem;color:#e0dcd0;margin-bottom:8px;"><span id="restBaselineCountdown">${REST_BASELINE_SEC}</span>s</div>
+                        <div style="background:rgba(255,255,255,0.08);height:8px;border-radius:4px;overflow:hidden;margin-bottom:6px;">
+                            <div id="restBaselineBar" style="height:100%;width:0%;background:linear-gradient(90deg,#7b68ee,#64ffc8);transition:width 0.4s;"></div>
+                        </div>
+                        <div id="restBaselineQuality" style="font-size:0.72rem;color:#888;margin-bottom:16px;">clean samples: 0</div>
+                        <button onclick="cancelRestBaselineCapture()" class="btn btn-small btn-secondary" style="width:100%;">Cancel</button>
+                    </div>`;
+                document.body.appendChild(el);
+            }
+            el.style.display = 'flex';
+            updateRestBaselineUI();
+        }
+        function updateRestBaselineUI() {
+            const st = _restCaptureState; if (!st) return;
+            const cd = document.getElementById('restBaselineCountdown');
+            const bar = document.getElementById('restBaselineBar');
+            const q = document.getElementById('restBaselineQuality');
+            if (cd) cd.textContent = Math.max(0, st.remaining);
+            if (bar) bar.style.width = Math.min(100, ((st.secs - st.remaining) / st.secs) * 100) + '%';
+            if (q) q.textContent = `clean samples: ${st.cleanCount}` + (st.artifactCount ? ` · ${st.artifactCount} artifact` : '');
+        }
+        function hideRestBaselineUI() {
+            const el = document.getElementById('restBaselineOverlay');
+            if (el) el.style.display = 'none';
+        }
+
+        // ═══════════════════════════════════════════════════════════════════
         // fNIRS-DRIVEN PLACEMENT (candidate, Athena-only) — Selah's guide
         // ───────────────────────────────────────────────────────────────────
         // Finding (Athena block test, 2026-06-23): the rolling STD of ΔHbO
@@ -5502,11 +5675,38 @@ return result;</textarea>
         };
         const GATE_CFG = {
             enabled: false,        // DEFAULT OFF — flip true only after the verification gate clears the index
-            minDwellSec: 20,       // always hold a position at least this long
+            regimeAdaptive: false, // DEFAULT OFF — scale dwell/cooldown by tissue regime (verify before trusting)
+            minDwellSec: 20,       // always hold a position at least this long (HEART reference)
             maxDwellSec: 90,       // advance no later than this (timeout)
             timerDwellSec: 45,     // used when gating is off / fNIRS unavailable (fallback pacing)
             settledThreshold: 0.35, // advance when settledness drops to/below this (re-tune in verification)
         };
+
+        // ── Regime-adaptive pacing ──────────────────────────────────────────
+        // Different tissue responds at different rates: neural (HEAD) fastest,
+        // dense physical (GUT) slowest. The ratios are DERIVED from the same
+        // DURATION_PROTOCOL the dose-duration summary uses (optimal minutes
+        // HEAD 20 : HEART 30 : GUT 45 → normalize to HEART = 1.0), NOT guessed —
+        // so per-position dwell and the total-dose evaluation share one model.
+        // These are a starting hypothesis: log per-advance and re-tune from real
+        // settle-time data before flipping GATE_CFG.regimeAdaptive on by default.
+        const REGIME_DWELL_RATIO = { HEAD: 0.67, HEART: 1.0, GUT: 1.5 };
+        const GATE_BASE_DWELL = { min: 20, timer: 45, max: 90 };  // HEART reference (matches GATE_CFG)
+        function regimeMul(regime) { return REGIME_DWELL_RATIO[regime] || 1.0; }
+        function regimeDwell(regime) {
+            const r = regimeMul(regime);
+            return { min: Math.round(GATE_BASE_DWELL.min * r), timer: Math.round(GATE_BASE_DWELL.timer * r), max: Math.round(GATE_BASE_DWELL.max * r) };
+        }
+        // Resolve the regime of a played Aetheria frequency by band; fall back to
+        // the classified position, then HEART. (currentFrequency is the true
+        // Aetheria pitch — the sub-bass fold is audio-only.)
+        function regimeForFrequency(freq) {
+            if (freq >= 174 && freq <= 963) return 'GUT';
+            if (freq >= 1206 && freq <= 3150) return 'HEART';
+            if (freq >= 3504 && freq <= 6336) return 'HEAD';
+            return (typeof currentAetheriaPosition !== 'undefined' && currentAetheriaPosition && currentAetheriaPosition.regime) || 'HEART';
+        }
+
         const _fnClamp = (x, a, b) => Math.max(a, Math.min(b, x));
         const _fnStdev = a => { const m = a.reduce((s, v) => s + v, 0) / a.length;
             return Math.sqrt(a.reduce((s, v) => s + (v - m) ** 2, 0) / a.length); };
@@ -5562,12 +5762,17 @@ return result;</textarea>
         // Walk-pacing gate (Task 2). Default OFF → existing/timer pacing (no behavior
         // change). When ON (verification), advance once hemodynamics settle into the
         // position. Returns {advance, by} where `by` is logged as advancedBy.
-        function shouldAdvanceWalk(dwellSec, cfg = GATE_CFG) {
-            if (dwellSec < cfg.minDwellSec) return { advance: false, by: 'minDwell' };
-            if (dwellSec >= cfg.maxDwellSec) return { advance: true, by: 'timeout' };
-            if (!cfg.enabled) return { advance: dwellSec >= cfg.timerDwellSec, by: 'timer' };
+        function shouldAdvanceWalk(dwellSec, regime, cfg = GATE_CFG) {
+            // Regime-adaptive dwell bounds when enabled; otherwise the flat
+            // GATE_CFG values (unchanged behavior).
+            const dw = cfg.regimeAdaptive
+                ? regimeDwell(regime)
+                : { min: cfg.minDwellSec, timer: cfg.timerDwellSec, max: cfg.maxDwellSec };
+            if (dwellSec < dw.min) return { advance: false, by: 'minDwell' };
+            if (dwellSec >= dw.max) return { advance: true, by: 'timeout' };
+            if (!cfg.enabled) return { advance: dwellSec >= dw.timer, by: 'timer' };
             const s = _fnirsIndex.settledness();
-            if (s == null) return { advance: dwellSec >= cfg.timerDwellSec, by: 'timer' };
+            if (s == null) return { advance: dwellSec >= dw.timer, by: 'timer' };
             return { advance: s <= cfg.settledThreshold, by: 'settled' };
         }
 
@@ -12245,16 +12450,18 @@ Use this data to personalize your response. Comment on their current state when 
                 }
             }
 
-            // Update heart rate display
+            // Update heart rate display — but the Polar H10 is the authoritative
+            // HR source when it's connected and fresh (it gives true R-R). Only
+            // fall back to Athena PPG when the H10 isn't currently providing HR.
             const ppg = eegIntegration.athenaPPG;
-            const hrEl = document.getElementById('heartRateValue');
-            const hrSqi = document.getElementById('heartRateSqi');
-            if (hrEl && ppg) {
-                hrEl.textContent = ppg.heartRate > 0 ? ppg.heartRate + ' BPM' : '— BPM';
-                if (hrSqi) {
-                    const sqi = ppg.sqi || 0;
-                    hrSqi.style.color = sqi > 0.5 ? '#00ff88' : sqi > 0.2 ? '#ffaa00' : '#ff0055';
-                }
+            const polarFresh = window.PolarState && window.PolarState.isFresh();
+            if (ppg && !polarFresh) {
+                const txt = ppg.heartRate > 0 ? ppg.heartRate + ' BPM' : '— BPM';
+                const sqi = ppg.sqi || 0;
+                const col = sqi > 0.5 ? '#00ff88' : sqi > 0.2 ? '#ffaa00' : '#ff0055';
+                // Mirror into both the Athena panel HR and the always-visible Heart/HRV section.
+                ['heartRateValue', 'polarHrValue'].forEach(id => { const el = document.getElementById(id); if (el) el.textContent = txt; });
+                ['heartRateSqi', 'polarHrSqi'].forEach(id => { const el = document.getElementById(id); if (el) el.style.color = col; });
             }
         }
 
@@ -13551,9 +13758,16 @@ Use this data to personalize your response. Comment on their current state when 
             // driven by hemodynamic settledness (min/max dwell bounded).
             if (solfeggioSettings.frequencyMode === 'loshu' && GATE_CFG.enabled && !solfeggioSettings.loShuComplete) {
                 const dwellSec = (currentTime - (solfeggioSettings.currentFrequencyStartTime || currentTime)) / 1000;
-                const gate = shouldAdvanceWalk(dwellSec);
+                const posRegime = regimeForFrequency(solfeggioSettings.currentFrequency);
+                const gate = shouldAdvanceWalk(dwellSec, posRegime);
                 _lastWalkAdvanceBy = gate.by;
                 shouldAdapt = { adapt: gate.advance, reason: 'fnirs-gate:' + gate.by };
+                // Per-advance log so the emergent dwell-by-regime distribution is
+                // checkable against the DURATION_PROTOCOL model before trusting it.
+                if (gate.advance) {
+                    const dw = GATE_CFG.regimeAdaptive ? regimeDwell(posRegime) : { min: GATE_CFG.minDwellSec, timer: GATE_CFG.timerDwellSec, max: GATE_CFG.maxDwellSec };
+                    console.log(`⏱️ walk advance [${posRegime}] by=${gate.by} dwell=${dwellSec.toFixed(0)}s bounds=${dw.min}/${dw.timer}/${dw.max} adaptive=${GATE_CFG.regimeAdaptive}`);
+                }
             }
 
             console.log('🧠 FIXED Intelligent monitoring:', {
@@ -13650,14 +13864,19 @@ Use this data to personalize your response. Comment on their current state when 
                 return { adapt: false, reason: 'Currently transitioning' };
             }
             
-            // Reduce cooldown period to be more responsive (from 15 to 5 seconds)
-            if (timeSinceLastAdaptation < 5000) {
-                return { adapt: false, reason: 'Adaptation cooldown active (5s)' };
+            // Cooldown + minimum dwell — regime-adaptive when GATE_CFG.regimeAdaptive
+            // is on (dense GUT tissue holds longer than fast HEAD, scaled from the
+            // same DURATION_PROTOCOL ratios). Base floors: 5s cooldown, 10s min dwell.
+            const _paceMul = GATE_CFG.regimeAdaptive ? regimeMul(regimeForFrequency(solfeggioSettings.currentFrequency)) : 1;
+            const _cooldownMs = 5000 * _paceMul;
+            const _minDwellMs = 10000 * _paceMul;
+
+            if (timeSinceLastAdaptation < _cooldownMs) {
+                return { adapt: false, reason: `Adaptation cooldown active (${Math.round(_cooldownMs / 1000)}s)` };
             }
-            
-            // Reduce minimum duration to be more responsive (from 30 to 10 seconds)
-            if (timeSinceFrequencyStart < 10000) {
-                return { adapt: false, reason: 'Minimum frequency duration not met (10s)' };
+
+            if (timeSinceFrequencyStart < _minDwellMs) {
+                return { adapt: false, reason: `Minimum frequency duration not met (${Math.round(_minDwellMs / 1000)}s)` };
             }
             
             // Force adaptation if maximum duration reached (prevent getting stuck)
@@ -14522,9 +14741,9 @@ Use this data to personalize your response. Comment on their current state when 
                 // endstate delta is a valid pre/post (the baseline is not itself an
                 // intervention state). Tones resume automatically on the next
                 // adaptation tick once the baseline window closes.
-                if (isBaselineWindowActive()) {
+                if (isBaselineWindowActive() || baselineCaptureActive) {
                     _baselineSuppressedTones++;
-                    console.log('🔇 Baseline window active — suppressing adaptive tone (' + frequency + 'Hz) until baseline captured');
+                    console.log('🔇 Baseline capture active — suppressing adaptive tone (' + frequency + 'Hz)');
                     return;
                 }
                 console.log(`🎵 FIXED Direct playback: ${frequency}Hz (${solfeggioFrequencies[frequency]?.name || 'Unknown'})`);
@@ -14596,9 +14815,9 @@ Use this data to personalize your response. Comment on their current state when 
             // Task 2 — tone-free baseline. The crossfade path runs its own
             // oscillator (not playFrequencyDirectly), so it needs the same guard:
             // no tone output while the baseline is still being captured.
-            if (isBaselineWindowActive()) {
+            if (isBaselineWindowActive() || baselineCaptureActive) {
                 _baselineSuppressedTones++;
-                console.log('🔇 Baseline window active — suppressing adaptive crossfade (' + newFrequency + 'Hz) until baseline captured');
+                console.log('🔇 Baseline capture active — suppressing adaptive crossfade (' + newFrequency + 'Hz)');
                 return;
             }
             if (solfeggioSettings.isTransitioning) {
@@ -15830,6 +16049,12 @@ Use this data to personalize your response. Comment on their current state when 
                     timelineEntry.heartRate = eegIntegration.athenaPPG.heartRate;
                 }
             }
+            // Polar H10 is the preferred HR source (true R-R). Overrides PPG when fresh,
+            // and works even on a Muse-2 (non-Athena) session.
+            if (window.PolarState && window.PolarState.isFresh()) {
+                timelineEntry.heartRate = window.PolarState.lastHR;
+                timelineEntry.heartRateSource = 'polar_h10';
+            }
             aetheriaTimeline.push(timelineEntry);
             if (aetheriaTimeline.length > AETHERIA_TIMELINE_MAX) {
                 aetheriaTimeline = aetheriaTimeline.slice(-AETHERIA_TIMELINE_MAX);
@@ -15945,13 +16170,39 @@ Use this data to personalize your response. Comment on their current state when 
                 };
             }
 
+            // Frequency dose duration (interval-analysis DURATION_PROTOCOL).
+            // Did the session meet the recommended dose for the regime it spent
+            // the most time in? Module-guarded; flows into the summary, insights,
+            // and JSON export. Regime is the primary axis; a walk name (when
+            // known) refines it via WALK_PROTOCOL.
+            let dose = null;
+            const domRegime = Object.keys(regimePct).sort((a, b) => regimePct[b] - regimePct[a])[0];
+            if (typeof IntervalAnalysis !== 'undefined' && IntervalAnalysis.evaluateDuration && domRegime && regimePct[domRegime] > 0) {
+                // The active Lo Shu walk sets the dose target when known (a full
+                // traverse crosses all three regimes, so the walk-level protocol —
+                // e.g. Vortex 40-50, CABI 75-120 — is the right target, not the
+                // dominant regime). Fall back to the dominant regime otherwise.
+                const WALK_KEY_TO_NAME = { A: 'Layer Ascent', B: 'Pillar Walk', C: 'Flying Star Vortex', CAB: 'CAB', O: 'Ouroboros', CABI: 'CABI' };
+                const walkKey = (typeof solfeggioSettings !== 'undefined' && solfeggioSettings) ? solfeggioSettings.loShuWalk : null;
+                const walkType = (walkKey && WALK_KEY_TO_NAME[walkKey]) || null;
+                const ev = IntervalAnalysis.evaluateDuration(domRegime, durationMin, walkType);
+                dose = {
+                    regime: domRegime, walkType: walkType || null,
+                    basis: walkType || (domRegime + ' regime'),
+                    actualMin: Math.round(durationMin * 10) / 10,
+                    status: ev.status, met: ev.met, label: ev.label,
+                    minMin: ev.protocol.min, optimalMin: ev.protocol.optimal, maxMin: ev.protocol.max,
+                    protocolLabel: ev.protocol.label,
+                };
+            }
+
             return {
                 durationMin: Math.round(durationMin * 10) / 10, dataPoints: n,
                 regimePct, topPositions, meanBands,
                 meanCoherence: Math.round(avg(e => e.coherence)),
                 meanFocus: Math.round(avg(e => e.focus)),
                 meanMeditation: Math.round(avg(e => e.meditation)),
-                alphaTrend, cohTrend, spiral, resonanceScore, fnirs, artifactPct
+                alphaTrend, cohTrend, spiral, resonanceScore, fnirs, artifactPct, dose
             };
         }
 
@@ -16009,6 +16260,18 @@ Use this data to personalize your response. Comment on their current state when 
                 ins.push(`Movement was flagged in ${s.artifactPct}% of epochs - for the cleanest data, minimize jaw/neck movement and let the headband settle.`);
             }
 
+            // Frequency dose duration (interval-analysis DURATION_PROTOCOL)
+            if (s.dose) {
+                const d = s.dose;
+                if (d.status === 'optimal') {
+                    ins.push(`Dose: ${d.actualMin} min for ${d.basis} - within the recommended ${d.minMin}-${d.maxMin} min window (${d.protocolLabel}). A complete dose.`);
+                } else if (d.status === 'short') {
+                    ins.push(`Dose: ${d.actualMin} min - below the ${d.minMin} min minimum for ${d.basis} (${d.protocolLabel}). Longer sits let this tissue respond; aim for ~${d.optimalMin} min next time.`);
+                } else {
+                    ins.push(`Dose: ${d.actualMin} min - beyond the ${d.maxMin} min recommendation for ${d.basis} (${d.protocolLabel}). Fine if intentional - more isn't necessarily better.`);
+                }
+            }
+
             return ins;
         }
 
@@ -16023,6 +16286,17 @@ Use this data to personalize your response. Comment on their current state when 
             };
             let html = '';
             html += `<div style="color:#888;margin-bottom:10px;">${s.dataPoints} readings over ${s.durationMin} min</div>`;
+
+            // Frequency dose duration — recommended dose vs. actual (interval-analysis)
+            if (s.dose) {
+                const d = s.dose;
+                const col = d.status === 'optimal' ? '#00ff88' : d.status === 'short' ? '#ffaa00' : '#7b8cff';
+                const icon = d.status === 'optimal' ? '✓' : d.status === 'short' ? '△' : '↑';
+                html += `<div style="margin:2px 0 10px;padding:6px 8px;border-radius:6px;background:rgba(255,255,255,0.03);border-left:3px solid ${col};color:${col};font-size:0.9rem;">
+                    ${icon} <strong>Dose ${d.actualMin} min</strong> · ${d.basis} target ${d.minMin}-${d.maxMin} min (optimal ${d.optimalMin})
+                    <div style="color:#999;font-size:0.78rem;margin-top:2px;">${d.label}</div>
+                </div>`;
+            }
 
             // Regime time
             html += '<div style="font-weight:600;color:#4A7C59;margin:10px 0 4px;">Time by Regime</div>';
@@ -16456,6 +16730,15 @@ Use this data to personalize your response. Comment on their current state when 
                     preset: eegIntegration._athenaDevice ? eegIntegration._athenaDevice.preset : null,
                     bandPowers: eegIntegration._athenaDevice ? eegIntegration._athenaDevice.bandPowers : null,
                 } : undefined,
+                // Polar H10: heart-rate + HRV (true R-R). Present when connected.
+                polarData: (window.PolarState && window.PolarState.sessionRR.length)
+                    ? window.PolarState.exportBlock() : undefined,
+                // Signal calibration (the pre-session gate) + provenance (extract-and-disclose
+                // fingerprint). Facts only — the Tagger assigns weight/verdict. Drops in next to
+                // `signals` per aetheria.calib.v1 / aetheria.prov.v1.
+                calibration: (window.PolarState && window.PolarState.calibration) || undefined,
+                signalProvenance: (window.PolarState && window.PolarState.sessionRR.length)
+                    ? window.PolarState.finalizeProvenance() : undefined,
                 deviceType: (deviceIdent && deviceIdent.type) || eegIntegration?.lastConnectionMethod || 'unknown',
                 // Per-frame fNIRS stream for offline verification (tools/fnirs_replay.mjs).
                 // Compact columnar form to bound size. Present only on Athena sessions.
@@ -16549,7 +16832,8 @@ Use this data to personalize your response. Comment on their current state when 
                     ];
                     if (isAthena) {
                         const ppg = eegIntegration?.athenaPPG;
-                        summaryRow.push(ppg?.heartRate || '');
+                        const polarHR = (window.PolarState && window.PolarState.isFresh()) ? window.PolarState.lastHR : null;
+                        summaryRow.push(polarHR || ppg?.heartRate || '');
                         const fnirs = eegIntegration?.athenaFNIRS;
                         for (const p of ['LI', 'RI', 'LO', 'RO']) {
                             if (fnirs && fnirs[p]) {

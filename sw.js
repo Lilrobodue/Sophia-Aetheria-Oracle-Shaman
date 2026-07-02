@@ -1,23 +1,50 @@
 // Sophia Oracle — Service Worker for true offline PWA
-const CACHE_VERSION = 'sophia-v60';
-const PRECACHE_URLS = [
+const CACHE_VERSION = 'sophia-v63';
+
+// The bare shell — if any of THESE fail the install is pointless, so they're
+// the atomic core. Everything else is best-effort (see EXTRA_URLS).
+const CORE_URLS = [
   './',
   './index.html',
   './manifest.json',
+];
+
+// All local assets the app needs to run fully offline after first load:
+// every JS module the page loads, plus icons. Cached best-effort so one
+// missing file can't abort the whole precache (cache.addAll is all-or-nothing).
+const EXTRA_URLS = [
+  // EEG / analysis modules (classic scripts)
+  './athena-core.js',
+  './interval-analysis.js',
+  './prescription-engine.js',
+  './spiral-wave.js',
+  './neurodynamics.js',
+  // Calibration & provenance + sensor stack
+  './aetheria-signal.js',
+  './aetheria-bus.js',
+  './hrv-analysis.js',
+  './sensor-base.js',
+  './polar-h10.js',
+  './polar-wiring.js',
+  // EEG analysis tool (standalone page, works offline)
+  './transduction-solver.html',
+  // Icons
   './icons/icon-192.png',
   './icons/icon-512.png',
   './icons/icon-maskable-192.png',
   './icons/icon-maskable-512.png',
 ];
 
-// Install: pre-cache the shell
+// Install: pre-cache the shell (atomic) + all local assets (best-effort).
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(CACHE_VERSION).then((cache) => {
-      return cache.addAll(PRECACHE_URLS).catch((err) => {
-        console.warn('SW: some precache URLs failed (icons may not exist yet):', err);
-        return cache.addAll(['./', './index.html', './manifest.json']);
-      });
+    caches.open(CACHE_VERSION).then(async (cache) => {
+      await cache.addAll(CORE_URLS); // must succeed
+      // Best-effort: cache each extra asset individually so a single 404
+      // (e.g. an icon not generated yet) doesn't sink the rest.
+      await Promise.all(EXTRA_URLS.map((url) =>
+        cache.add(url).catch((err) => console.warn('SW precache skipped', url, err && err.message))
+      ));
     })
   );
   self.skipWaiting();

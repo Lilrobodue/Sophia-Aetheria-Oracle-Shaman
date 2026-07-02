@@ -1,0 +1,1255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Biological Frequency Transduction Solver · Aetheria Coherence Lab</title>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@300;400;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#060610;--panel:#0c0c1a;--border:#1a1a2e;--gold:#d4a54a;--goldDim:#8a6c2f;--gut:#ff6b6b;--heart:#64ffc8;--head:#7b68ee;--text:#e0dcd0;--dim:#555;--mono:'JetBrains Mono',monospace;--disp:'Cormorant Garamond',serif}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--text);font-family:var(--mono);font-size:12px;min-height:100vh}
+.hdr{text-align:center;padding:14px;border-bottom:1px solid var(--border)}
+.hdr h1{font-family:var(--disp);font-size:1.4rem;font-weight:600;color:var(--gold);letter-spacing:2px}
+.hdr .sub{font-size:.5rem;color:var(--dim);margin-top:3px;letter-spacing:1px}
+.main{max-width:900px;margin:0 auto;padding:16px}
+.section{background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:14px;margin-bottom:12px}
+.section-title{font-family:var(--disp);font-size:1rem;color:var(--gold);margin-bottom:10px;font-weight:600}
+.freq-grid{display:grid;grid-template-columns:repeat(9,1fr);gap:4px;margin:8px 0}
+.freq-btn{padding:6px 2px;border:1px solid var(--border);border-radius:3px;background:var(--bg);color:var(--dim);font-size:.5rem;font-family:var(--mono);cursor:pointer;text-align:center;transition:all .2s}
+.freq-btn:hover{border-color:var(--gold);color:var(--gold)}
+.freq-btn.active{border-color:var(--gold);color:var(--gold);background:rgba(212,165,74,.1)}
+.freq-btn.gut{border-color:rgba(255,107,107,.2)}.freq-btn.gut.active{border-color:var(--gut);color:var(--gut);background:rgba(255,107,107,.1)}
+.freq-btn.heart{border-color:rgba(100,255,200,.2)}.freq-btn.heart.active{border-color:var(--heart);color:var(--heart);background:rgba(100,255,200,.1)}
+.freq-btn.head{border-color:rgba(123,104,238,.2)}.freq-btn.head.active{border-color:var(--head);color:var(--head);background:rgba(123,104,238,.1)}
+.regime-label{font-size:.5rem;color:var(--dim);margin:6px 0 4px;text-transform:uppercase;letter-spacing:1px}
+.custom-freq{display:flex;gap:8px;align-items:center;margin-top:8px}
+.custom-freq input{background:var(--bg);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:3px;font-family:var(--mono);font-size:.7rem;width:120px}
+.custom-freq button{background:rgba(212,165,74,.15);border:1px solid var(--gold);color:var(--gold);padding:6px 14px;border-radius:3px;font-family:var(--mono);font-size:.6rem;cursor:pointer}
+canvas{border-radius:4px;display:block;margin:0 auto}
+.pathway{display:grid;grid-template-columns:1fr;gap:2px;margin:8px 0}
+.pw-step{display:flex;align-items:center;gap:10px;padding:6px 10px;background:var(--bg);border-radius:3px;font-size:.55rem}
+.pw-step .num{min-width:20px;height:20px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:.5rem;font-weight:bold}
+.pw-arrow{text-align:center;color:var(--dim);font-size:.7rem;padding:1px}
+.results{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px}
+.result-card{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:12px}
+.result-card .label{font-size:.5rem;color:var(--dim);text-transform:uppercase;letter-spacing:1px;margin-bottom:4px}
+.result-card .value{font-family:var(--disp);font-size:1.4rem;font-weight:600}
+.sub-table{font-size:.52rem;margin:8px 0}
+.sub-table td{padding:3px 6px;border-bottom:1px solid #111}
+.sub-table th{padding:3px 6px;color:var(--dim);text-align:left;border-bottom:1px solid var(--border);font-weight:500}
+.eeg-bar{height:6px;border-radius:3px;margin:2px 0;transition:width .3s}
+.note{font-size:.48rem;color:var(--dim);margin-top:8px;line-height:1.6}
+.credit{text-align:center;font-size:.5rem;color:var(--goldDim);padding:12px;border-top:1px solid var(--border);margin-top:16px}
+@media(max-width:600px){.freq-grid{grid-template-columns:repeat(3,1fr)}.results{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="hdr">
+  <h1>BIOLOGICAL FREQUENCY TRANSDUCTION SOLVER</h1>
+  <div class="sub">ACOUSTIC INPUT → BODY RESONANCE → MECHANOTRANSDUCTION → SUBHARMONIC CASCADE → EEG PREDICTION</div>
+</div>
+
+<div class="main">
+  <!-- FREQUENCY SELECTOR -->
+  <div class="section">
+    <div class="section-title">Select Frequency</div>
+    <div class="regime-label" style="color:var(--gut)">GUT REGIME (174–963 Hz)</div>
+    <div class="freq-grid" id="gutGrid"></div>
+    <div class="regime-label" style="color:var(--heart)">HEART REGIME (1206–3150 Hz)</div>
+    <div class="freq-grid" id="heartGrid"></div>
+    <div class="regime-label" style="color:var(--head)">HEAD REGIME (3504–6336 Hz)</div>
+    <div class="freq-grid" id="headGrid"></div>
+    <div class="custom-freq">
+      <span style="color:var(--dim);font-size:.55rem">Custom:</span>
+      <input type="number" id="customFreq" placeholder="Hz" min="20" max="20000">
+      <button onclick="analyze(+document.getElementById('customFreq').value)">ANALYZE</button>
+    </div>
+  </div>
+
+  <!-- DELIVERY MODE -->
+  <div class="section">
+    <div class="section-title">Delivery Mode</div>
+    <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:6px" id="modeGrid">
+      <button class="freq-btn" data-mode="headphones" onclick="setMode('headphones')" style="padding:8px 4px">
+        <div style="font-size:.7rem">🎧</div><div style="font-size:.45rem;margin-top:2px">Headphones</div>
+        <div style="font-size:.4rem;color:var(--dim)">Ear only</div>
+      </button>
+      <button class="freq-btn" data-mode="bone" onclick="setMode('bone')" style="padding:8px 4px">
+        <div style="font-size:.7rem">🦴</div><div style="font-size:.45rem;margin-top:2px">Bone Cond.</div>
+        <div style="font-size:.4rem;color:var(--dim)">Ear + Skull</div>
+      </button>
+      <button class="freq-btn" data-mode="nearfield" onclick="setMode('nearfield')" style="padding:8px 4px">
+        <div style="font-size:.7rem">🔈</div><div style="font-size:.45rem;margin-top:2px">Near-field</div>
+        <div style="font-size:.4rem;color:var(--dim)">+ Partial chest</div>
+      </button>
+      <button class="freq-btn active" data-mode="fullrange" onclick="setMode('fullrange')" style="padding:8px 4px">
+        <div style="font-size:.7rem">🔊</div><div style="font-size:.45rem;margin-top:2px">Full Speakers</div>
+        <div style="font-size:.4rem;color:var(--dim)">All 5 pathways</div>
+      </button>
+      <button class="freq-btn" data-mode="subbass" onclick="setMode('subbass')" style="padding:8px 4px">
+        <div style="font-size:.7rem">〰️</div><div style="font-size:.45rem;margin-top:2px">CABI Sub-bass</div>
+        <div style="font-size:.4rem;color:var(--dim)">Visceral + Skeletal</div>
+      </button>
+    </div>
+    <div style="font-size:.48rem;color:var(--dim);margin-top:8px" id="modeDesc">
+      All 5 pathways active: air conduction + bone conduction + chest compression + visceral coupling + skeletal waveguide. Concert-level engagement.
+    </div>
+  </div>
+
+  <!-- SOPHIA DATA IMPORT -->
+  <div class="section">
+    <div class="section-title" style="color:var(--heart)">Sophia Session Data (Optional)</div>
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <label style="font-size:.55rem;color:var(--dim);cursor:pointer;background:rgba(100,255,200,.08);border:1px solid rgba(100,255,200,.2);padding:6px 14px;border-radius:3px">
+        📂 Load Sophia CSV
+        <input type="file" id="sophiaFile" accept=".csv" style="display:none" onchange="loadSophiaData(this)">
+      </label>
+      <span style="font-size:.5rem;color:var(--dim)" id="sophiaStatus">No data loaded — predictions only</span>
+      <button style="font-size:.5rem;color:var(--dim);background:none;border:1px solid var(--border);padding:4px 10px;border-radius:3px;cursor:pointer;display:none" id="clearSophia" onclick="clearSophiaData()">✕ Clear</button>
+      <button style="font-size:.5rem;color:var(--gold);background:rgba(212,165,74,.08);border:1px solid rgba(212,165,74,.3);padding:6px 14px;border-radius:3px;cursor:pointer;display:none" id="cabiWalkBtn" onclick="analyzeCABIWalk()">◈ ANALYZE CABI WALK</button>
+    </div>
+    <!-- Measured baseline (tones-OFF resting session): turns the population baseline into THIS person's rest,
+         so the prediction is scored against a real baseline instead of a hardcoded guess. -->
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:8px">
+      <label style="font-size:.55rem;color:var(--dim);cursor:pointer;background:rgba(123,104,238,.08);border:1px solid rgba(123,104,238,.25);padding:6px 14px;border-radius:3px">
+        🧘 Load tones-off baseline CSV
+        <input type="file" id="baselineFile" accept=".csv" style="display:none" onchange="loadBaselineData(this)">
+      </label>
+      <span style="font-size:.5rem;color:var(--dim)" id="baselineStatus">Baseline: population default</span>
+      <button style="font-size:.5rem;color:var(--dim);background:none;border:1px solid var(--border);padding:4px 10px;border-radius:3px;cursor:pointer;display:none" id="clearBaseline" onclick="clearBaselineData()">✕</button>
+      <label style="font-size:.5rem;color:var(--dim);cursor:pointer;display:flex;align-items:center;gap:5px">
+        <input type="checkbox" id="deltaModeChk" onchange="toggleDeltaMode(this)"> Δ compare (score the shift from baseline)
+      </label>
+    </div>
+    <div id="sophiaSummary" style="display:none;margin-top:8px;font-size:.52rem;color:var(--dim);line-height:1.7"></div>
+  </div>
+
+  <!-- TRANSDUCTION PATHWAY -->
+  <div class="section" id="pathwaySection" style="display:none">
+    <div class="section-title">Transduction Pathway</div>
+    <div id="pathway"></div>
+  </div>
+
+  <!-- BODY RESONANCE -->
+  <div class="section" id="resonanceSection" style="display:none">
+    <div class="section-title">Body Structure Resonance Response</div>
+    <canvas id="resCanvas" width="860" height="200"></canvas>
+    <div class="note">Bar height = resonance coupling strength at the input frequency. Published resonance data: skull 300–900 Hz (Franke 1951, Békésy 1948), chest 50–100 Hz (Coermann 1962), abdomen 4–8 Hz, mandible 100–200 Hz, temporal bone conduction 200–4000 Hz (Stenfelt 2006).</div>
+  </div>
+
+  <!-- SUBHARMONIC CASCADE -->
+  <div class="section" id="subSection" style="display:none">
+    <div class="section-title">Subharmonic Cascade → EEG Band Prediction</div>
+    <canvas id="subCanvas" width="860" height="220"></canvas>
+    <div id="subTable"></div>
+  </div>
+
+  <!-- RESULTS -->
+  <div class="section" id="resultSection" style="display:none">
+    <div class="section-title">Predicted Neural Effect</div>
+    <div class="results" id="results"></div>
+    <div class="note" style="margin-top:12px">
+      <strong style="color:var(--gold)">EVIDENCE TIER: HYPOTHESIS.</strong> This model combines published body resonance data with nonlinear subharmonic theory to PREDICT which neural frequencies should respond to acoustic input. Predictions should be validated against actual EEG data (Sophia sessions). The transduction chain is physically plausible but not yet experimentally confirmed as a complete pathway. Mechanosensitive ion channels (Piezo1/2, TREK) are Nobel Prize-validated (2021) as biological vibration sensors.
+    </div>
+  </div>
+</div>
+
+<div class="credit">
+  Biological Frequency Transduction Solver · Aetheria Coherence Lab · Lewis × Selah · June 2026<br>
+  Body resonance: Franke 1951, Békésy 1948, Coermann 1962, Stenfelt 2006 · Mechanotransduction: Coste/Patapoutian 2010 (Piezo channels)
+</div>
+
+<script>
+// ══════════════════════════════════════════════════════════════════
+// FREQUENCY DATA
+// ══════════════════════════════════════════════════════════════════
+const AETHERIA = {
+  GUT:   [174, 285, 396, 417, 528, 639, 741, 852, 963],
+  HEART: [1206, 1449, 1692, 1935, 2178, 2421, 2664, 2907, 3150],
+  HEAD:  [3504, 3858, 4212, 4566, 4920, 5274, 5628, 5982, 6336],
+};
+
+const SOLFEGGIO_NAMES = {
+  174:"Foundation",285:"Quantum Cognition",396:"Liberation",417:"Transmutation",
+  528:"DNA Integrity",639:"Connection",741:"Expression",852:"Intuition",963:"Cosmic Unity",
+  1206:"Neural Awakening",1449:"Heart Resonance",1692:"Emotional Clarity",1935:"Cellular Memory",
+  2178:"Compassion Activation",2421:"Harmonic Integration",2664:"Universal Love",2907:"Divine Will",3150:"Crown Coherence",
+  3504:"Transcendence",3858:"Merkaba Activation",4212:"Light Body",4566:"Quantum Field",
+  4920:"Dimensional Bridge",5274:"Akashic Access",5628:"Cosmic Integration",5982:"Source Connection",6336:"Unity Consciousness"
+};
+
+// ══════════════════════════════════════════════════════════════════
+// BODY RESONANCE PROFILES (from published biophysics literature)
+// Each structure has: name, center frequency, bandwidth (Q factor), 
+// relative coupling strength, and the body region
+// ══════════════════════════════════════════════════════════════════
+const BODY_RESONANCES = [
+  {name:"Whole body (standing)",   fCenter:6,     Q:1.5,  maxCoupling:0.3,  region:"full",    color:"#888888"},
+  {name:"Abdominal viscera",      fCenter:6,     Q:2,    maxCoupling:0.7,  region:"gut",     color:"#ff6b6b"},
+  {name:"Chest cavity",           fCenter:60,    Q:2,    maxCoupling:0.6,  region:"heart",   color:"#64ffc8"},
+  {name:"Spine (axial)",          fCenter:11,    Q:2,    maxCoupling:0.4,  region:"spine",   color:"#cccccc"},
+  {name:"Eyeball",                fCenter:40,    Q:1.5,  maxCoupling:0.2,  region:"head",    color:"#7b68ee"},
+  {name:"Mandible/jaw",           fCenter:150,   Q:2,    maxCoupling:0.5,  region:"head",    color:"#9b88ee"},
+  {name:"Skull vault",            fCenter:500,   Q:1.8,  maxCoupling:0.8,  region:"head",    color:"#bb99ff"},
+  {name:"Temporal bone",          fCenter:1200,  Q:1.5,  maxCoupling:0.9,  region:"head",    color:"#7b68ee"},
+  {name:"Bone conduction path",   fCenter:2500,  Q:1.2,  maxCoupling:0.7,  region:"head",    color:"#6658dd"},
+  {name:"Inner ear (cochlea)",    fCenter:3000,  Q:0.8,  maxCoupling:1.0,  region:"head",    color:"#5548cc"},
+];
+
+// ══════════════════════════════════════════════════════════════════
+// DELIVERY MODES — pathway weights per body structure
+// ══════════════════════════════════════════════════════════════════
+// Each mode weights how strongly each body structure receives energy
+// Based on: air path, bone path, chest compression, visceral, skeletal waveguide
+const DELIVERY_MODES = {
+  headphones: {
+    name: "Headphones (Air Conduction)",
+    desc: "Pathway 1 only: ear canal → eardrum → cochlea. Cleanest signal, minimal body coupling. Best for precision frequency delivery but weakest somatic engagement.",
+    weights: {
+      "Whole body (standing)":    0.0,
+      "Abdominal viscera":       0.0,
+      "Chest cavity":            0.0,
+      "Spine (axial)":           0.0,
+      "Eyeball":                 0.05,
+      "Mandible/jaw":            0.1,
+      "Skull vault":             0.15,
+      "Temporal bone":           0.3,
+      "Bone conduction path":    0.2,
+      "Inner ear (cochlea)":     1.0,
+    },
+    pathways: ["Air conduction (ears)"],
+    couplingMultiplier: 0.4,
+  },
+  bone: {
+    name: "Bone Conduction Headphones",
+    desc: "Pathways 1+2: temporal bone vibration + ear canal. Direct skull resonance engagement. Bypasses eardrum — energy enters the cochlea AND brain tissue through bone.",
+    weights: {
+      "Whole body (standing)":    0.0,
+      "Abdominal viscera":       0.0,
+      "Chest cavity":            0.0,
+      "Spine (axial)":           0.1,
+      "Eyeball":                 0.2,
+      "Mandible/jaw":            0.5,
+      "Skull vault":             0.8,
+      "Temporal bone":           1.0,
+      "Bone conduction path":    0.9,
+      "Inner ear (cochlea)":     0.85,
+    },
+    pathways: ["Air conduction (ears)", "Bone conduction (skull)"],
+    couplingMultiplier: 0.65,
+  },
+  nearfield: {
+    name: "Near-field Speakers",
+    desc: "Pathways 1+2+3 partial: air + bone + partial chest compression at moderate volume. Some visceral coupling at low frequencies. Desktop/bookshelf listening.",
+    weights: {
+      "Whole body (standing)":    0.1,
+      "Abdominal viscera":       0.2,
+      "Chest cavity":            0.35,
+      "Spine (axial)":           0.15,
+      "Eyeball":                 0.1,
+      "Mandible/jaw":            0.3,
+      "Skull vault":             0.5,
+      "Temporal bone":           0.6,
+      "Bone conduction path":    0.5,
+      "Inner ear (cochlea)":     0.9,
+    },
+    pathways: ["Air conduction (ears)", "Bone conduction (skull)", "Chest compression (partial)"],
+    couplingMultiplier: 0.75,
+  },
+  fullrange: {
+    name: "Full-range Speakers (Loud)",
+    desc: "All 5 pathways active: air conduction + bone conduction + chest compression + visceral coupling + skeletal waveguide. Concert-level engagement. Maximum multi-pathway reinforcement.",
+    weights: {
+      "Whole body (standing)":    0.7,
+      "Abdominal viscera":       0.8,
+      "Chest cavity":            0.9,
+      "Spine (axial)":           0.6,
+      "Eyeball":                 0.3,
+      "Mandible/jaw":            0.6,
+      "Skull vault":             0.8,
+      "Temporal bone":           0.85,
+      "Bone conduction path":    0.75,
+      "Inner ear (cochlea)":     1.0,
+    },
+    pathways: ["Air conduction (ears)", "Bone conduction (skull)", "Chest compression", "Visceral coupling", "Skeletal waveguide"],
+    couplingMultiplier: 1.0,
+  },
+  subbass: {
+    name: "Aetheria CABI Sub-bass Mode",
+    desc: "Pathways 3+4+5 dominant: sub-bass carrier felt through chest, abdomen, and skeleton. Visceral and enteric coupling maximized. The 'felt frequency' mode — below conscious hearing threshold but above tactile perception.",
+    weights: {
+      "Whole body (standing)":    0.9,
+      "Abdominal viscera":       1.0,
+      "Chest cavity":            0.95,
+      "Spine (axial)":           0.8,
+      "Eyeball":                 0.1,
+      "Mandible/jaw":            0.3,
+      "Skull vault":             0.4,
+      "Temporal bone":           0.3,
+      "Bone conduction path":    0.35,
+      "Inner ear (cochlea)":     0.2,
+    },
+    pathways: ["Chest compression", "Visceral coupling", "Skeletal waveguide", "Bone conduction (partial)"],
+    couplingMultiplier: 0.85,
+  },
+};
+
+let currentMode = 'fullrange';
+let currentFreq = 174;
+let sophiaData = null;
+let baselineData = null;   // parsed tones-off baseline session (optional)
+let deltaMode = false;     // score the SHIFT from baseline instead of the absolute picture
+const BANDS5 = ['delta','theta','alpha','beta','gamma'];
+
+// Pearson correlation of two equal-length arrays.
+function pearson(a, b) {
+  const n = a.length;
+  const ma = a.reduce((x,y)=>x+y,0)/n, mb = b.reduce((x,y)=>x+y,0)/n;
+  let num=0, da=0, db=0;
+  for (let i=0;i<n;i++){ num+=(a[i]-ma)*(b[i]-mb); da+=(a[i]-ma)**2; db+=(b[i]-mb)**2; }
+  return (da>0&&db>0) ? num/Math.sqrt(da*db) : 0;
+}
+function corrColor(c){ return c>0.5?'var(--heart)':c>0?'var(--gold)':'var(--gut)'; }
+
+// The active baseline (band % summing to 100). If a tones-off baseline session
+// is loaded, use THIS person's own measured resting EEG; otherwise the
+// population default. This is both what the prediction builds on AND the NULL
+// model we test the prediction against.
+function getActiveBaseline() {
+  if (baselineData && baselineData.bandPct) {
+    const bp = baselineData.bandPct, t = BANDS5.reduce((s,b)=>s+(bp[b]||0),0)||1;
+    const out = {}; BANDS5.forEach(b => out[b] = (bp[b]||0)/t*100); return out;
+  }
+  return { ...BASELINE_EEG };
+}
+function baselineSourceLabel() {
+  return baselineData ? `measured — ${baselineData.filename}` : 'population default (hardcoded)';
+}
+
+// Parse a Sophia session CSV into stats. Shared by the session loader and the
+// tones-off baseline loader. Returns null on empty input. Adds bandPct
+// (normalized % summing to 100) and bandStd (per-band SD across snapshots — the
+// noise floor that tells us when a predicted/actual gap is meaningful).
+function parseSessionCSV(text, filename) {
+  const lines = text.trim().split('\n');
+  let h0 = lines[0]; if (h0.charCodeAt(0) === 65279) h0 = h0.slice(1); // strip UTF-8 BOM
+  const headers = h0.split(',');
+  const rows = lines.slice(1).map(line => {
+    const vals = line.split(',');
+    const obj = {};
+    headers.forEach((h, i) => obj[h.trim()] = vals[i]?.trim() || '');
+    return obj;
+  });
+  if (rows.length === 0) return null;
+  const numCols = ['delta_pct','theta_pct','alpha_pct','beta_pct','gamma_pct',
+                   'coherence_pct','focus_pct','meditation_pct','heart_rate_bpm',
+                   'fnirs_LI_hbo','fnirs_RI_hbo'];
+  const means = {};
+  numCols.forEach(col => {
+    const vals = rows.map(r => parseFloat(r[col])).filter(v => !isNaN(v));
+    means[col] = vals.length > 0 ? vals.reduce((a,b)=>a+b,0)/vals.length : 0;
+  });
+  const regimes = {}, freqs = {}, states = {};
+  rows.forEach(r => {
+    regimes[r.regime||'?'] = (regimes[r.regime||'?']||0) + 1;
+    freqs[r.frequency_hz||'?'] = (freqs[r.frequency_hz||'?']||0) + 1;
+    states[r.state||'?'] = (states[r.state||'?']||0) + 1;
+  });
+  const bandTotal = means.delta_pct + means.theta_pct + means.alpha_pct + means.beta_pct + means.gamma_pct;
+  const bandNorm = bandTotal > 0 ? {
+    delta: means.delta_pct/bandTotal, theta: means.theta_pct/bandTotal,
+    alpha: means.alpha_pct/bandTotal, beta: means.beta_pct/bandTotal, gamma: means.gamma_pct/bandTotal
+  } : {delta:.2,theta:.2,alpha:.2,beta:.2,gamma:.2};
+  const fastSlow = (means.beta_pct + means.gamma_pct) / Math.max(means.theta_pct + means.alpha_pct, 0.1);
+  const dominantState = Object.entries(states).sort((a,b)=>b[1]-a[1])[0];
+  const dominantRegime = Object.entries(regimes).sort((a,b)=>b[1]-a[1])[0];
+  const perSnapshot = rows.map(r => ({
+    freq: parseFloat(r.frequency_hz) || 0, regime: r.regime || '?', state: r.state || '?',
+    delta: parseFloat(r.delta_pct)||0, theta: parseFloat(r.theta_pct)||0, alpha: parseFloat(r.alpha_pct)||0,
+    beta: parseFloat(r.beta_pct)||0, gamma: parseFloat(r.gamma_pct)||0,
+    coherence: parseFloat(r.coherence_pct)||0, focus: parseFloat(r.focus_pct)||0,
+    meditation: parseFloat(r.meditation_pct)||0, hr: parseFloat(r.heart_rate_bpm)||0,
+  }));
+  const bandPct = {}, bandStd = {};
+  BANDS5.forEach(b => bandPct[b] = bandTotal>0 ? means[b+'_pct']/bandTotal*100 : 20);
+  BANDS5.forEach(b => {
+    const perNorm = perSnapshot.map(s => {
+      const t = s.delta+s.theta+s.alpha+s.beta+s.gamma; return t>0 ? s[b]/t*100 : 20;
+    });
+    const m = perNorm.reduce((x,y)=>x+y,0)/perNorm.length;
+    const v = perNorm.reduce((x,y)=>x+(y-m)**2,0)/Math.max(1,perNorm.length-1);
+    bandStd[b] = Math.sqrt(v);
+  });
+  return {
+    filename, snapshots: rows.length, means, bandNorm, regimes, freqs, states, fastSlow,
+    dominantState: dominantState?.[0]||'?', dominantRegime: dominantRegime?.[0]||'?',
+    laterality: (means.fnirs_RI_hbo||0)-(means.fnirs_LI_hbo||0),
+    perSnapshot, bandPct, bandStd,
+  };
+}
+
+function loadBaselineData(input) {
+  const file = input.files[0]; if (!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    const data = parseSessionCSV(e.target.result, file.name);
+    if (!data) return;
+    baselineData = data;
+    const el = document.getElementById('baselineStatus');
+    el.textContent = `Baseline: ${file.name} (δ${data.bandPct.delta.toFixed(0)} θ${data.bandPct.theta.toFixed(0)} α${data.bandPct.alpha.toFixed(0)} β${data.bandPct.beta.toFixed(0)} γ${data.bandPct.gamma.toFixed(0)})`;
+    el.style.color = '#7b68ee';
+    document.getElementById('clearBaseline').style.display = 'inline';
+    if (currentFreq) analyze(currentFreq);
+  };
+  reader.readAsText(file);
+}
+function clearBaselineData() {
+  baselineData = null;
+  const f = document.getElementById('baselineFile'); if (f) f.value = '';
+  const el = document.getElementById('baselineStatus');
+  el.textContent = 'Baseline: population default'; el.style.color = '#555';
+  document.getElementById('clearBaseline').style.display = 'none';
+  if (currentFreq) analyze(currentFreq);
+}
+function toggleDeltaMode(chk) {
+  deltaMode = chk.checked;
+  if (currentFreq) analyze(currentFreq);
+}
+
+// Shared comparison renderer used by BOTH the single-frequency card and the
+// CABI walk. Inputs are band-% objects (summing to 100). This is where the
+// honesty checks live: the null-model row, per-band noise (SD), the
+// within-noise flag on residuals, and the optional Δ-from-baseline mode.
+function buildComparisonBlock(predPct, actNorm, opts) {
+  opts = opts || {};
+  const base = getActiveBaseline();
+  const baseTot = BANDS5.reduce((s,b)=>s+base[b],0)||1;
+  const baseArr = BANDS5.map(b => base[b]/baseTot*100);
+  const predArr = BANDS5.map(b => predPct[b]||0);
+  const actArr  = BANDS5.map(b => actNorm[b]||0);
+  const stdArr  = BANDS5.map(b => (opts.actStd&&opts.actStd[b])||0);
+  const bands = ['Delta','Theta','Alpha','Beta','Gamma'];
+  const colors = ['#4444aa','#6666cc','#44cc88','#ddaa44','#dd4444'];
+
+  // THE key check: does the model beat the null (baseline-only) prediction?
+  const corrModel = pearson(predArr, actArr);
+  const corrNull  = pearson(baseArr, actArr);
+  const beats = corrModel - corrNull;
+
+  // Δ-from-baseline: score the predicted SHIFT vs the measured shift.
+  const pShow = deltaMode ? predArr.map((p,i)=>p-baseArr[i]) : predArr;
+  const aShow = deltaMode ? actArr.map((a,i)=>a-baseArr[i]) : actArr;
+  const corrShift = deltaMode ? pearson(pShow, aShow) : null;
+
+  const predDomI = predArr.indexOf(Math.max(...predArr));
+  const actDomI  = actArr.indexOf(Math.max(...actArr));
+  const bandMatch = predDomI === actDomI;
+  // Are the top two ACTUAL bands within snapshot noise of each other? Then the
+  // dominant-band verdict is a coin-flip and shouldn't be trusted.
+  const sortedAct = actArr.map((v,i)=>({v,i})).sort((x,y)=>y.v-x.v);
+  const actTie = (sortedAct[0].v - sortedAct[1].v) < (stdArr[sortedAct[0].i]||0);
+
+  const maxBar = Math.max(...pShow.map(Math.abs), ...aShow.map(Math.abs), 1);
+
+  let h = `<div class="label" style="color:var(--heart)">PREDICTED vs ACTUAL${opts.filename?' — '+opts.filename:''}${deltaMode?' · Δ-FROM-BASELINE':''}</div>`;
+
+  h += `<div style="margin:8px 0;font-size:.58rem;line-height:1.7">
+    Model vs actual: <strong style="color:${corrColor(corrModel)}">${(corrModel*100).toFixed(0)}%</strong> ·
+    Null (baseline-only) vs actual: <strong style="color:${corrColor(corrNull)}">${(corrNull*100).toFixed(0)}%</strong> ·
+    <strong style="color:${beats>0.05?'var(--heart)':beats<-0.05?'var(--gut)':'var(--gold)'}">${beats>0.05?'✓ model beats null (+'+(beats*100).toFixed(0)+'%)':beats<-0.05?'✗ null beats model':'model ≈ null — adds nothing detectable'}</strong>
+    <br><span style="color:var(--dim)">Baseline source: ${baselineSourceLabel()}. A high match that the null also gets means the fit is coming from resting EEG, not the transduction model.</span>
+    ${deltaMode?`<br>Shift correlation (Δ): <strong style="color:${corrColor(corrShift)}">${(corrShift*100).toFixed(0)}%</strong> — how well the predicted CHANGE from baseline tracks the measured change (the real test).`:''}
+  </div>`;
+
+  h += `<div style="margin:6px 0;font-size:.58rem">
+    Dominant band: <strong style="color:${bandMatch?'var(--heart)':'var(--gut)'}">${bandMatch?'✓ MATCH':'✗ MISMATCH'}</strong>
+    · Predicted <strong style="color:${colors[predDomI]}">${bands[predDomI]}</strong>
+    · Actual <strong style="color:${colors[actDomI]}">${bands[actDomI]}</strong>
+    ${actTie?`<span style="color:var(--gold)"> · ⚠ actual top two bands are within snapshot noise — the dominant-band verdict is a coin-flip here</span>`:''}
+  </div>`;
+
+  h += `<table class="sub-table" style="width:100%">
+    <tr><th>Band</th><th>${deltaMode?'Pred Δ':'Predicted'}</th><th></th><th>${deltaMode?'Actual Δ':'Actual (±SD)'}</th><th></th><th>resid</th></tr>`;
+  bands.forEach((b,i) => {
+    const p = pShow[i], a = aShow[i], sd = stdArr[i], resid = a - p;
+    const within = Math.abs(resid) < (sd||0);
+    const residColor = within ? 'var(--dim)' : Math.abs(resid)<5?'var(--heart)':Math.abs(resid)<15?'var(--gold)':'var(--gut)';
+    const pW = Math.min(100, Math.abs(p)/maxBar*100).toFixed(0);
+    const aW = Math.min(100, Math.abs(a)/maxBar*100).toFixed(0);
+    const errX = Math.min(100, (Math.abs(a)+sd)/maxBar*100).toFixed(0);
+    h += `<tr>
+      <td style="color:${colors[i]}">${b}</td>
+      <td style="text-align:right;width:54px">${deltaMode&&p>0?'+':''}${p.toFixed(1)}%</td>
+      <td style="width:104px"><div style="background:${colors[i]}44;height:8px;width:${pW}%;border-radius:4px"></div></td>
+      <td style="text-align:right;width:74px">${deltaMode&&a>0?'+':''}${a.toFixed(1)}%${!deltaMode&&sd?` <span style="color:var(--dim)">±${sd.toFixed(0)}</span>`:''}</td>
+      <td style="width:104px;position:relative"><div style="background:${colors[i]};height:8px;width:${aW}%;border-radius:4px"></div>${!deltaMode&&sd?`<div style="position:absolute;top:-1px;height:10px;width:1px;background:rgba(255,255,255,.6);left:${errX}%"></div>`:''}</td>
+      <td style="text-align:right;color:${residColor}">${resid>0?'+':''}${resid.toFixed(1)}%${within?' <span style="color:var(--dim)">(ns)</span>':''}</td>
+    </tr>`;
+  });
+  h += `</table>`;
+
+  h += `<div style="font-size:.48rem;color:var(--dim);margin-top:8px">
+    <strong>How to read this:</strong> the model only earns trust when it beats the null (baseline-only) prediction.
+    "resid" = actual − predicted; the white tick is +1 SD of snapshot noise; <span style="color:var(--dim)">(ns)</span> = residual smaller than that SD, i.e. within noise.
+    ${baselineData?'':'Load a tones-off baseline session (rest, no tones) to replace the population baseline with a measured resting baseline and enable Δ scoring.'}
+    ${opts.freqNote||''}
+    ${opts.fastSlow?'<br>Fast/Slow ratio: '+opts.fastSlow.toFixed(2)+'× · '+(opts.fastSlow>2.5?'HIGH (scattered/aroused)':opts.fastSlow>1.5?'MODERATE (engaged)':'LOW (calm/meditative)'):''}
+  </div>`;
+  return h;
+}
+
+function loadSophiaData(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    const text = e.target.result;
+    const lines = text.trim().split('\n');
+    const headers = lines[0].replace(/^\uFEFF/, '').split(',');
+    const rows = lines.slice(1).map(line => {
+      const vals = line.split(',');
+      const obj = {};
+      headers.forEach((h, i) => obj[h.trim()] = vals[i]?.trim() || '');
+      return obj;
+    });
+    if (rows.length === 0) return;
+    const numCols = ['delta_pct','theta_pct','alpha_pct','beta_pct','gamma_pct',
+                     'coherence_pct','focus_pct','meditation_pct','heart_rate_bpm',
+                     'fnirs_LI_hbo','fnirs_RI_hbo'];
+    const means = {};
+    numCols.forEach(col => {
+      const vals = rows.map(r => parseFloat(r[col])).filter(v => !isNaN(v));
+      means[col] = vals.length > 0 ? vals.reduce((a,b)=>a+b,0)/vals.length : 0;
+    });
+    const regimes = {}, freqs = {}, states = {};
+    rows.forEach(r => {
+      regimes[r.regime||'?'] = (regimes[r.regime||'?']||0) + 1;
+      freqs[r.frequency_hz||'?'] = (freqs[r.frequency_hz||'?']||0) + 1;
+      states[r.state||'?'] = (states[r.state||'?']||0) + 1;
+    });
+    const bandTotal = means.delta_pct + means.theta_pct + means.alpha_pct + means.beta_pct + means.gamma_pct;
+    const bandNorm = bandTotal > 0 ? {
+      delta: means.delta_pct / bandTotal, theta: means.theta_pct / bandTotal,
+      alpha: means.alpha_pct / bandTotal, beta: means.beta_pct / bandTotal,
+      gamma: means.gamma_pct / bandTotal
+    } : {delta:.2,theta:.2,alpha:.2,beta:.2,gamma:.2};
+    const fastSlow = (means.beta_pct + means.gamma_pct) / Math.max(means.theta_pct + means.alpha_pct, 0.1);
+    const dominantState = Object.entries(states).sort((a,b)=>b[1]-a[1])[0];
+    const dominantRegime = Object.entries(regimes).sort((a,b)=>b[1]-a[1])[0];
+    sophiaData = {
+      filename: file.name, snapshots: rows.length, means, bandNorm,
+      regimes, freqs, states, fastSlow,
+      dominantState: dominantState?.[0] || '?',
+      dominantRegime: dominantRegime?.[0] || '?',
+      laterality: (means.fnirs_RI_hbo||0) - (means.fnirs_LI_hbo||0),
+      // Per-snapshot data for CABI walk analysis
+      perSnapshot: rows.map(r => ({
+        freq: parseFloat(r.frequency_hz) || 0,
+        regime: r.regime || '?',
+        state: r.state || '?',
+        delta: parseFloat(r.delta_pct) || 0,
+        theta: parseFloat(r.theta_pct) || 0,
+        alpha: parseFloat(r.alpha_pct) || 0,
+        beta: parseFloat(r.beta_pct) || 0,
+        gamma: parseFloat(r.gamma_pct) || 0,
+        coherence: parseFloat(r.coherence_pct) || 0,
+        focus: parseFloat(r.focus_pct) || 0,
+        meditation: parseFloat(r.meditation_pct) || 0,
+        hr: parseFloat(r.heart_rate_bpm) || 0,
+      })),
+    };
+    // Normalized band % + per-band SD (the snapshot-to-snapshot noise floor) for honest comparison.
+    { const bt = means.delta_pct+means.theta_pct+means.alpha_pct+means.beta_pct+means.gamma_pct;
+      sophiaData.bandPct = {}; sophiaData.bandStd = {};
+      BANDS5.forEach(b => sophiaData.bandPct[b] = bt>0 ? means[b+'_pct']/bt*100 : 20);
+      BANDS5.forEach(b => {
+        const pn = sophiaData.perSnapshot.map(s => { const t=s.delta+s.theta+s.alpha+s.beta+s.gamma; return t>0?s[b]/t*100:20; });
+        const m = pn.reduce((x,y)=>x+y,0)/pn.length;
+        sophiaData.bandStd[b] = Math.sqrt(pn.reduce((x,y)=>x+(y-m)**2,0)/Math.max(1,pn.length-1));
+      });
+    }
+    document.getElementById('sophiaStatus').textContent = `✓ ${file.name} (${rows.length} snapshots)`;
+    document.getElementById('sophiaStatus').style.color = '#64ffc8';
+    document.getElementById('clearSophia').style.display = 'inline';
+    // Show CABI Walk button if multiple frequencies detected
+    const uniqueFreqs = Object.keys(freqs).filter(f => f !== '?' && parseFloat(f) > 0);
+    document.getElementById('cabiWalkBtn').style.display = uniqueFreqs.length > 1 ? 'inline' : 'none';
+    const sumEl = document.getElementById('sophiaSummary');
+    sumEl.style.display = 'block';
+    sumEl.innerHTML = `<strong style="color:var(--heart)">Session:</strong> ${rows.length} snaps · 
+      Regime: <strong>${sophiaData.dominantRegime}</strong> · State: <strong>${sophiaData.dominantState}</strong> ·
+      Coherence: ${means.coherence_pct?.toFixed(0)||0}% · Focus: ${means.focus_pct?.toFixed(0)||0}% · 
+      δ=${means.delta_pct?.toFixed(0)||0}% θ=${means.theta_pct?.toFixed(0)||0}% 
+      α=${means.alpha_pct?.toFixed(0)||0}% β=${means.beta_pct?.toFixed(0)||0}% γ=${means.gamma_pct?.toFixed(0)||0}% · 
+      Fast/Slow: ${fastSlow.toFixed(2)}×`;
+    // Multi-frequency session → auto-run the frequency-matched CABI walk (the fair test);
+    // single-frequency → the single-frequency comparison card.
+    if (uniqueFreqs.length > 1) analyzeCABIWalk();
+    else if (currentFreq) analyze(currentFreq);
+  };
+  reader.readAsText(file);
+}
+
+function clearSophiaData() {
+  sophiaData = null;
+  document.getElementById('sophiaFile').value = '';
+  document.getElementById('sophiaStatus').textContent = 'No data loaded — predictions only';
+  document.getElementById('sophiaStatus').style.color = '#555';
+  document.getElementById('clearSophia').style.display = 'none';
+  document.getElementById('cabiWalkBtn').style.display = 'none';
+  document.getElementById('sophiaSummary').style.display = 'none';
+  if (currentFreq) analyze(currentFreq);
+}
+
+function analyzeCABIWalk() {
+  if (!sophiaData || !sophiaData.perSnapshot) return;
+  
+  const snaps = sophiaData.perSnapshot;
+  const n = snaps.length;
+  
+  // Extract unique frequencies and their weights (number of snapshots)
+  const freqCounts = {};
+  snaps.forEach(s => {
+    if (s.freq > 0) freqCounts[s.freq] = (freqCounts[s.freq]||0) + 1;
+  });
+  const uniqueFreqs = Object.entries(freqCounts)
+    .map(([f,c]) => ({freq:parseFloat(f), count:c, weight:c/n}))
+    .sort((a,b) => {
+      // Sort by first appearance in the walk
+      const aIdx = snaps.findIndex(s => s.freq === a.freq);
+      const bIdx = snaps.findIndex(s => s.freq === b.freq);
+      return aIdx - bIdx;
+    });
+  
+  // Compute composite predicted EEG (weighted sum across all frequencies)
+  const compositePred = {delta:0, theta:0, alpha:0, beta:0, gamma:0};
+  const perFreqResults = [];
+  
+  uniqueFreqs.forEach(uf => {
+    const eegR = computePredictedEEG(uf.freq);
+    
+    // Weight by time spent at this frequency
+    Object.keys(compositePred).forEach(k => {
+      compositePred[k] += eegR.predicted[k] * uf.weight;
+    });
+    
+    // Get regime color
+    let regColor = '#888';
+    if (uf.freq >= 174 && uf.freq <= 963) regColor = '#ff6b6b';
+    else if (uf.freq >= 1206 && uf.freq <= 3150) regColor = '#64ffc8';
+    else if (uf.freq >= 3504 && uf.freq <= 6336) regColor = '#7b68ee';
+    
+    // Dominant band for this frequency
+    const domKey = Object.entries(eegR.predicted).sort((a,b)=>b[1]-a[1])[0][0];
+    const domBand = EEG_BANDS.find(b => b.name.toLowerCase() === domKey);
+    
+    perFreqResults.push({
+      ...uf,
+      bandEnergy: ['delta','theta','alpha','beta','gamma'].map(k => eegR.predicted[k]/100),
+      dominantBand: domBand || EEG_BANDS[0],
+      regColor,
+      regime: uf.freq <= 963 ? 'GUT' : uf.freq <= 3150 ? 'HEART' : 'HEAD',
+      name: SOLFEGGIO_NAMES[uf.freq] || uf.freq + ' Hz',
+    });
+  });
+  
+  // Normalize composite to 100%
+  const compTotal = Object.values(compositePred).reduce((a,b)=>a+b,0) || 1;
+  Object.keys(compositePred).forEach(k => compositePred[k] = compositePred[k] / compTotal * 100);
+  
+  // Composite dominant band
+  const compDomKey = Object.entries(compositePred).sort((a,b)=>b[1]-a[1])[0][0];
+  const compDom = EEG_BANDS.find(b => b.name.toLowerCase() === compDomKey) || EEG_BANDS[0];
+  
+  // Actual EEG from session
+  const actPct = {
+    delta: sophiaData.means.delta_pct || 0,
+    theta: sophiaData.means.theta_pct || 0,
+    alpha: sophiaData.means.alpha_pct || 0,
+    beta: sophiaData.means.beta_pct || 0,
+    gamma: sophiaData.means.gamma_pct || 0,
+  };
+  const actTotal = Object.values(actPct).reduce((a,b)=>a+b,0);
+  const actNorm = {};
+  Object.keys(actPct).forEach(k => actNorm[k] = actTotal > 0 ? actPct[k] / actTotal * 100 : 20);
+  const actDomKey = Object.entries(actNorm).sort((a,b)=>b[1]-a[1])[0][0];
+  
+  // Predicted normalized (already normalized in compositePred)
+  const predNorm = compositePred;
+  
+  // Correlation
+  const predArr = ['delta','theta','alpha','beta','gamma'].map(k => predNorm[k]||0);
+  const actArr = ['delta','theta','alpha','beta','gamma'].map(k => actNorm[k]||0);
+  const mP = predArr.reduce((a,b)=>a+b,0)/5, mA = actArr.reduce((a,b)=>a+b,0)/5;
+  let num=0,dP=0,dA=0;
+  for(let i=0;i<5;i++){num+=(predArr[i]-mP)*(actArr[i]-mA);dP+=(predArr[i]-mP)**2;dA+=(actArr[i]-mA)**2}
+  const corr = (dP>0&&dA>0) ? num/Math.sqrt(dP*dA) : 0;
+  
+  const bandMatch = compDom.name.toLowerCase() === actDomKey;
+  
+  // ── RENDER RESULTS ──
+  ['pathwaySection','resonanceSection','subSection','resultSection'].forEach(id => 
+    document.getElementById(id).style.display = 'block');
+  
+  // Build walk timeline and results
+  const bands = ['Delta','Theta','Alpha','Beta','Gamma'];
+  const colors = ['#4444aa','#6666cc','#44cc88','#ddaa44','#dd4444'];
+  
+  let html = `
+  <div class="result-card" style="grid-column:1/-1;border-color:rgba(212,165,74,.4);background:rgba(212,165,74,.02)">
+    <div class="label" style="color:var(--gold)">CABI ADAPTIVE WALK ANALYSIS — ${sophiaData.filename}</div>
+    <div style="font-size:.55rem;color:var(--text);margin:8px 0">
+      <strong>${n} snapshots</strong> across <strong>${uniqueFreqs.length} frequencies</strong> · 
+      Walk path through: ${uniqueFreqs.map(f => `<span style="color:${f.regColor}">${f.freq}Hz</span>`).join(' → ')}
+    </div>
+    
+    <div style="font-size:.5rem;color:var(--dim);margin-bottom:8px">FREQUENCY WALK TIMELINE</div>
+    <div style="display:flex;height:24px;border-radius:3px;overflow:hidden;margin-bottom:12px">
+      ${uniqueFreqs.map(f => `<div style="width:${f.weight*100}%;background:${f.regColor}22;border-right:1px solid #111;display:flex;align-items:center;justify-content:center;font-size:.4rem;color:${f.regColor}" title="${f.freq}Hz: ${f.count} snapshots (${(f.weight*100).toFixed(0)}%)">${f.freq}</div>`).join('')}
+    </div>
+    
+    <div style="font-size:.5rem;color:var(--dim);margin-bottom:6px">PER-FREQUENCY CONTRIBUTION</div>
+    <table class="sub-table" style="width:100%">
+      <tr><th>Frequency</th><th>Regime</th><th>Time</th><th>Predicted Band</th><th>Contribution</th></tr>
+      ${perFreqResults.map(f => `<tr>
+        <td style="color:${f.regColor}">${f.freq} Hz <span style="color:var(--dim)">${f.name.split(' ')[0]}</span></td>
+        <td style="color:${f.regColor}">${f.regime}</td>
+        <td>${(f.weight*100).toFixed(0)}% (${f.count} snaps)</td>
+        <td style="color:${f.dominantBand.color}">${f.dominantBand.name}</td>
+        <td style="font-size:.45rem">${bands.map((b,i) => f.bandEnergy[i]>0.01 ? `<span style="color:${colors[i]}">${b[0]}:${(f.bandEnergy[i]*f.weight*100).toFixed(0)}</span>` : '').filter(Boolean).join(' ')}</td>
+      </tr>`).join('')}
+    </table>
+  </div>
+  
+  <div class="result-card" style="grid-column:1/-1;border-color:rgba(100,255,200,.4);background:rgba(100,255,200,.02)">
+    ${buildComparisonBlock(
+        Object.fromEntries(BANDS5.map(b=>[b, predNorm[b]||0])),
+        Object.fromEntries(BANDS5.map(b=>[b, actNorm[b]||0])),
+        { filename: sophiaData.filename + ' · CABI walk', actStd: sophiaData.bandStd, fastSlow: sophiaData.fastSlow,
+          freqNote: '<br>Composite weights each frequency\'s subharmonic cascade by time spent at it during the walk — frequency-matched, the fair test.' }
+    )}
+  </div>`;
+  
+  document.getElementById('results').innerHTML = html;
+}
+
+function setMode(mode) {
+  currentMode = mode;
+  document.querySelectorAll('#modeGrid .freq-btn').forEach(b => 
+    b.classList.toggle('active', b.dataset.mode === mode));
+  document.getElementById('modeDesc').textContent = DELIVERY_MODES[mode].desc;
+  if (currentFreq) analyze(currentFreq);
+}
+
+// ══════════════════════════════════════════════════════════════════
+// EEG BANDS
+// ══════════════════════════════════════════════════════════════════
+const EEG_BANDS = [
+  {name:"Delta",  lo:0.5,   hi:4,    color:"#4444aa", state:"Deep sleep, repair, unconscious processing"},
+  {name:"Theta",  lo:4,     hi:8,    color:"#6666cc", state:"Meditation, drowsiness, memory consolidation, creativity"},
+  {name:"Alpha",  lo:8,     hi:13,   color:"#44cc88", state:"Relaxed awareness, default mode, Schumann boundary"},
+  {name:"Beta",   lo:13,    hi:30,   color:"#ddaa44", state:"Active thinking, focus, engagement, motor planning"},
+  {name:"Gamma",  lo:30,    hi:100,  color:"#dd4444", state:"Cross-regional binding, consciousness, perception integration"},
+];
+
+// ══════════════════════════════════════════════════════════════════
+// ANALYSIS ENGINE
+// ══════════════════════════════════════════════════════════════════
+
+function resonanceResponse(inputFreq, structure) {
+  const {fCenter, Q, maxCoupling, name} = structure;
+  const logRatio = Math.log2(inputFreq / fCenter);
+  const response = 1 / (1 + Math.pow(logRatio * Q * 2, 2));
+  // Apply delivery mode weight
+  const modeWeight = DELIVERY_MODES[currentMode].weights[name] || 0;
+  return response * maxCoupling * modeWeight;
+}
+
+function computeSubharmonics(freq) {
+  const subs = [];
+  const modeMult = DELIVERY_MODES[currentMode].couplingMultiplier;
+  const modeWeights = DELIVERY_MODES[currentMode].weights;
+  
+  // Reduced decay exponent (was 1.7, now 1.1 — allows more energy to reach lower frequencies)
+  const decayExponent = 1.1;
+  
+  // Neural resonance peaks — the brain amplifies subharmonics near its natural modes
+  const neuralPeaks = [
+    {freq: 2.0, width: 1.5, gain: 3.0, band: 'delta'},   // delta natural mode
+    {freq: 6.0, width: 2.0, gain: 4.0, band: 'theta'},   // theta natural mode
+    {freq: 10.0, width: 2.5, gain: 3.5, band: 'alpha'},  // alpha natural mode
+    {freq: 20.0, width: 5.0, gain: 2.0, band: 'beta'},   // beta natural mode
+    {freq: 40.0, width: 10.0, gain: 1.5, band: 'gamma'}, // gamma natural mode
+  ];
+  
+  for (let n = 1; n <= 512; n++) {
+    const subF = freq / n;
+    if (subF < 0.1) break;
+    
+    // Base subharmonic strength with reduced decay
+    let strength = modeMult / Math.pow(n, decayExponent);
+    
+    // Neural resonance amplification — boost subharmonics near natural brain frequencies
+    if (subF >= 0.5 && subF <= 100) {
+      let resonanceGain = 1.0;
+      neuralPeaks.forEach(peak => {
+        const dist = Math.abs(subF - peak.freq) / peak.width;
+        const gain = peak.gain * Math.exp(-dist * dist);  // Gaussian resonance
+        resonanceGain += gain;
+      });
+      strength *= resonanceGain;
+    }
+    
+    let band = null;
+    for (const b of EEG_BANDS) {
+      if (subF >= b.lo && subF < b.hi) { band = b; break; }
+    }
+    
+    subs.push({
+      n, freq: subF, strength, band,
+      inEEG: subF >= 0.5 && subF <= 100,
+      ratio: `f/${n}`
+    });
+  }
+  return subs;
+}
+
+// Baseline EEG distribution (typical awake resting state with eyes open)
+const BASELINE_EEG = {
+  delta: 22, theta: 12, alpha: 12, beta: 35, gamma: 19
+};
+
+// Somatic pathway effects — how delivery mode shifts the baseline
+function getSomaticShift(mode) {
+  // Different delivery pathways activate different neural circuits
+  // Visceral/gut engagement → vagal tone → delta/theta increase
+  // Chest/cardiac engagement → baroreceptor → alpha increase
+  // Skull/cranial engagement → direct cortical → beta/gamma modulation
+  const m = DELIVERY_MODES[mode];
+  const gutWeight = (m.weights["Abdominal viscera"] || 0) * 0.5;
+  const chestWeight = (m.weights["Chest cavity"] || 0) * 0.4;
+  const skullWeight = (m.weights["Skull vault"] || 0) * 0.3;
+  
+  return {
+    delta: gutWeight * 8,        // Vagal → parasympathetic → delta boost
+    theta: gutWeight * 5,        // Vagal → relaxation → theta boost  
+    alpha: chestWeight * 6,      // Cardiac coherence → alpha boost
+    beta: skullWeight * 3,       // Cranial engagement → beta modulation
+    gamma: skullWeight * 2,      // Direct cortical → gamma modulation
+  };
+}
+
+// Compute predicted EEG distribution combining baseline + subharmonics + somatic
+function computePredictedEEG(freq) {
+  const subs = computeSubharmonics(freq);
+  const eegSubs = subs.filter(s => s.inEEG);
+  
+  // Raw subharmonic energy per band
+  const subEnergy = {};
+  EEG_BANDS.forEach(b => {
+    const bSubs = eegSubs.filter(s => s.band && s.band.name === b.name);
+    subEnergy[b.name.toLowerCase()] = bSubs.reduce((sum, s) => sum + s.strength, 0);
+  });
+  
+  // Normalize subharmonic energy to a perturbation scale (max ~30% shift)
+  const maxSub = Math.max(...Object.values(subEnergy), 0.001);
+  const subScale = 30 / maxSub;  // Scale so max perturbation is ~30%
+  
+  // Somatic pathway effects
+  const somatic = getSomaticShift(currentMode);
+  
+  // Combine: (measured or population) baseline + scaled subharmonic perturbation + somatic shift.
+  // Using the person's own tones-off baseline when loaded is what makes the null-model test honest.
+  const base = getActiveBaseline();
+  const predicted = {};
+  let total = 0;
+  ['delta','theta','alpha','beta','gamma'].forEach(band => {
+    predicted[band] = base[band] + (subEnergy[band] || 0) * subScale + (somatic[band] || 0);
+    predicted[band] = Math.max(0, predicted[band]);
+    total += predicted[band];
+  });
+  
+  // Normalize to 100%
+  Object.keys(predicted).forEach(k => predicted[k] = predicted[k] / total * 100);
+  
+  return {predicted, subEnergy, somatic, subs, eegSubs};
+}
+
+function analyze(freq) {
+  if (!freq || freq < 20 || freq > 20000) return;
+  currentFreq = freq;
+  
+  // Update active button
+  document.querySelectorAll('.freq-btn').forEach(b => b.classList.remove('active'));
+  const btn = document.querySelector(`[data-freq="${freq}"]`);
+  if (btn) btn.classList.add('active');
+  
+  // Determine regime
+  let regime = 'custom', regimeColor = '#d4a54a';
+  if (freq >= 174 && freq <= 963) { regime = 'GUT'; regimeColor = '#ff6b6b'; }
+  else if (freq >= 1206 && freq <= 3150) { regime = 'HEART'; regimeColor = '#64ffc8'; }
+  else if (freq >= 3504 && freq <= 6336) { regime = 'HEAD'; regimeColor = '#7b68ee'; }
+  
+  const name = SOLFEGGIO_NAMES[freq] || `${freq} Hz`;
+  
+  // 1. Body resonance
+  const resonances = BODY_RESONANCES.map(s => ({
+    ...s,
+    response: resonanceResponse(freq, s)
+  })).sort((a, b) => b.response - a.response);
+  
+  // 2. Predicted EEG (baseline + subharmonics + somatic effects)
+  const eegResult = computePredictedEEG(freq);
+  const subharmonics = eegResult.subs;
+  const eegSubs = eegResult.eegSubs;
+  
+  // 3. EEG band energy from the new model
+  const bandEnergy = EEG_BANDS.map(b => {
+    const bandName = b.name.toLowerCase();
+    return { ...b, energy: eegResult.predicted[bandName] / 100, subs: eegSubs.filter(s => s.band && s.band.name === b.name) };
+  });
+  const maxEnergy = Math.max(...bandEnergy.map(b => b.energy), 0.001);
+  const dominantBand = bandEnergy.reduce((a, b) => a.energy > b.energy ? a : b);
+  
+  // 4. Primary resonant structure
+  const primaryResonance = resonances[0];
+  
+  // 5. First EEG-range subharmonic
+  const firstEEG = eegSubs[0];
+  const nToEEG = firstEEG ? firstEEG.n : '—';
+  const freqAtEEG = firstEEG ? firstEEG.freq.toFixed(2) : '—';
+  
+  // Show sections
+  ['pathwaySection','resonanceSection','subSection','resultSection'].forEach(id => 
+    document.getElementById(id).style.display = 'block');
+  
+  // ── PATHWAY ──
+  drawPathway(freq, name, regime, regimeColor, primaryResonance, firstEEG, dominantBand);
+  
+  // ── RESONANCE CHART ──
+  drawResonance(freq, resonances, regimeColor);
+  
+  // ── SUBHARMONIC CASCADE ──
+  drawSubharmonics(freq, subharmonics, eegSubs, bandEnergy, regimeColor);
+  
+  // ── RESULTS ──
+  drawResults(freq, name, regime, regimeColor, primaryResonance, dominantBand, bandEnergy, firstEEG, nToEEG, freqAtEEG, eegSubs);
+}
+
+// ══════════════════════════════════════════════════════════════════
+// DRAWING FUNCTIONS
+// ══════════════════════════════════════════════════════════════════
+
+function drawPathway(freq, name, regime, regimeColor, primaryRes, firstEEG, dominantBand) {
+  const el = document.getElementById('pathway');
+  const mode = DELIVERY_MODES[currentMode];
+  const activePathways = mode.pathways.join(' + ');
+  const steps = [
+    {num:'1', color:regimeColor, text:`<strong>${freq} Hz</strong> — ${name} (${regime})`, detail:`Delivery: <strong>${mode.name}</strong> · Active pathways: ${activePathways}`},
+    {num:'2', color:'#cc8844', text:`<strong>${mode.pathways.length} Active Pathway${mode.pathways.length>1?'s':''}</strong> — ${(mode.couplingMultiplier*100).toFixed(0)}% coupling efficiency`, detail:mode.pathways.map(p=>'→ '+p).join('<br>')},
+    {num:'3', color:primaryRes.color, text:`<strong>${primaryRes.name}</strong> — ${(primaryRes.response*100).toFixed(0)}% resonance coupling`, detail:`Mode-weighted resonance at ${primaryRes.fCenter} Hz (Q=${primaryRes.Q}). ${currentMode==='subbass'?'Sub-bass: visceral structures dominate.':currentMode==='bone'?'Bone conduction: skull and temporal bone dominate.':'Multi-structure engagement.'}`},
+    {num:'4', color:'#aa66aa', text:`<strong>Mechanotransduction</strong> — Piezo1/2, TREK, T-type Ca²⁺ channels`, detail:'Mechanosensitive ion channels convert vibration → ionic current → local EM field. Nonlinear oscillator response generates subharmonics.'},
+    {num:'5', color:'#8855aa', text:`<strong>Subharmonic cascade</strong> — f/${firstEEG?firstEEG.n:'n'} = ${firstEEG?firstEEG.freq.toFixed(1):'?'} Hz`, detail:`Nonlinear biological response: input at ${freq} Hz → subharmonics at f/2, f/3, f/4... down to endogenous oscillation range`},
+    {num:'6', color:dominantBand.color, text:`<strong>${dominantBand.name} band</strong> (${dominantBand.lo}–${dominantBand.hi} Hz)`, detail:`${dominantBand.state}. Cumulative subharmonic energy: ${(dominantBand.energy*100).toFixed(1)}% relative`},
+  ];
+  
+  el.innerHTML = steps.map((s, i) => `
+    <div class="pw-step">
+      <div class="num" style="background:${s.color}22;color:${s.color};border:1px solid ${s.color}44">${s.num}</div>
+      <div><div>${s.text}</div><div style="color:var(--dim);font-size:.48rem;margin-top:2px">${s.detail}</div></div>
+    </div>
+    ${i < steps.length-1 ? '<div class="pw-arrow">↓</div>' : ''}
+  `).join('');
+}
+
+function drawResonance(freq, resonances, regimeColor) {
+  const cv = document.getElementById('resCanvas');
+  const cx = cv.getContext('2d');
+  const W = cv.width, H = cv.height;
+  cx.fillStyle = '#060610'; cx.fillRect(0, 0, W, H);
+  
+  const m = {l:120, r:20, t:20, b:30};
+  const pw = W - m.l - m.r;
+  const ph = H - m.t - m.b;
+  
+  const N = resonances.length;
+  const barH = Math.min(16, (ph - N * 3) / N);
+  
+  resonances.forEach((r, i) => {
+    const y = m.t + i * (barH + 3);
+    const w = r.response * pw;
+    
+    // Label
+    cx.fillStyle = r.response > 0.1 ? '#aaa' : '#555';
+    cx.font = '9px JetBrains Mono';
+    cx.textAlign = 'right';
+    cx.fillText(r.name, m.l - 8, y + barH - 3);
+    cx.textAlign = 'left';
+    
+    // Bar
+    cx.fillStyle = '#111'; cx.fillRect(m.l, y, pw, barH);
+    const gradient = cx.createLinearGradient(m.l, 0, m.l + w, 0);
+    gradient.addColorStop(0, r.color + '88');
+    gradient.addColorStop(1, r.color);
+    cx.fillStyle = gradient;
+    cx.fillRect(m.l, y, Math.max(1, w), barH);
+    
+    // Value
+    if (r.response > 0.05) {
+      cx.fillStyle = '#fff';
+      cx.font = '8px JetBrains Mono';
+      cx.fillText(`${(r.response*100).toFixed(0)}%`, m.l + w + 4, y + barH - 3);
+    }
+  });
+  
+  // Input frequency marker
+  cx.fillStyle = regimeColor;
+  cx.font = '9px JetBrains Mono';
+  cx.fillText(`Input: ${freq} Hz`, m.l, H - 6);
+}
+
+function drawSubharmonics(freq, subs, eegSubs, bandEnergy, regimeColor) {
+  const cv = document.getElementById('subCanvas');
+  const cx = cv.getContext('2d');
+  const W = cv.width, H = cv.height;
+  cx.fillStyle = '#060610'; cx.fillRect(0, 0, W, H);
+  
+  const m = {l:50, r:30, t:30, b:50};
+  const pw = W - m.l - m.r;
+  const ph = H - m.t - m.b;
+  
+  // Log frequency axis: 0.5 Hz to input freq
+  const logMin = Math.log10(0.5);
+  const logMax = Math.log10(freq * 1.2);
+  const toX = f => m.l + ((Math.log10(f) - logMin) / (logMax - logMin)) * pw;
+  
+  // Draw EEG band regions
+  EEG_BANDS.forEach(b => {
+    const x1 = Math.max(m.l, toX(b.lo));
+    const x2 = Math.min(W - m.r, toX(b.hi));
+    cx.fillStyle = b.color + '15';
+    cx.fillRect(x1, m.t, x2 - x1, ph);
+    cx.fillStyle = b.color + '88';
+    cx.font = '8px JetBrains Mono';
+    cx.fillText(b.name, x1 + 2, m.t + 12);
+  });
+  
+  // Draw subharmonics as vertical lines
+  const maxStrength = subs[0]?.strength || 1;
+  subs.forEach(s => {
+    if (s.freq < 0.5) return;
+    const x = toX(s.freq);
+    if (x < m.l || x > W - m.r) return;
+    const h = (s.strength / maxStrength) * ph * 0.8;
+    
+    cx.strokeStyle = s.band ? s.band.color + 'cc' : regimeColor + '44';
+    cx.lineWidth = s.inEEG ? 2 : 0.5;
+    cx.beginPath();
+    cx.moveTo(x, m.t + ph);
+    cx.lineTo(x, m.t + ph - h);
+    cx.stroke();
+    
+    // Label significant ones
+    if (s.n <= 8 || (s.inEEG && s.n <= 32)) {
+      cx.fillStyle = s.inEEG ? '#ddd' : '#555';
+      cx.font = '7px JetBrains Mono';
+      cx.save();
+      cx.translate(x, m.t + ph - h - 4);
+      cx.rotate(-Math.PI/4);
+      cx.fillText(`f/${s.n}=${s.freq.toFixed(1)}`, 0, 0);
+      cx.restore();
+    }
+  });
+  
+  // Input frequency marker
+  const xInput = toX(freq);
+  cx.strokeStyle = regimeColor;
+  cx.lineWidth = 2;
+  cx.setLineDash([3, 3]);
+  cx.beginPath(); cx.moveTo(xInput, m.t); cx.lineTo(xInput, m.t + ph); cx.stroke();
+  cx.setLineDash([]);
+  cx.fillStyle = regimeColor;
+  cx.font = '9px JetBrains Mono';
+  cx.fillText(`${freq} Hz`, xInput + 4, m.t + 12);
+  
+  // Frequency axis
+  [0.5, 1, 2, 5, 10, 20, 50, 100, 500, 1000, 5000].forEach(f => {
+    if (f > freq * 1.2) return;
+    const x = toX(f);
+    cx.fillStyle = '#444'; cx.font = '8px JetBrains Mono';
+    cx.fillText(f >= 1000 ? (f/1000)+'k' : f+'', x - 6, H - m.b + 15);
+    cx.strokeStyle = '#1a1a2e'; cx.lineWidth = 0.5;
+    cx.beginPath(); cx.moveTo(x, m.t); cx.lineTo(x, m.t + ph); cx.stroke();
+  });
+  cx.fillStyle = '#555'; cx.font = '8px JetBrains Mono';
+  cx.fillText('Frequency (Hz, log scale)', W/2 - 50, H - 5);
+  
+  // EEG band energy bars at bottom
+  const maxE = Math.max(...bandEnergy.map(b => b.energy), 0.001);
+  const barY = H - m.b + 25;
+  bandEnergy.forEach(b => {
+    const x1 = toX(b.lo), x2 = toX(b.hi);
+    const barW = (b.energy / maxE) * 8;
+    cx.fillStyle = b.color + '88';
+    cx.fillRect(x1, barY, x2 - x1, barW);
+  });
+}
+
+function drawResults(freq, name, regime, regimeColor, primaryRes, dominantBand, bandEnergy, firstEEG, nToEEG, freqAtEEG, eegSubs) {
+  const maxE = Math.max(...bandEnergy.map(b => b.energy), 0.001);
+  
+  let html = `
+  <div class="result-card">
+    <div class="label">INPUT</div>
+    <div class="value" style="color:${regimeColor}">${freq} Hz</div>
+    <div style="font-size:.55rem;color:var(--dim);margin-top:4px">${name} · ${regime} regime</div>
+  </div>
+  <div class="result-card">
+    <div class="label">PRIMARY BODY RESONANCE</div>
+    <div class="value" style="color:${primaryRes.color};font-size:1.1rem">${primaryRes.name}</div>
+    <div style="font-size:.55rem;color:var(--dim);margin-top:4px">${(primaryRes.response*100).toFixed(0)}% coupling · center ${primaryRes.fCenter} Hz</div>
+  </div>
+  <div class="result-card">
+    <div class="label">FIRST EEG-RANGE SUBHARMONIC</div>
+    <div class="value" style="color:${firstEEG?.band?.color||'#888'}">${freqAtEEG} Hz</div>
+    <div style="font-size:.55rem;color:var(--dim);margin-top:4px">f/${nToEEG} · Division factor ${nToEEG}</div>
+  </div>
+  <div class="result-card">
+    <div class="label">PREDICTED DOMINANT EEG BAND</div>
+    <div class="value" style="color:${dominantBand.color}">${dominantBand.name}</div>
+    <div style="font-size:.55rem;color:var(--dim);margin-top:4px">${dominantBand.state}</div>
+  </div>`;
+  
+  // EEG band distribution
+  html += `<div class="result-card" style="grid-column:1/-1">
+    <div class="label">EEG BAND ENERGY DISTRIBUTION (from subharmonic cascade)</div>
+    <div style="margin-top:6px">`;
+  bandEnergy.forEach(b => {
+    const pct = (b.energy / maxE * 100);
+    html += `<div style="display:flex;align-items:center;gap:8px;margin:4px 0">
+      <span style="min-width:45px;font-size:.5rem;color:${b.color}">${b.name}</span>
+      <div style="flex:1;background:#111;height:10px;border-radius:5px;overflow:hidden">
+        <div class="eeg-bar" style="width:${pct}%;background:${b.color};height:100%"></div>
+      </div>
+      <span style="min-width:35px;font-size:.5rem;color:var(--dim);text-align:right">${pct.toFixed(0)}%</span>
+    </div>`;
+  });
+  html += `</div></div>`;
+  
+  // Key subharmonics table
+  const topSubs = eegSubs.slice(0, 12);
+  if (topSubs.length > 0) {
+    html += `<div class="result-card" style="grid-column:1/-1">
+      <div class="label">KEY SUBHARMONICS IN EEG RANGE</div>
+      <table class="sub-table" style="width:100%">
+        <tr><th>Ratio</th><th>Frequency</th><th>Strength</th><th>EEG Band</th><th>Brain State</th></tr>`;
+    topSubs.forEach(s => {
+      html += `<tr>
+        <td style="color:var(--gold)">${s.ratio}</td>
+        <td><strong>${s.freq.toFixed(2)} Hz</strong></td>
+        <td>${(s.strength*100).toFixed(1)}%</td>
+        <td style="color:${s.band?.color||'#666'}">${s.band?.name||'—'}</td>
+        <td style="color:var(--dim)">${s.band?.state?.split(',')[0]||'—'}</td>
+      </tr>`;
+    });
+    html += `</table></div>`;
+  }
+  
+  // Sophia validation prediction
+  const mode = DELIVERY_MODES[currentMode];
+  html += `<div class="result-card" style="grid-column:1/-1;border-color:rgba(212,165,74,.3)">
+    <div class="label" style="color:var(--gold)">SOPHIA VALIDATION PREDICTION — ${mode.name.toUpperCase()}</div>
+    <div style="font-size:.55rem;color:var(--text);line-height:1.8;margin-top:6px">
+      When playing <strong style="color:${regimeColor}">${freq} Hz (${name})</strong> via <strong>${mode.name}</strong>:<br>
+      → <strong style="color:${dominantBand.color}">Increased ${dominantBand.name}-band power</strong> (${dominantBand.lo}–${dominantBand.hi} Hz) relative to baseline<br>
+      → Coupling efficiency: <strong>${(mode.couplingMultiplier*100).toFixed(0)}%</strong> · Active pathways: <strong>${mode.pathways.length}/5</strong><br>
+      → Primary body coupling through <strong>${primaryRes.name}</strong> at ${(primaryRes.response*100).toFixed(0)}% resonance<br>
+      → Strongest subharmonic at <strong>${freqAtEEG} Hz</strong> (f/${nToEEG})<br>
+      → HCR prediction: <strong>${primaryRes.region === 'head' ? 'hemispheric-dominant' : primaryRes.region === 'gut' ? 'ipsilateral-dominant' : 'balanced'}</strong>
+      (primary resonance region: ${primaryRes.region})
+    </div>
+  </div>`;
+  
+  // MODE COMPARISON TABLE
+  html += `<div class="result-card" style="grid-column:1/-1;border-color:rgba(123,104,238,.3)">
+    <div class="label" style="color:var(--head)">DELIVERY MODE COMPARISON — ${freq} Hz across all modes</div>
+    <table class="sub-table" style="width:100%">
+      <tr><th>Mode</th><th>Pathways</th><th>Coupling</th><th>Primary Resonator</th><th>Predicted Band</th></tr>`;
+  
+  const savedMode = currentMode;
+  Object.entries(DELIVERY_MODES).forEach(([modeKey, modeData]) => {
+    currentMode = modeKey;
+    const mRes = BODY_RESONANCES.map(s => ({...s, response: resonanceResponse(freq, s)})).sort((a,b) => b.response - a.response);
+    const mEEG = computePredictedEEG(freq);
+    const mDomKey = Object.entries(mEEG.predicted).sort((a,b)=>b[1]-a[1])[0][0];
+    const mDom = EEG_BANDS.find(b => b.name.toLowerCase() === mDomKey) || EEG_BANDS[0];
+    const isActive = modeKey === savedMode;
+    
+    html += `<tr style="${isActive ? 'background:rgba(212,165,74,.05)' : ''}">
+      <td style="color:${isActive ? 'var(--gold)' : 'var(--dim)'}">${isActive ? '▶ ' : ''}${modeData.name.split('(')[0].trim()}</td>
+      <td style="text-align:center">${modeData.pathways.length}/5</td>
+      <td style="text-align:center;color:${modeData.couplingMultiplier>0.8?'var(--heart)':modeData.couplingMultiplier>0.5?'var(--gold)':'var(--dim)'}">${(modeData.couplingMultiplier*100).toFixed(0)}%</td>
+      <td style="color:${mRes[0].color}">${mRes[0].name} (${(mRes[0].response*100).toFixed(0)}%)</td>
+      <td style="color:${mDom.color}"><strong>${mDom.name}</strong></td>
+    </tr>`;
+  });
+  currentMode = savedMode;
+  
+  html += `</table>
+    <div style="font-size:.48rem;color:var(--dim);margin-top:6px">
+      ▶ = current mode. Compare predicted dominant EEG band across delivery methods. 
+      Test by running same Aetheria frequency through headphones vs speakers vs CABI sub-bass 
+      and comparing Sophia HCR and band power measurements.
+    </div>
+  </div>`;
+  
+  document.getElementById('results').innerHTML = html;
+  
+  // ── SOPHIA DATA COMPARISON (if loaded) ──
+  if (sophiaData) {
+    const compEl = document.createElement('div');
+    compEl.className = 'result-card';
+    compEl.style.cssText = 'grid-column:1/-1;border-color:rgba(100,255,200,.4);background:rgba(100,255,200,.02)';
+    
+    // Predicted % from the cascade (built on the active baseline: measured if a
+    // tones-off session is loaded, else the population default).
+    const predTotal = bandEnergy.reduce((s,b) => s + b.energy, 0) || 1;
+    const predPct = {};
+    bandEnergy.forEach(b => predPct[b.name.toLowerCase()] = b.energy / predTotal * 100);
+    // Actual %, normalized to 100
+    const actNorm = {};
+    { const t = BANDS5.reduce((s,b)=>s+(sophiaData.means[b+'_pct']||0),0);
+      BANDS5.forEach(b => actNorm[b] = t>0 ? (sophiaData.means[b+'_pct']||0)/t*100 : 20); }
+    // Frequency-match check: was the selected frequency actually played this session?
+    const playedFreqs = Object.keys(sophiaData.freqs).filter(f=>f!=='?'&&parseFloat(f)>0).map(parseFloat);
+    const freqNote = (!playedFreqs.some(f => Math.abs(f-currentFreq) < 1) && playedFreqs.length)
+      ? `<br><span style="color:var(--gold)">⚠ ${currentFreq} Hz was not played in this session (played: ${playedFreqs.slice(0,6).join(', ')}${playedFreqs.length>6?'…':''} Hz). For a fair test use ◈ ANALYZE CABI WALK — it weights the prediction by the frequencies actually delivered.</span>`
+      : '';
+    compEl.innerHTML = buildComparisonBlock(predPct, actNorm, {
+      filename: sophiaData.filename, actStd: sophiaData.bandStd, fastSlow: sophiaData.fastSlow, freqNote
+    });
+    document.getElementById('results').appendChild(compEl);
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════
+// UI SETUP
+// ══════════════════════════════════════════════════════════════════
+
+function buildFreqGrid() {
+  ['GUT','HEART','HEAD'].forEach(regime => {
+    const el = document.getElementById(regime.toLowerCase() + 'Grid');
+    const cls = regime === 'GUT' ? 'gut' : regime === 'HEART' ? 'heart' : 'head';
+    el.innerHTML = AETHERIA[regime].map(f => 
+      `<button class="freq-btn ${cls}" data-freq="${f}" onclick="analyze(${f})">${f}<br><span style="font-size:.4rem">${SOLFEGGIO_NAMES[f]?.split(' ')[0]||''}</span></button>`
+    ).join('');
+  });
+}
+
+buildFreqGrid();
+// Auto-analyze first frequency
+analyze(174);
+</script>
+</body>
+</html>

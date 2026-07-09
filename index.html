@@ -1617,7 +1617,7 @@
                     Export
                 </button>
             </div>
-            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v63</div>
+            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v66</div>
             </div><!-- end sidebar-scroll -->
         </div>
 
@@ -5544,7 +5544,10 @@ return result;</textarea>
             try { stopCurrentFrequencyPreservingSystem(); } catch (e) { console.warn('baseline: tone silence failed', e); }
 
             _restCaptureState = { rows: [], startedAt: Date.now(), secs: REST_BASELINE_SEC,
-                                  remaining: REST_BASELINE_SEC, cleanCount: 0, artifactCount: 0 };
+                                  remaining: REST_BASELINE_SEC, cleanCount: 0, artifactCount: 0,
+                                  // Mark where the session R-R stream stands now, so the baseline
+                                  // MSV uses only the beats captured during THIS rest window.
+                                  rrStartIdx: (window.PolarState && window.PolarState.sessionRR) ? window.PolarState.sessionRR.length : 0 };
             showRestBaselineUI();
             _restCaptureState.timer = setInterval(() => {
                 const st = _restCaptureState;
@@ -5588,13 +5591,45 @@ return result;</textarea>
             const useRows = cleanRows.length >= 10 ? cleanRows : st.rows;
             const csv = buildRestBaselineCSV(useRows);
             const stamp = new Date().toISOString().slice(0, 19).replace(/:/g, '-');
-            const blob = new Blob([csv], { type: 'text/csv' });
+            downloadTextFile(csv, `sophia-baseline-tonesoff-${stamp}.csv`, 'text/csv');
+
+            // Companion MSV vector for this rest baseline — the north-star ratios
+            // from the SAME clean rows, plus only the R-R captured during this
+            // window. No spiral snapshot at rest, so the coherence metrics are
+            // honestly null here; θ/β and the HRV ratios carry the reference.
+            try {
+                const mean = (f) => useRows.reduce((s, r) => s + (f(r) || 0), 0) / useRows.length;
+                const baseBands = {
+                    delta: mean(r => r.delta), theta: mean(r => r.theta), alpha: mean(r => r.alpha),
+                    beta: mean(r => r.beta), gamma: mean(r => r.gamma),
+                };
+                const rrAll = (window.PolarState && window.PolarState.sessionRR) || [];
+                const rrWindow = rrAll.slice(st.rrStartIdx || 0);
+                const msv = computeMSV(baseBands, null, rrWindow, {
+                    context: 'rest_baseline',
+                    eegSource: (typeof eegIntegration !== 'undefined' && eegIntegration && eegIntegration.lastConnectionMethod === 'athena') ? 'athena' : 'muse',
+                });
+                const meta = {
+                    kind: 'sophia_rest_baseline', capturedAt: new Date().toISOString(),
+                    samples: useRows.length, cleanSamples: st.cleanCount, durationSec: REST_BASELINE_SEC,
+                    meanBands: Object.fromEntries(Object.keys(baseBands).map(k => [k, Math.round(baseBands[k] * 10) / 10])),
+                    msv,
+                };
+                downloadTextFile(JSON.stringify(meta, null, 2), `sophia-baseline-tonesoff-${stamp}.msv.json`, 'application/json');
+            } catch (e) { console.warn('baseline MSV export failed', e); }
+
+            showStatus(`Rest baseline exported — ${useRows.length} samples (${st.cleanCount} clean) + MSV vector. Load the CSV in the Transduction Solver.`, 'success');
+        }
+
+        // Trigger a browser download of a text blob (CSV/JSON). Revokes the URL
+        // after the click so repeated exports don't leak object URLs.
+        function downloadTextFile(text, filename, mime) {
+            const blob = new Blob([text], { type: mime || 'text/plain' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
-            a.href = url; a.download = `sophia-baseline-tonesoff-${stamp}.csv`;
+            a.href = url; a.download = filename;
             document.body.appendChild(a); a.click();
             setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 3000);
-            showStatus(`Rest baseline exported — ${useRows.length} samples (${st.cleanCount} clean). Load it in the Transduction Solver.`, 'success');
         }
 
         function buildRestBaselineCSV(rows) {
@@ -16055,6 +16090,47 @@ Use this data to personalize your response. Comment on their current state when 
                 timelineEntry.heartRate = window.PolarState.lastHR;
                 timelineEntry.heartRateSource = 'polar_h10';
             }
+            // ── STREAM SYNC: line up Muse + Polar on ONE window grid ─────────────
+            // This timeline entry IS a window on the shared host clock. Attach the
+            // co-temporal HRV snapshot (HRVAnalysis already runs a bounded trailing
+            // window continuously, so it's a same-clock readout) + a compact
+            // per-window ratio vector. HRV is inherently a TRAILING measure — we
+            // disclose that (trailingSec) and its freshness rather than pretend it's
+            // instantaneous. The window's own artifact flag gates BOTH streams, so a
+            // fidget contaminates EEG and HRV together, with no cross-stream delay.
+            let _winHrvFreq = null, _winHrvBeats = 0;
+            if (window.PolarState && window.PolarState.hrv) {
+                const H = window.PolarState.hrv;
+                _winHrvBeats = H.nBeatsClean || 0;
+                _winHrvFreq = H.freq ? { coherenceRatio: H.freq.coherenceRatio, peakHz: H.freq.peakHz } : null;
+                // "Coherent window" is defined by SCIENTIFICALLY VALIDATED criteria,
+                // not a proprietary magnitude cutoff (HeartMath's bins aren't validated):
+                //   inResonanceBand — HRV spectral peak ∈ 0.075–0.12 Hz cardiovascular
+                //     resonance band (Lehrer & Gevirtz 2014; Vaschillo 2006).
+                //   validWindow — ≥ HRV_MIN_BEATS_VALID beats (~2 min) for a legitimate
+                //     LF/resonance spectral estimate (Task Force 1996; Shaffer 2017).
+                // We record these FACTS per window; magnitude (coherenceRatio) is logged
+                // descriptively only, its threshold to be earned from the user's own data.
+                const _pk = H.freq ? H.freq.peakHz : null;
+                timelineEntry.hrvWindow = {
+                    coherenceRatio: H.freq ? H.freq.coherenceRatio : null,
+                    peakHz: _pk,
+                    rmssd: H.time ? H.time.rmssd : null,
+                    beats: _winHrvBeats,
+                    trailingSec: 256,                         // HRVAnalysis freqDomain window cap (~4 min)
+                    fresh: window.PolarState.isFresh(),
+                    inResonanceBand: (_pk != null && _pk >= HRV_RESONANCE_BAND[0] && _pk <= HRV_RESONANCE_BAND[1]),
+                    validWindow: (_winHrvBeats >= HRV_MIN_BEATS_VALID),
+                };
+            }
+            // Compact per-window ratio vector (the rich scoring/trust/targets metadata
+            // lives once at session level in sessionSummary.msv — not repeated here).
+            // clean = this window carries no delta-artifact flag → both streams trusted.
+            try {
+                const _wb = { delta: timelineEntry.delta, theta: timelineEntry.theta, alpha: timelineEntry.alpha, beta: timelineEntry.beta, gamma: timelineEntry.gamma };
+                timelineEntry.ratios = computeMSV(_wb, timelineEntry.spiral || null, [], { context: 'window', hrvFreq: _winHrvFreq, hrvBeats: _winHrvBeats }).vector;
+                timelineEntry.clean = !(timelineEntry.artifact && timelineEntry.artifact.deltaArtifactLikely);
+            } catch (e) { /* per-window ratios are best-effort; never break the session loop */ }
             aetheriaTimeline.push(timelineEntry);
             if (aetheriaTimeline.length > AETHERIA_TIMELINE_MAX) {
                 aetheriaTimeline = aetheriaTimeline.slice(-AETHERIA_TIMELINE_MAX);
@@ -16067,6 +16143,124 @@ Use this data to personalize your response. Comment on their current state when 
         // Aggregate the recorded timeline into headline stats + actionable,
         // observational insights (no clinical claims). Used by both the export
         // and the on-screen Session Summary modal.
+        // ═══════════════════════════════════════════════════════════════════
+        // MSV — Meditation Signature Vector (aetheria.msv.v1)
+        // ───────────────────────────────────────────────────────────────────
+        // The device-independent RATIO layer of the calibration north star.
+        // Six ratios computed from signals that already flow (mean band %,
+        // spiral-wave HCR, Polar H10 R-R). Ratios, not absolute µV, so they
+        // survive across devices. This is a LOGGER only: it records the vector
+        // + honest provenance (which metrics were measured, which are missing,
+        // and how much this hardware can be trusted for each). NO score, NO
+        // target-matching yet — targets must be earned against external data
+        // (ds003969 / LEMON) before any CPS is wired in. Facts here; meaning later.
+        //
+        //   thetaBetaRatio   θ/β            — classic, robust on dry EEG      (high)
+        //   gammaSlowRatio   γ/(δ+θ)        — 30-50Hz γ near noise floor/EMG  (low)
+        //   alphaCoherence   α hemispheric HCR                               (medium)
+        //   gammaHCR         γ hemispheric HCR                               (low)
+        //   hrvCoherenceRatio HeartMath peak/(total-peak) from true R-R      (high)
+        //   hrvDominantFreq  LF spectral peak (Hz, ~0.1 target)             (high)
+        // ═══════════════════════════════════════════════════════════════════
+        const MSV_VERSION = 'aetheria.msv.v1';
+        // Scientifically validated HRV-coherence criteria (NO proprietary magnitude
+        // cutoff — HeartMath's bins aren't independently validated). A "coherent
+        // window" is defined by the peak sitting in the cardiovascular resonance band
+        // over a spectrally valid (Task Force 1996) minimum window.
+        const HRV_RESONANCE_BAND = [0.075, 0.12];   // Hz — Lehrer & Gevirtz 2014; Vaschillo 2006
+        const HRV_MIN_BEATS_VALID = 120;            // ~2 min @60bpm — Task Force 1996; Shaffer 2017 (5 min = gold standard)
+        function computeMSV(meanBands, spiralSummary, rrArray, opts) {
+            opts = opts || {};
+            const num = (x) => (typeof x === 'number' && isFinite(x)) ? x : null;
+            const ratio = (a, b) => { a = num(a); b = num(b); return (a != null && b != null && b !== 0) ? a / b : null; };
+            const round3 = (x) => x == null ? null : Math.round(x * 1000) / 1000;
+
+            const mb = meanBands || {};
+            const slow = ((num(mb.delta) || 0) + (num(mb.theta) || 0)) || null;
+            const thetaBetaRatio = ratio(mb.theta, mb.beta);
+            const gammaSlowRatio = ratio(mb.gamma, slow);
+
+            // Hemispheric coherence from spiral-wave HCR. Accepts BOTH shapes:
+            // the session aggregate ({meanHcr:{alpha:0.9}}) and a per-window spiral
+            // summary ({hcr:{alpha:{hcr:0.9}}}) — so the same fn serves whole-session
+            // and single-window calls. Null when no spiral data.
+            const hcrSrc = (spiralSummary && (spiralSummary.meanHcr || spiralSummary.hcr)) || null;
+            const getHcr = (band) => {
+                if (!hcrSrc) return null;
+                const v = hcrSrc[band];
+                if (v == null) return null;
+                return num(typeof v === 'object' ? v.hcr : v);
+            };
+            const alphaCoherence = getHcr('alpha');
+            const gammaHCR = getHcr('gamma');
+
+            // HRV ratios — honest nulls below the beat threshold. Two paths:
+            // opts.hrvFreq (a pre-computed trailing HRV snapshot, for per-window
+            // fusion — reuses the continuously-running analysis) OR an rrArray to
+            // analyze here (whole-session / baseline).
+            let hrvCoherenceRatio = null, hrvDominantFreq = null, hrvBeats = 0;
+            const MIN_FREQ = (window.HRVAnalysis && window.HRVAnalysis.MIN_BEATS_FREQ) || 20;
+            if (opts.hrvFreq) {
+                hrvCoherenceRatio = num(opts.hrvFreq.coherenceRatio);
+                hrvDominantFreq = num(opts.hrvFreq.peakHz);
+                hrvBeats = opts.hrvBeats || 0;
+            } else if (window.HRVAnalysis && Array.isArray(rrArray) && rrArray.length) {
+                const h = window.HRVAnalysis.analyze(rrArray);
+                hrvBeats = (h && h.nBeatsClean) || 0;
+                if (h && h.freq) {
+                    hrvCoherenceRatio = num(h.freq.coherenceRatio);
+                    hrvDominantFreq = num(h.freq.peakHz);
+                }
+            }
+
+            const vector = {
+                thetaBetaRatio: round3(thetaBetaRatio),
+                gammaSlowRatio: round3(gammaSlowRatio),
+                alphaCoherence: round3(alphaCoherence),
+                gammaHCR: round3(gammaHCR),
+                hrvCoherenceRatio: round3(hrvCoherenceRatio),
+                hrvDominantFreq: round3(hrvDominantFreq),
+            };
+            // Per-metric trust on THIS hardware — carried with the data so the
+            // future scorer weights by reliability, not by wishful thinking.
+            const trust = {
+                thetaBetaRatio: 'high', gammaSlowRatio: 'low',
+                alphaCoherence: 'medium', gammaHCR: 'low',
+                hrvCoherenceRatio: 'high', hrvDominantFreq: 'high',
+            };
+            // Scoring role per metric — the literature verdict (2026-07-09 scan),
+            // encoded so no future CPS can quietly grade a metric that can't bear it:
+            //   borrowable-target : a validated external target exists → score vs it
+            //   personal-baseline : no transferable target → score only vs YOUR baseline
+            //   report-only       : too hardware-confounded to score → log, never grade
+            const scoring = {
+                thetaBetaRatio: 'personal-baseline',   // no normative meditation TBR; direction AMBIGUOUS (high TBR ~ mind-wandering, Angelidis 2018); 1/f-confounded (Arns 2013/2024)
+                gammaSlowRatio: 'report-only',         // 30-50Hz EMG-dominated on dry frontal/temporal (Whitham 2007; Muthukumaraswamy 2013)
+                alphaCoherence: 'personal-baseline',   // AF7↔AF8 adjacency → volume-conduction inflated; no cutoff
+                gammaHCR: 'report-only',               // gamma coherence tracks shared muscle artifact on 4 sensors
+                hrvCoherenceRatio: 'personal-baseline',// HeartMath formula published; cutoffs NOT independently validated
+                hrvDominantFreq: 'borrowable-target',  // resonance ~0.1Hz is the one solidly validated target
+            };
+            // The single borrowable normative target in the set.
+            const targets = {
+                hrvDominantFreq: { target: 0.1, tolerance: [0.075, 0.12], unit: 'Hz',
+                                   source: 'Lehrer & Gevirtz 2014; Vaschillo 2006 (cardiovascular resonance)' },
+            };
+            const missing = Object.keys(vector).filter(k => vector[k] == null);
+            return {
+                version: MSV_VERSION,
+                context: opts.context || 'session',   // 'session' | 'rest_baseline'
+                vector, trust, scoring, targets,
+                provenance: {
+                    eegSource: opts.eegSource || 'muse',
+                    spiralAvailable: !!hcr,
+                    hrvBeats,
+                    hrvAvailable: hrvBeats >= MIN_FREQ,
+                    missing,
+                },
+            };
+        }
+
         function computeSessionSummary(tl) {
             if (!tl || tl.length === 0) return null;
             const n = tl.length;
@@ -16196,13 +16390,23 @@ Use this data to personalize your response. Comment on their current state when 
                 };
             }
 
+            // MSV ratio vector — the device-independent north-star layer. Logged
+            // every session so the collection is retroactively scorable once the
+            // targets are validated. Reads the whole-session R-R from the Polar
+            // H10 (raw, sacred) and the spiral HCR already aggregated above.
+            const msv = computeMSV(
+                meanBands, spiral,
+                (window.PolarState && window.PolarState.sessionRR) || [],
+                { context: 'session', eegSource: (typeof eegIntegration !== 'undefined' && eegIntegration && eegIntegration.lastConnectionMethod === 'athena') ? 'athena' : 'muse' }
+            );
+
             return {
                 durationMin: Math.round(durationMin * 10) / 10, dataPoints: n,
                 regimePct, topPositions, meanBands,
                 meanCoherence: Math.round(avg(e => e.coherence)),
                 meanFocus: Math.round(avg(e => e.focus)),
                 meanMeditation: Math.round(avg(e => e.meditation)),
-                alphaTrend, cohTrend, spiral, resonanceScore, fnirs, artifactPct, dose
+                alphaTrend, cohTrend, spiral, resonanceScore, fnirs, artifactPct, dose, msv
             };
         }
 

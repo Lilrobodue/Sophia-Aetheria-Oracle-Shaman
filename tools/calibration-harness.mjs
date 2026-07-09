@@ -29,6 +29,11 @@
 //   - Sessions: files matching *session*.csv ; baselines: *baseline*.csv
 //   - Pairing: each session → the baseline captured nearest its start (±15 min),
 //     else the population baseline (flagged).
+//   - MSV (north-star ratios): read from the JSON exports — session exports carry
+//     sessionSummary.msv; rest-baseline captures drop a *.msv.json companion. The
+//     harness attaches each to its session by nearest start time and reports the
+//     personal-baseline journey + the one borrowable anchor (HRV resonance ~0.1 Hz),
+//     independent of the transduction test. Old CSV-only exports simply carry none.
 //
 // Pure Node (ESM). No deps. Deterministic (no Math.random / Date.now in logic).
 
@@ -107,6 +112,143 @@ function pairBaseline(sessionStart, baselines) {
   return (best && bestDelta <= PAIR_WINDOW_MS) ? best : null;
 }
 
+// ── MSV ingest — read the ratio vectors straight out of the JSON exports ──────
+// Session exports carry sessionSummary.msv (context 'session'); rest-baseline
+// captures drop a companion {kind:'sophia_rest_baseline', msv} (context
+// 'rest_baseline'). We read the scoring roles + targets FROM the data, so the
+// harness never hardcodes what the app already decided — facts flow through.
+function discoverMSV(dir) {
+  const files = fs.readdirSync(dir).filter(f => f.toLowerCase().endsWith('.json'));
+  const sessions = [], baselines = [];
+  for (const f of files) {
+    let j;
+    try { j = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')); } catch { continue; }
+    if (j && j.sessionSummary && j.sessionSummary.msv) {
+      const t = new Date(j.timestamp || (j.session && j.session.firstReading) || 0).getTime();
+      // Carry the aligned per-window stream too (Muse+Polar on one grid) when present.
+      sessions.push({ file: f, t: isNaN(t) ? null : t, msv: j.sessionSummary.msv, timeline: Array.isArray(j.timeline) ? j.timeline : null });
+    }
+    if (j && j.kind === 'sophia_rest_baseline' && j.msv) {
+      const t = new Date(j.capturedAt || 0).getTime();
+      baselines.push({ file: f, t: isNaN(t) ? null : t, msv: j.msv, meanBands: j.meanBands });
+    }
+  }
+  return { sessions, baselines };
+}
+function pairByTime(start, list) {
+  let best = null, bestDelta = Infinity;
+  for (const item of list) {
+    if (item.t == null || start == null) continue;
+    const d = Math.abs(item.t - start);
+    if (d < bestDelta) { bestDelta = d; best = item; }
+  }
+  return (best && bestDelta <= PAIR_WINDOW_MS) ? best : null;
+}
+
+// Scientifically validated HRV-coherence criteria — NOT a proprietary magnitude
+// cutoff (HeartMath's bins aren't independently validated). A "coherent window" is:
+//   peak ∈ resonance band 0.075–0.12 Hz (Lehrer & Gevirtz 2014; Vaschillo 2006)
+//   over ≥120 beats (~2 min) for a valid LF/resonance estimate (Task Force 1996).
+const HRV_RESONANCE_BAND = [0.075, 0.12];
+const HRV_MIN_BEATS_VALID = 120;
+
+// HRV-SUPERVISED EEG SIGNATURE — the "teacher" analysis the stream-alignment
+// unlocks. Because Muse + Polar share one window grid, we select the windows where
+// the heart was genuinely in cardiovascular resonance (validated label) and ask
+// what the EEG ratios look like THEN — vs all valid windows. That contrast is the
+// user's earned, personal "toward-the-north-star" EEG signature. No borrowed target
+// and no arbitrary magnitude threshold; the validated resonance BAND does the labelling.
+function coherentWindowSignature(sessionRecs, opts = {}) {
+  const band = opts.band || HRV_RESONANCE_BAND;
+  const minBeats = opts.minBeats || HRV_MIN_BEATS_VALID;
+  const inBand = (hw) => hw.inResonanceBand != null
+    ? hw.inResonanceBand                                   // recorded at source (v65+)
+    : (hw.peakHz != null && hw.peakHz >= band[0] && hw.peakHz <= band[1]);   // fallback
+  const isValid = (hw) => hw.validWindow != null ? hw.validWindow : (hw.beats || 0) >= minBeats;
+
+  const valid = [];   // all spectrally-valid, clean windows (the comparison set)
+  for (const r of sessionRecs) {
+    if (!r.timeline) continue;
+    for (const e of r.timeline) {
+      const hw = e.hrvWindow;
+      if (!hw || hw.peakHz == null || !isValid(hw)) continue;
+      if (e.clean === false) continue;      // one flag gates both streams
+      if (!e.ratios) continue;
+      valid.push({ inResonance: inBand(hw), coh: hw.coherenceRatio, peakHz: hw.peakHz, ratios: e.ratios });
+    }
+  }
+  const coherent = valid.filter(w => w.inResonance);
+  if (valid.length < 8 || coherent.length < 4) {
+    return { usable: false, nValid: valid.length, nCoherent: coherent.length,
+      note: `Too few validated windows yet (have ${valid.length} valid / ${coherent.length} in-resonance; need ≥8 valid & ≥4 in-resonance). Collect sessions with the Polar connected throughout — the first ~2 min of each session never qualify (spectrum not yet valid).` };
+  }
+  const EEG_KEYS = ['thetaBetaRatio', 'alphaCoherence'];   // scorable EEG ratios only (no report-only gamma)
+  const avgKey = (arr, k) => { const v = arr.map(w => w.ratios[k]).filter(x => typeof x === 'number' && isFinite(x)); return v.length ? mean(v) : null; };
+  const signature = {};
+  for (const k of EEG_KEYS) {
+    const coh = avgKey(coherent, k), all = avgKey(valid, k);
+    if (coh == null || all == null) continue;
+    signature[k] = { whenCoherent: +coh.toFixed(3), overall: +all.toFixed(3), shift: +(coh - all).toFixed(3) };
+  }
+  return {
+    usable: true, criterion: `peak ∈ ${band[0]}–${band[1]} Hz over ≥${minBeats} beats`,
+    nValid: valid.length, nCoherent: coherent.length,
+    resonanceFrac: +(coherent.length / valid.length).toFixed(2),
+    peakHzWhenCoherent: +mean(coherent.map(w => w.peakHz).filter(x => typeof x === 'number')).toFixed(3),
+    coherenceRatioWhenCoherent: +mean(coherent.map(w => w.coh).filter(x => typeof x === 'number' && isFinite(x))).toFixed(3),   // descriptive only
+    signature,
+  };
+}
+
+// Personal-baseline rollup over ordered clean sessions. Honours the scoring role
+// baked into each vector: 'report-only' metrics (gamma) are shown but NEVER
+// aggregated into a score; 'personal-baseline' metrics build a running mean±SD
+// (the journey); the one 'borrowable-target' metric (HRV resonance ~0.1 Hz) is
+// scored as distance to its published target — the fixed star everything else
+// is steered toward.
+function reportMSV(cleanRecs) {
+  const withMsv = cleanRecs.filter(r => r.msv && r.msv.vector).sort((a, b) => (a.start || 0) - (b.start || 0));
+  const out = { nWithMsv: withMsv.length, coverage: {}, personalBaseline: {}, reportOnly: {}, target: {}, notes: [] };
+  if (!withMsv.length) {
+    out.notes.push('No session exports with an MSV block yet. Export sessions on v64+ with the Polar H10 connected.');
+    return out;
+  }
+  // metric roles/targets come from the data (first vector that has them)
+  const ref = withMsv.map(r => r.msv).find(m => m.scoring) || withMsv[0].msv;
+  const scoring = ref.scoring || {};
+  const targets = ref.targets || {};
+  const metrics = Object.keys(ref.vector);
+
+  for (const m of metrics) {
+    const vals = withMsv.map(r => r.msv.vector[m]).filter(v => typeof v === 'number' && isFinite(v));
+    out.coverage[m] = { n: vals.length, of: withMsv.length, role: scoring[m] || 'unknown' };
+    if (!vals.length) continue;
+    const role = scoring[m] || 'unknown';
+    if (role === 'report-only') {
+      out.reportOnly[m] = { mean: +mean(vals).toFixed(3), sd: +sd(vals).toFixed(3), note: 'logged, NOT scored (hardware-confounded)' };
+    } else if (role === 'borrowable-target' && targets[m]) {
+      const tg = targets[m];
+      const dist = vals.map(v => Math.abs(v - tg.target));
+      const inBand = vals.filter(v => v >= tg.tolerance[0] && v <= tg.tolerance[1]).length;
+      out.target[m] = {
+        target: tg.target, unit: tg.unit || '', tolerance: tg.tolerance, source: tg.source,
+        mean: +mean(vals).toFixed(3), meanDistance: +mean(dist).toFixed(3),
+        inBandFrac: +(inBand / vals.length).toFixed(2),
+        trend: vals.length >= 2 ? { first: vals[0], last: vals[vals.length - 1] } : null,
+      };
+    } else { // personal-baseline
+      out.personalBaseline[m] = {
+        mean: +mean(vals).toFixed(3), sd: +sd(vals).toFixed(3),
+        trend: vals.length >= 2 ? { first: vals[0], last: vals[vals.length - 1], delta: +(vals[vals.length - 1] - vals[0]).toFixed(3) } : null,
+        established: vals.length >= 3,   // don't trust a personal baseline under 3 sessions
+      };
+    }
+  }
+  const hrvN = out.coverage.hrvDominantFreq ? out.coverage.hrvDominantFreq.n : 0;
+  if (!hrvN) out.notes.push('No HRV in any session — the Polar H10 was not connected. HRV is the anchor metric; connect it every session.');
+  return out;
+}
+
 // ── confound (sleep-like) heuristic ──────────────────────────────────────────
 function assessConfound(session) {
   const ps = session.perSnapshot, k = Math.max(1, Math.floor(ps.length / 3));
@@ -171,6 +313,8 @@ function main() {
   if (!sessions.length) { console.log('No *session*.csv files found. Point --dir at your session folder.'); return; }
 
   const sb = makeSolverSandbox();
+  const msvExports = discoverMSV(args.dir);
+  if (msvExports.sessions.length) console.log(`  (MSV: ${msvExports.sessions.length} session export(s), ${msvExports.baselines.length} baseline vector(s) found)\n`);
   const recs = [];
   for (const file of sessions) {
     let session;
@@ -181,7 +325,9 @@ function main() {
     const pair = pairBaseline(start, baselines);
     const baselineData = pair ? sb.parseSessionCSV(fs.readFileSync(pair.file, 'utf8'), path.basename(pair.file)) : null;
     const confound = assessConfound(session);
-    recs.push({ file: path.basename(file), start, session, baselineData, baselineFile: pair ? path.basename(pair.file) : null, confound });
+    // Attach the session's MSV vector (from its JSON export) by nearest start time.
+    const msvPair = pairByTime(start, msvExports.sessions);
+    recs.push({ file: path.basename(file), start, session, baselineData, baselineFile: pair ? path.basename(pair.file) : null, confound, msv: msvPair ? msvPair.msv : null, msvFile: msvPair ? msvPair.file : null });
   }
   recs.sort((a, b) => (a.start || 0) - (b.start || 0));
 
@@ -200,7 +346,46 @@ function main() {
   const clean = args.includeConfounded ? recs : recs.filter(r => !r.confound.sleepLike);
   console.log(`\n${clean.length} clean session(s) usable for calibration (min required: ${args.minClean}).`);
 
-  const report = { generated: 'set-by-caller', dir: args.dir, nSessions: recs.length, nClean: clean.length, minClean: args.minClean, sessions: recs.map(r => ({ file: r.file, baseline: r.baselineFile, confound: r.confound })) };
+  // ── MSV: the north-star ratio journey (independent of the transduction test) ──
+  const msvRollup = reportMSV(clean);
+  console.log(`\nMSV NORTH-STAR RATIOS — ${msvRollup.nWithMsv} clean session(s) carry a vector:`);
+  if (!msvRollup.nWithMsv) {
+    msvRollup.notes.forEach(n => console.log(`  · ${n}`));
+  } else {
+    const pb = msvRollup.personalBaseline, tg = msvRollup.target, ro = msvRollup.reportOnly;
+    if (Object.keys(tg).length) {
+      console.log('  ANCHOR (borrowable target — the fixed star):');
+      for (const [m, d] of Object.entries(tg))
+        console.log(`     ${m}: mean ${d.mean}${d.unit} · target ${d.target}${d.unit} (±band ${d.tolerance.join('–')}) · in-band ${(d.inBandFrac * 100).toFixed(0)}% · mean-dist ${d.meanDistance}`);
+    }
+    if (Object.keys(pb).length) {
+      console.log('  PERSONAL BASELINE (scored vs YOUR own history — journey):');
+      for (const [m, d] of Object.entries(pb)) {
+        const tr = d.trend ? ` · first→last ${d.trend.first}→${d.trend.last} (Δ${d.trend.delta >= 0 ? '+' : ''}${d.trend.delta})` : '';
+        console.log(`     ${m}: mean ${d.mean} ±${d.sd}${tr}${d.established ? '' : '  [<3 sessions — not yet established]'}`);
+      }
+    }
+    if (Object.keys(ro).length) {
+      console.log('  REPORT-ONLY (logged, NOT scored — EMG-confounded on Muse):');
+      for (const [m, d] of Object.entries(ro)) console.log(`     ${m}: mean ${d.mean} ±${d.sd}`);
+    }
+    msvRollup.notes.forEach(n => console.log(`  · ${n}`));
+  }
+
+  // ── HRV-supervised EEG signature (only possible thanks to stream alignment) ──
+  const teacher = coherentWindowSignature(clean);
+  console.log('\nHRV-SUPERVISED EEG SIGNATURE (what your brain does when your heart is in cardiovascular resonance):');
+  if (!teacher.usable) {
+    console.log(`  · ${teacher.note}`);
+  } else {
+    console.log(`  criterion: ${teacher.criterion} (validated — Lehrer 2014 / Task Force 1996; no magnitude cutoff)`);
+    console.log(`  ${teacher.nValid} valid windows · ${teacher.nCoherent} in-resonance (${(teacher.resonanceFrac * 100).toFixed(0)}%) · peak ${teacher.peakHzWhenCoherent} Hz · coherenceRatio ${teacher.coherenceRatioWhenCoherent} (descriptive)`);
+    for (const [k, d] of Object.entries(teacher.signature))
+      console.log(`     ${k}: when-resonant ${d.whenCoherent} vs overall ${d.overall}  (shift ${d.shift >= 0 ? '+' : ''}${d.shift})`);
+    console.log('  → this shift IS your earned personal target direction; steer the tones to reproduce it.');
+  }
+
+  const report = { generated: 'set-by-caller', dir: args.dir, nSessions: recs.length, nClean: clean.length, minClean: args.minClean, msv: msvRollup, teacher, sessions: recs.map(r => ({ file: r.file, baseline: r.baselineFile, confound: r.confound, hasMsv: !!r.msv })) };
 
   // ── HONESTY LOCK: only attempt calibration with enough clean sessions ───────
   if (clean.length < args.minClean) {

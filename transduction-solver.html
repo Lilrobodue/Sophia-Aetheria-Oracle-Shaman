@@ -95,6 +95,14 @@ canvas{border-radius:4px;display:block;margin:0 auto}
     <div style="font-size:.48rem;color:var(--dim);margin-top:8px" id="modeDesc">
       All 5 pathways active: air conduction + bone conduction + chest compression + visceral coupling + skeletal waveguide. Concert-level engagement.
     </div>
+    <!-- OHC infrasound sensitivity (Jurado & Marquardt 2026). Experimental; affects CABI sub-bass. -->
+    <div style="margin-top:10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+      <label for="ohcSlider" style="font-size:.5rem;color:var(--gold)" title="Outer-hair-cell infrasound sensitivity. Population range 0.3–1.5; 1.0 = median. Experimental — to be auto-calibrated from Sophia CABI data.">
+        ⚡ OHC sensitivity: <span id="ohcVal">1.0</span>
+      </label>
+      <input type="range" id="ohcSlider" min="0.3" max="1.5" step="0.1" value="1.0" oninput="setOHCSensitivity(this.value)" style="flex:1;min-width:120px">
+      <span style="font-size:.42rem;color:var(--dim)">experimental · affects CABI sub-bass only</span>
+    </div>
   </div>
 
   <!-- SOPHIA DATA IMPORT -->
@@ -202,6 +210,37 @@ const BODY_RESONANCES = [
 // ══════════════════════════════════════════════════════════════════
 // Each mode weights how strongly each body structure receives energy
 // Based on: air path, bone path, chest compression, visceral, skeletal waveguide
+// ═══════════════════════════════════════════════════════════════
+// COCHLEAR OHC INFRASOUND PATHWAY — Jurado & Marquardt 2026
+// "Infrasound sensation is mediated by intracochlear electrical
+//  potentials." Scientific Reports. DOI:10.1038/s41598-026-50179-w
+// Below ~20 Hz, inner hair cells lose sensitivity; outer hair cells
+// absorb the energy, flex, and generate intracochlear electric fields
+// that trigger a non-standard nerve pathway — perceived as presence
+// rather than tone. Especially relevant to CABI sub-bass, whose
+// theta-alpha LFO envelope (5-12 Hz) IS infrasound.
+// ═══════════════════════════════════════════════════════════════
+const OHC_CROSSOVER_HZ = 20;    // IHC→OHC transduction crossover
+const CABI_LFO_MIN_HZ = 5;      // theta edge of the CABI LFO envelope
+const CABI_LFO_MAX_HZ = 12;     // alpha edge
+// Non-linear loudness growth (Jurado & Marquardt: "abnormal growth of
+// loudness with only small increases in SPL"). Modeled as a steeper
+// exponent than Stevens' ~0.6 for normal hearing.
+const OHC_LOUDNESS_EXPONENT = 2.0;
+// Individual OHC sensitivity (0.3 low … 1.5 high; 1.0 = population
+// median). Explains inter-user variability in sub-bass perception;
+// calibratable per-user from Sophia CABI-vs-headphones data later.
+let ohcSensitivity = 1.0;
+// OHC-generated fields are diffuse "sensation" rather than tonal —
+// modeled as low-frequency-weighted neural routing.
+const OHC_NEURAL_ROUTING = {
+  delta: 0.35,   // deepest / sub-conscious "presence"
+  theta: 0.30,   // the meditative "hum"
+  alpha: 0.20,   // relaxation component
+  beta:  0.10,   // mild arousal from novel sensation
+  gamma: 0.05,   // minimal — OHC pathway is low-frequency
+};
+
 const DELIVERY_MODES = {
   headphones: {
     name: "Headphones (Air Conduction)",
@@ -277,7 +316,11 @@ const DELIVERY_MODES = {
   },
   subbass: {
     name: "Aetheria CABI Sub-bass Mode",
-    desc: "Pathways 3+4+5 dominant: sub-bass carrier felt through chest, abdomen, and skeleton. Visceral and enteric coupling maximized. The 'felt frequency' mode — below conscious hearing threshold but above tactile perception.",
+    desc: "Pathways 3+4+5+6: sub-bass carrier felt through chest, abdomen, and skeleton. " +
+          "Visceral and enteric coupling maximized. The theta-alpha LFO (5-12 Hz) creates an " +
+          "infrasound modulation envelope that engages the cochlear OHC pathway (Jurado & Marquardt 2026) — " +
+          "a non-standard route where outer hair cells generate electric fields that trigger alternative " +
+          "nerve signals. This is why the sub-bass feels more like a presence than a sound.",
     weights: {
       "Whole body (standing)":    0.9,
       "Abdominal viscera":       1.0,
@@ -288,9 +331,10 @@ const DELIVERY_MODES = {
       "Skull vault":             0.4,
       "Temporal bone":           0.3,
       "Bone conduction path":    0.35,
-      "Inner ear (cochlea)":     0.2,
+      "Inner ear (cochlea)":     0.2,    // standard IHC coupling (low for sub-bass)
+      "Inner ear (OHC pathway)": 0.85,   // NEW: OHC infrasound coupling (high for sub-bass; descriptive)
     },
-    pathways: ["Chest compression", "Visceral coupling", "Skeletal waveguide", "Bone conduction (partial)"],
+    pathways: ["Chest compression", "Visceral coupling", "Skeletal waveguide", "Bone conduction (partial)", "Cochlear OHC infrasound (via LFO envelope)"],
     couplingMultiplier: 0.85,
   },
 };
@@ -742,6 +786,16 @@ function setMode(mode) {
   if (currentFreq) analyze(currentFreq);
 }
 
+// Per-user OHC infrasound sensitivity (Jurado & Marquardt 2026). Experimental —
+// this is a manual knob until it can be auto-calibrated from Sophia CABI-vs-
+// headphones delta/theta shift data. Only affects the OHC pathway (CABI sub-bass).
+function setOHCSensitivity(val) {
+  ohcSensitivity = parseFloat(val);
+  const el = document.getElementById('ohcVal');
+  if (el) el.textContent = parseFloat(val).toFixed(1);
+  if (currentFreq) analyze(currentFreq);
+}
+
 // ══════════════════════════════════════════════════════════════════
 // EEG BANDS
 // ══════════════════════════════════════════════════════════════════
@@ -833,11 +887,87 @@ function getSomaticShift(mode) {
   
   return {
     delta: gutWeight * 8,        // Vagal → parasympathetic → delta boost
-    theta: gutWeight * 5,        // Vagal → relaxation → theta boost  
+    theta: gutWeight * 5,        // Vagal → relaxation → theta boost
     alpha: chestWeight * 6,      // Cardiac coherence → alpha boost
     beta: skullWeight * 3,       // Cranial engagement → beta modulation
     gamma: skullWeight * 2,      // Direct cortical → gamma modulation
   };
+}
+
+// Helper: theta-alpha modulation rate for a given Aetheria frequency
+// (mirrors the player's LFO mapping). Lower solfeggios → theta (5-7 Hz),
+// higher → alpha (8-12 Hz). Always < OHC_CROSSOVER_HZ, so the CABI LFO
+// envelope is always infrasound.
+function thetaAlphaModHz(freq) {
+  const minF = 174, maxF = 6336;
+  const t = Math.max(0, Math.min(1, (freq - minF) / (maxF - minF)));
+  return CABI_LFO_MIN_HZ + t * (CABI_LFO_MAX_HZ - CABI_LFO_MIN_HZ);
+}
+
+// Cochlear OHC infrasound pathway — Jurado & Marquardt 2026.
+// Models the alternative transduction where outer hair cells absorb
+// sub-20 Hz energy, generate intracochlear electric fields, and trigger
+// non-standard nerve signals. Active when (a) the input frequency itself
+// is infrasound, or (b) the delivery mode's amplitude-modulation (LFO)
+// rate is infrasound (CABI sub-bass: 5-12 Hz carrier envelope).
+function getCochlearOHCShift(mode, inputFreq) {
+  const m = DELIVERY_MODES[mode];
+
+  // Case 1: the input frequency itself is infrasound.
+  let directInfrasound = 0;
+  if (inputFreq < OHC_CROSSOVER_HZ) {
+    directInfrasound = Math.max(0, 1.0 - (inputFreq / OHC_CROSSOVER_HZ));
+  }
+
+  // Case 2: CABI sub-bass LFO creates an infrasound modulation envelope,
+  // even when the carrier is above the OHC crossover.
+  let lfoInfrasound = 0;
+  if (mode === 'subbass') {
+    const lfoRate = thetaAlphaModHz(inputFreq);
+    if (lfoRate < OHC_CROSSOVER_HZ) {
+      const modDepth = 0.8;   // CABI deep AM (mirrors SUB_BASS_MOD_DEPTH)
+      const lfoRolloff = Math.max(0, 1.0 - (lfoRate / OHC_CROSSOVER_HZ));
+      lfoInfrasound = modDepth * lfoRolloff;
+    }
+  }
+
+  const totalInfrasound = Math.min(1.0, directInfrasound + lfoInfrasound);
+  if (totalInfrasound < 0.01) {
+    return { delta: 0, theta: 0, alpha: 0, beta: 0, gamma: 0, active: false, strength: 0 };
+  }
+
+  // Non-linear loudness growth: small SPL increases → large perceived jump.
+  const nonlinearStrength = Math.pow(totalInfrasound, 1.0 / OHC_LOUDNESS_EXPONENT);
+  const personalizedStrength = nonlinearStrength * ohcSensitivity;
+
+  // How much energy actually reaches the inner ear: standard cochlear
+  // coupling PLUS body→ear conduction (chest/skull/bone), since the OHC
+  // pathway can be reached through tissue conduction without headphones.
+  const cochlearWeight = m.weights["Inner ear (cochlea)"] || 0.2;
+  const bodyToEarCoupling =
+    (m.weights["Chest cavity"] || 0) * 0.3 +
+    (m.weights["Skull vault"] || 0) * 0.4 +
+    (m.weights["Bone conduction path"] || 0) * 0.3;
+  const effectiveCochlearCoupling = Math.min(1.0, cochlearWeight + bodyToEarCoupling);
+
+  const finalStrength = personalizedStrength * effectiveCochlearCoupling;
+
+  const scaleFactor = 8;   // comparable magnitude to somatic shifts
+  const shift = {};
+  for (const [band, weight] of Object.entries(OHC_NEURAL_ROUTING)) {
+    shift[band] = finalStrength * weight * scaleFactor;
+  }
+  shift.active = true;
+  shift.strength = finalStrength;
+  // Label by which case actually drove it, not by magnitude — otherwise a
+  // 174 Hz CABI carrier (infrasound only in its LFO envelope) mislabels as
+  // "input frequency is infrasound".
+  shift.mechanism = directInfrasound >= lfoInfrasound
+    ? 'OHC direct (input frequency is infrasound)'
+    : 'OHC via LFO envelope (modulation rate is infrasound)';
+  shift.nonlinearity = OHC_LOUDNESS_EXPONENT;
+  shift.sensitivity = ohcSensitivity;
+  return shift;
 }
 
 // Compute predicted EEG distribution combining baseline + subharmonics + somatic
@@ -858,22 +988,26 @@ function computePredictedEEG(freq) {
   
   // Somatic pathway effects
   const somatic = getSomaticShift(currentMode);
-  
-  // Combine: (measured or population) baseline + scaled subharmonic perturbation + somatic shift.
+
+  // Cochlear OHC infrasound pathway (Jurado & Marquardt 2026) — mostly a
+  // CABI sub-bass effect via the theta-alpha LFO envelope.
+  const ohcShift = getCochlearOHCShift(currentMode, freq);
+
+  // Combine: (measured or population) baseline + scaled subharmonic perturbation + somatic + OHC shift.
   // Using the person's own tones-off baseline when loaded is what makes the null-model test honest.
   const base = getActiveBaseline();
   const predicted = {};
   let total = 0;
   ['delta','theta','alpha','beta','gamma'].forEach(band => {
-    predicted[band] = base[band] + (subEnergy[band] || 0) * subScale + (somatic[band] || 0);
+    predicted[band] = base[band] + (subEnergy[band] || 0) * subScale + (somatic[band] || 0) + (ohcShift[band] || 0);
     predicted[band] = Math.max(0, predicted[band]);
     total += predicted[band];
   });
-  
+
   // Normalize to 100%
   Object.keys(predicted).forEach(k => predicted[k] = predicted[k] / total * 100);
-  
-  return {predicted, subEnergy, somatic, subs, eegSubs};
+
+  return {predicted, subEnergy, somatic, ohcShift, subs, eegSubs};
 }
 
 function analyze(freq) {
@@ -1170,7 +1304,28 @@ function drawResults(freq, name, regime, regimeColor, primaryRes, dominantBand, 
       (primary resonance region: ${primaryRes.region})
     </div>
   </div>`;
-  
+
+  // COCHLEAR OHC INFRASOUND PATHWAY (Jurado & Marquardt 2026) — shown when active.
+  // Rebuilt with the rest of `results` each analyze() call, so it never accumulates.
+  const ohcShift = getCochlearOHCShift(currentMode, freq);
+  if (ohcShift.active) {
+    html += `<div class="result-card" style="grid-column:1/-1;border-color:rgba(212,165,74,.35);background:rgba(212,165,74,.05)">
+      <div class="label" style="color:var(--gold)">⚡ COCHLEAR OHC INFRASOUND PATHWAY — ACTIVE</div>
+      <div style="font-size:.5rem;color:var(--dim);margin-top:2px">Jurado &amp; Marquardt 2026, <em>Scientific Reports</em> · DOI:10.1038/s41598-026-50179-w</div>
+      <div style="font-size:.55rem;color:var(--text);line-height:1.8;margin-top:6px">
+        Mechanism: <strong>${ohcShift.mechanism}</strong><br>
+        Pathway strength: <strong>${(ohcShift.strength*100).toFixed(0)}%</strong> ·
+        Non-linear loudness exponent: <strong>${ohcShift.nonlinearity.toFixed(1)}×</strong> ·
+        OHC sensitivity: <strong>${ohcShift.sensitivity.toFixed(1)}</strong> (1.0 = population median)<br>
+        Neural routing: δ ${(OHC_NEURAL_ROUTING.delta*100).toFixed(0)}% · θ ${(OHC_NEURAL_ROUTING.theta*100).toFixed(0)}% · α ${(OHC_NEURAL_ROUTING.alpha*100).toFixed(0)}% · β ${(OHC_NEURAL_ROUTING.beta*100).toFixed(0)}% · γ ${(OHC_NEURAL_ROUTING.gamma*100).toFixed(0)}%<br>
+        <span style="color:var(--dim)">The CABI LFO at ${thetaAlphaModHz(freq).toFixed(1)} Hz creates an infrasound modulation envelope. Below ~20 Hz, standard inner hair cells lose sensitivity; outer hair cells absorb the energy and generate intracochlear electric fields that trigger alternative nerve signals — perceived as presence/sensation rather than tonal sound.</span>
+      </div>
+      <div style="font-size:.48rem;color:var(--dim);margin-top:8px;border-top:1px solid var(--border);padding-top:6px">
+        <strong>Evidence tier:</strong> the OHC transduction mechanism is <strong>Tier 1</strong> (published, peer-reviewed, Nature-family journal). Its application to the CABI LFO envelope is <strong>Tier 3</strong> (our inference). The neural-routing weights (δ35/θ30/α20/β10/γ5) are <strong>estimates</strong> from the paper's "sensation not sound" description — validate against Sophia CABI EEG data before trusting them.
+      </div>
+    </div>`;
+  }
+
   // MODE COMPARISON TABLE
   html += `<div class="result-card" style="grid-column:1/-1;border-color:rgba(123,104,238,.3)">
     <div class="label" style="color:var(--head)">DELIVERY MODE COMPARISON — ${freq} Hz across all modes</div>

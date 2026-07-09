@@ -1,5 +1,5 @@
 // Sophia Oracle — Service Worker for true offline PWA
-const CACHE_VERSION = 'sophia-v66';
+const CACHE_VERSION = 'sophia-v67';
 
 // The bare shell — if any of THESE fail the install is pointless, so they're
 // the atomic core. Everything else is best-effort (see EXTRA_URLS).

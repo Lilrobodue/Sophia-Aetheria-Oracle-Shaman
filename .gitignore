@@ -1,0 +1,3 @@
+# Python bytecode cache (generated when sophia_search_proxy.py runs)
+__pycache__/
+*.pyc

@@ -1282,6 +1282,9 @@
          over file:// too; bus/hrv/signal above must load first. -->
     <script src="polar-h10.js"></script>
     <script src="polar-wiring.js"></script>
+    <!-- Agentic core: tool-use loop + web_search. ES module (bridges into the
+         classic app via window.SophiaAgent); reuses the existing inference Worker. -->
+    <script type="module" src="sophia-agent-bootstrap.js"></script>
 </head>
 <body>
     <!-- Disclaimer Modal — shows on every app load -->
@@ -1617,7 +1620,7 @@
                     Export
                 </button>
             </div>
-            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v67</div>
+            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v68</div>
             </div><!-- end sidebar-scroll -->
         </div>
 
@@ -7989,6 +7992,22 @@ return result;</textarea>
         function initializeDefaultTools() {
             // Define default tools
             const defaultTools = {
+                web_search: {
+                    name: 'web_search',
+                    description: 'Search the web for current or uncertain facts and sources to cite (Wikipedia + Crossref + Europe PMC, directly from the browser — no proxy, works on phone). Enabling this turns on Sophia\'s agentic tool-use loop for the local model.',
+                    params: {
+                        query: { type: 'string', description: 'The search query' },
+                        max_results: { type: 'integer', description: 'How many results (1-8)' }
+                    },
+                    // Executed by the async agentic loop (window.SophiaAgent), not the
+                    // legacy sync path — this stub only fires if reached via remote tools.
+                    code: function() {
+                        return { success: false, error: 'web_search runs through Sophia\'s local agentic loop (local WebGPU model), not the remote tool path. Enable a local model.' };
+                    },
+                    enabled: false,   // opt-in — needs the local proxy running
+                    default: true,
+                    agentTool: true
+                },
                 calculator: {
                     name: 'calculator',
                     description: 'Perform mathematical calculations and expressions',
@@ -10788,8 +10807,113 @@ Use this data to personalize your response. Comment on their current state when 
                 .replace(/<think>[\s\S]*$/, '');              // unclosed tail during streaming
         }
 
+        // ── Agentic tool-use path (web_search, …) ───────────────────────────
+        // Active only when the web_search tool is enabled AND a local model is
+        // ready. Runs the multi-step loop from agent-core.js over the EXISTING
+        // inference worker (no second model load). Normal chat (tool off) keeps
+        // the fast single-shot streaming path untouched.
+        function agentToolsActive() {
+            return !!(window.SophiaAgent
+                && typeof tools !== 'undefined' && tools.web_search && tools.web_search.enabled
+                && shouldUseLocal() && localInference.worker);   // only when we'll actually run local
+        }
+
+        // Split streaming text into <think> reasoning and the visible body, so the
+        // agent loop can show the model's live reasoning distinctly from its answer.
+        function splitThink(raw) {
+            let reasoning = '', body = raw || '';
+            const open = body.indexOf('<think>');
+            if (open !== -1) {
+                const close = body.indexOf('</think>');
+                if (close !== -1) { reasoning = body.slice(open + 7, close); body = body.slice(0, open) + body.slice(close + 8); }
+                else { reasoning = body.slice(open + 7); body = body.slice(0, open); }
+            }
+            return { reasoning: reasoning.trim(), body: body.trim() };
+        }
+
+        async function runLocalAgentTurn(messages, streamId) {
+            const base = prepareLocalMessages(messages);
+            // Persona guardrail for tool use (brief A.7).
+            if (base[0] && base[0].role === 'system') {
+                base[0].content += '\n\nWhen you use a tool, weave what you learned into your own voice and cite sources plainly — never paste raw results or bare links.';
+            }
+
+            // Live progress: a trail of completed checkpoints + the current phase +
+            // the model's streaming output (reasoning shown dimmed, tool JSON hidden),
+            // so the user always sees what Sophia is doing instead of a blank wait.
+            const escHtml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            const dim = (s) => '<span style="opacity:0.6">' + s + '</span>';
+            const trail = [];
+            let phaseLabel = 'Sophia is considering your question…';
+            let currentFull = '';
+            const render = () => {
+                if (!streamId) return;
+                const parts = [];
+                for (const t of trail) parts.push(dim(t));
+                if (phaseLabel) parts.push(dim('<em>✨ ' + phaseLabel + '</em>'));
+                const { reasoning, body } = splitThink(currentFull);
+                if (reasoning) parts.push(dim('<em>💭 ' + escHtml(reasoning).replace(/\s+/g, ' ') + '</em>'));
+                const looksTool = /^[\[{]/.test(body) || /^TOOL_CALL:/i.test(body);
+                if (body && !looksTool) parts.push(body);
+                else if (looksTool) parts.push(dim('<em>📋 preparing to use a tool…</em>'));
+                updateStreamingMessage(streamId, parts.join('\n\n'));
+            };
+
+            // llmCall seam: one worker round-trip, streamed live to the bubble.
+            const llmCall = ({ messages }) => new Promise((resolve, reject) => {
+                currentFull = '';
+                workerGenerate(messages, (t) => { currentFull += t; render(); })
+                    .then(() => resolve({ content: stripThinkBlocks(currentFull) }))
+                    .catch(reject);
+            });
+
+            const fam = LOCAL_MODELS[selectedLocalModel] && LOCAL_MODELS[selectedLocalModel].family;
+            const maxSteps = fam === 'lfm25' ? 3 : 1;   // tiny non-agent models: single hop
+            const bridgedTools = Object.values(tools).filter(t => t.enabled && t.name !== 'web_search');
+
+            const onEvent = (e) => {
+                if (e.type === 'step') {
+                    phaseLabel = e.step === 0 ? 'Sophia is considering your question…' : 'Sophia is thinking it through…';
+                    currentFull = ''; render();
+                } else if (e.type === 'tool_start') {
+                    phaseLabel = e.name === 'web_search'
+                        ? `Sophia is consulting the web${e.args && e.args.query ? `: "${e.args.query}"` : ''}…`
+                        : `Sophia is using ${e.name}…`;
+                    showStatus(phaseLabel, 'info');
+                    currentFull = ''; render();
+                } else if (e.type === 'tool_end') {
+                    const n = (String(e.result || '').match(/^\[\d+\]/gm) || []).length;
+                    trail.push(e.name === 'web_search'
+                        ? `🔍 Searched the web${n ? ` — found ${n} source${n === 1 ? '' : 's'}` : ''}`
+                        : `🛠️ Used ${e.name}`);
+                    phaseLabel = ''; currentFull = ''; render();
+                } else if (e.type === 'synthesize') {
+                    phaseLabel = 'Sophia is weaving what she found…';
+                    currentFull = ''; render();
+                } else if (e.type === 'cap_reached') {
+                    showStatus('Tool loop reached its step limit.', 'warning');
+                }
+            };
+
+            const { final } = await window.SophiaAgent.runAgentTurn({
+                messages: base, bridgedTools, llmCall, maxSteps, onEvent,
+                ctx: { sensorState: (typeof currentEEGData !== 'undefined' ? currentEEGData : null) }
+            });
+            const out = stripThinkBlocks(final || '').trim();
+            if (!out) throw new Error('Model returned empty response after tool use.');
+            // Final render: keep the search checkpoints (dimmed) above the clean answer.
+            if (streamId) {
+                const parts = [];
+                for (const t of trail) parts.push(dim(t));
+                parts.push(out);
+                updateStreamingMessage(streamId, parts.join('\n\n'));
+            }
+            return out;
+        }
+
         async function generateLocalResponse(messages) {
             if (!localInference.ready || !localInference.worker) throw new Error('Local model not loaded');
+            if (agentToolsActive()) return await runLocalAgentTurn(messages, null);
             const chatMessages = prepareLocalMessages(messages);
             let fullResponse = '';
             await workerGenerate(chatMessages, (token) => { fullResponse += token; });
@@ -10802,6 +10926,7 @@ Use this data to personalize your response. Comment on their current state when 
 
         async function generateLocalStreamingResponse(messages, streamingMessageId) {
             if (!localInference.ready || !localInference.worker) throw new Error('Local model not loaded');
+            if (agentToolsActive()) return await runLocalAgentTurn(messages, streamingMessageId);
             const chatMessages = prepareLocalMessages(messages);
             let fullResponse = '';
             await workerGenerate(chatMessages, (token) => {
@@ -10927,8 +11052,14 @@ Use this data to personalize your response. Comment on their current state when 
                 }
 
                 let toolsContext = '';
-                const enabledTools = Object.values(tools).filter(t => t.enabled);
-                if (enabledTools.length > 0) {
+                // Exclude agentTool-only tools (web_search): they run through the local
+                // agentic loop, not the remote/legacy TOOL_CALL path, so advertising them
+                // here would just invite a stub failure.
+                const enabledTools = Object.values(tools).filter(t => t.enabled && !t.agentTool);
+                // When the agentic loop is active it injects the tool spec into the
+                // SYSTEM prompt itself (agent-core), so skip this user-prompt copy to
+                // avoid double, conflicting instructions for the small model.
+                if (enabledTools.length > 0 && !agentToolsActive()) {
                     // LFM2.5 is trained on <|tool_list_start|>[json]<|tool_list_end|> for tool definitions.
                     // Gemma/Qwen/Bonsai consume a plain-text tool list. Either way, we still ask for
                     // TOOL_CALL: {...} as the invocation format so the client-side parser can catch it.

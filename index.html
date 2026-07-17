@@ -1620,7 +1620,7 @@
                     Export
                 </button>
             </div>
-            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v68</div>
+            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v69</div>
             </div><!-- end sidebar-scroll -->
         </div>
 
@@ -5460,6 +5460,13 @@ return result;</textarea>
         let baselineCaptureActive = false;
         let _restCaptureState = null;
         const REST_BASELINE_SEC = 60;   // guided capture length
+        // Proactive-oracle baseline (BOTH devices): the captured resting reference the
+        // Voice Oracle measures PERSONAL-BASELINE metrics against —
+        //   { source, hrv:{coherenceRatio,dominantFreq,rmssd,meanHR}, eeg:{coherence,thetaBetaRatio} }
+        // Auto-captured ~60s after a valid signal (maybeAutoCaptureBaseline, either
+        // device); a manual 'tones-off rest baseline' overrides the HRV + θ/β reference.
+        let oracleBaseline = null;
+        let oracleBaselineArmedAt = 0;
         // ── Baseline capture quality (settle + clean-sample gating) ──
         // The baseline must be a CLEAN resting reference. Two guards keep the
         // settling/fitting period out of it: (1) a settle delay — ignore the
@@ -5612,6 +5619,24 @@ return result;</textarea>
                     context: 'rest_baseline',
                     eegSource: (typeof eegIntegration !== 'undefined' && eegIntegration && eegIntegration.lastConnectionMethod === 'athena') ? 'athena' : 'muse',
                 });
+                // Keep this clean, tone-suppressed rest baseline LIVE so the proactive
+                // oracle measures against it — the gold-standard override of any auto
+                // baseline captured earlier this session.
+                try {
+                    const bh = window.HRVAnalysis ? window.HRVAnalysis.analyze(rrWindow) : null;
+                    const tbrBase = baseBands.beta ? baseBands.theta / baseBands.beta : null;
+                    oracleBaseline = oracleBaseline || { capturedAt: Date.now() };
+                    oracleBaseline.source = 'rest';
+                    if (bh && bh.freq && bh.time) {
+                        oracleBaseline.hrv = { coherenceRatio: bh.freq.coherenceRatio, dominantFreq: bh.freq.peakHz,
+                                               rmssd: bh.time.rmssd, meanHR: bh.time.meanHR };
+                    }
+                    // Clean θ/β from the tone-suppressed bands; keep any live-captured
+                    // eeg.coherence (rest has no spiral, so coherence is filled live).
+                    oracleBaseline.eeg = oracleBaseline.eeg || {};
+                    if (tbrBase != null) oracleBaseline.eeg.thetaBetaRatio = tbrBase;
+                    console.log('[oracle] rest baseline set as reference', oracleBaseline);
+                } catch (e) { console.warn('oracle rest baseline store failed', e); }
                 const meta = {
                     kind: 'sophia_rest_baseline', capturedAt: new Date().toISOString(),
                     samples: useRows.length, cleanSamples: st.cleanCount, durationSec: REST_BASELINE_SEC,
@@ -7796,6 +7821,12 @@ return result;</textarea>
         let voiceOracleHcrPrev = null;                // dominant-band HCR interp last read
         let voiceOracleHcrStreak = 0;                 // consecutive reads at current interp
         let voiceOracleHcrAnnounced = null;           // last dominant interp spoken
+        let sophiaBusy = false;          // true while a user-driven turn is generating
+        let proactiveInFlight = false;   // guard so only one proactive insight runs at a time
+        // Baseline-relative EEG announce flags (hysteresis) — coherence + θ/β vs oracleBaseline.eeg
+        let voiceOracleCohHiAnnounced = false;
+        let voiceOracleCohLoAnnounced = false;
+        let voiceOracleTbrAnnounced = false;
 
         function toggleVoiceOracle() {
             voiceOracleEnabled = !voiceOracleEnabled;
@@ -7809,13 +7840,163 @@ return result;</textarea>
                 // Reset spiral announce state so fresh insights can fire this session
                 voiceOracleSpiralDirAnnounced = false;
                 voiceOracleHcrAnnounced = null;
-                speakText('Voice oracle activated. I will share insights about your brain state as it shifts.');
-                showStatus('Voice Oracle enabled — Sophia will speak about brain state changes', 'success');
+                speakText('Voice oracle activated. I will reach out in our conversation as your brain state shifts.');
+                showStatus('Voice Oracle enabled — Sophia will notice your brain state and speak up in the chat', 'success');
             } else {
                 stopSpeaking();
                 showStatus('Voice Oracle disabled', 'success');
             }
         }
+
+        // ── Proactive Sophia (EEG-triggered chat insights) ──────────────────
+        // When the Voice Oracle detects a meaningful shift, Sophia speaks up
+        // unprompted — in her own LLM voice when the model is free, falling back
+        // to the factual template otherwise. Delivered as a chat message you can
+        // reply to (and spoken if auto-speak is on).
+        function buildProactiveSystemPrompt() {
+            return [
+                'You are Sophia, the Aetheria Oracle Shaman — a warm, wise, grounded guide.',
+                "You are quietly attending to the user's live brain-and-body signals and you just",
+                'noticed a shift worth mentioning. Speak up gently and unprompted, in your own',
+                'first-person voice.',
+                'Rules: ONE or two sentences only. Warm, curious, encouraging. Celebrate their',
+                'growing self-awareness. Offer at most a soft invitation, never a command. Never',
+                'diagnose and never make medical or clinical claims — these are patterns to notice',
+                'together, not verdicts. No lists, no headings. Do not mention being an AI or that',
+                'this was automatically triggered. Weave in the specifics you are given.'
+            ].join(' ');
+        }
+
+        // Re-voice a factual insight through the local model. Returns her phrasing,
+        // or null if the model isn't free/ready/failed (caller then uses the template).
+        async function proactiveGenerate(factText) {
+            if (!localInference.ready || !localInference.worker || localInference._pending) return null;
+            const messages = [
+                { role: 'system', content: buildProactiveSystemPrompt() },
+                { role: 'user', content: `You just noticed this about the user's live state:\n"${factText}"\n\nShare it now in your own voice — one or two warm sentences.` }
+            ];
+            let full = '';
+            try {
+                await Promise.race([
+                    workerGenerate(messages, (t) => { full += t; }, 140),
+                    new Promise((_, reject) => setTimeout(() => reject(new Error('proactive timeout')), 15000))
+                ]);
+            } catch (e) {
+                return null;
+            }
+            const out = stripThinkBlocks(full).trim();
+            return out || null;
+        }
+
+        async function deliverProactiveInsight(factText) {
+            if (!voiceOracleEnabled) return;
+            if (sophiaBusy || proactiveInFlight) return;   // never talk over an active turn
+            proactiveInFlight = true;
+            try {
+                let text = await proactiveGenerate(factText);   // her voice, or null
+                if (sophiaBusy) return;                         // a user turn started meanwhile — stand down
+                if (!text) text = factText;                     // template fallback
+                addMessageToUI('assistant', text);
+                chatHistory.push({ role: 'assistant', content: text });
+                try { localStorage.setItem('sophiaUnifiedHistory', JSON.stringify(chatHistory)); } catch (e) {}
+                if (config.autoSpeak) speakText(text);
+            } finally {
+                proactiveInFlight = false;
+            }
+        }
+
+        // ── Unified baseline capture (both devices) ─────────────────────────
+        // Auto-captures the resting reference ~60s after a valid signal first appears
+        // (either Muse EEG or Polar HRV). Fills only missing fields, so a manual rest
+        // baseline's clean HRV + θ/β are preserved while live-only fields (EEG
+        // coherence) get filled here. Meet-the-user-where-they-are, then measure toward
+        // the north-star targets (see hrvOracleCheck / voiceOracleCheck).
+        function maybeAutoCaptureBaseline() {
+            const ps = window.PolarState;
+            const hrvOk = !!(ps && ps.connected && ps.hrv && ps.hrv.freq && ps.hrv.time && (ps.hrv.nBeatsClean || 0) >= 60);
+            const eeg = (typeof currentEEGData !== 'undefined') ? currentEEGData : null;
+            const aeth = (typeof currentAetheriaPosition !== 'undefined') ? currentAetheriaPosition : null;
+            const eegOk = !!(eeg && eeg.bandpowers && aeth && typeof aeth.coherence === 'number');
+            if (!hrvOk && !eegOk) { oracleBaselineArmedAt = 0; return; }        // no valid signal → disarm
+            if (!oracleBaselineArmedAt) { oracleBaselineArmedAt = Date.now(); return; }  // arm now, capture ~60s later
+            if (Date.now() - oracleBaselineArmedAt < 60000) return;
+
+            if (!oracleBaseline) oracleBaseline = { source: 'auto', capturedAt: Date.now() };
+            if (hrvOk && !oracleBaseline.hrv) {
+                const f = ps.hrv.freq, t = ps.hrv.time;
+                oracleBaseline.hrv = { coherenceRatio: f.coherenceRatio, dominantFreq: f.peakHz, rmssd: t.rmssd, meanHR: t.meanHR };
+                console.log('[oracle] auto HRV baseline captured', oracleBaseline.hrv);
+            }
+            if (eegOk) {
+                const bp = eeg.bandpowers;
+                oracleBaseline.eeg = oracleBaseline.eeg || {};
+                if (oracleBaseline.eeg.coherence == null) oracleBaseline.eeg.coherence = aeth.coherence;
+                if (oracleBaseline.eeg.thetaBetaRatio == null && bp.beta) oracleBaseline.eeg.thetaBetaRatio = bp.theta / bp.beta;
+                console.log('[oracle] auto EEG baseline captured', oracleBaseline.eeg);
+            }
+        }
+        setInterval(maybeAutoCaptureBaseline, 4000);
+
+        // ── Proactive Sophia from the heart (Polar H10 HRV) ─────────────────
+        // Works with the H10 ALONE — no EEG needed. Measures against a CAPTURED resting
+        // baseline (auto ~60-90s in, or your manual rest baseline) plus the validated
+        // north-star target, honoring the MSV scoring roles (see computeMSV):
+        //   • hrvDominantFreq → BORROWABLE TARGET: the cardiovascular resonance band
+        //     [0.075-0.12 Hz] (Lehrer/Gevirtz; Vaschillo). Universal; needs no baseline.
+        //   • hrvCoherenceRatio, RMSSD → PERSONAL-BASELINE: reported only as movement
+        //     from YOUR captured baseline (HeartMath magnitude cutoffs aren't validated).
+        // Shares the cooldown + delivery with the EEG oracle so they never overlap.
+        let hrvOracleResonanceAnnounced = false;
+        let hrvOracleCohAnnounced = false;
+        let hrvOracleCalmAnnounced = false;
+        function hrvOracleCheck() {
+            if (!voiceOracleEnabled) return;
+            const ps = window.PolarState;
+            if (!ps || !ps.connected || !ps.hrv || !ps.hrv.freq || !ps.hrv.time) return;   // needs a valid spectrum
+
+            const now = Date.now();
+            const f = ps.hrv.freq, t = ps.hrv.time;
+            const peakHz = f.peakHz, cohR = f.coherenceRatio, rmssd = t.rmssd, hr = Math.round(t.meanHR);
+            // Resonance band = the validated target (no baseline needed). Require a real
+            // peak (some coherence) so noise-floor peaks aren't called "resonance".
+            const inResonance = peakHz >= HRV_RESONANCE_BAND[0] && peakHz <= HRV_RESONANCE_BAND[1] && f.coherence >= 0.25;
+            if (!inResonance) hrvOracleResonanceAnnounced = false;
+
+            // Personal-baseline hysteresis: re-arm once values fall back near baseline.
+            const base = oracleBaseline && oracleBaseline.hrv;
+            if (base) {
+                if (hrvOracleCohAnnounced && cohR < base.coherenceRatio * 1.1) hrvOracleCohAnnounced = false;
+                if (hrvOracleCalmAnnounced && rmssd < base.rmssd * 1.1) hrvOracleCalmAnnounced = false;
+            }
+
+            if (now - voiceOracleLastSpoke < voiceOracleCooldown) return;   // shared rate-limit with the EEG oracle
+
+            let message = null;
+            // 1) Resonance — the north-star target (borrowable; universal)
+            if (inResonance && !hrvOracleResonanceAnnounced) {
+                message = `Your heart is finding its resonance — the rhythm has settled to about ${peakHz.toFixed(3)} hertz, ` +
+                    `inside the cardiovascular resonance band (${HRV_RESONANCE_BAND[0]} to ${HRV_RESONANCE_BAND[1]} hertz). ` +
+                    `This is the pace where heart, breath and blood pressure regulate together.`;
+                hrvOracleResonanceAnnounced = true;
+            }
+            // 2) Coherence risen above YOUR captured baseline (personal reference)
+            else if (base && !hrvOracleCohAnnounced && cohR > 0 && cohR >= base.coherenceRatio * 1.3) {
+                message = `Your heart coherence has climbed well above your resting baseline — the rhythm is far more organized than where you began.`;
+                hrvOracleCohAnnounced = true;
+            }
+            // 3) Settling — HRV opened above YOUR captured baseline (personal reference)
+            else if (base && !hrvOracleCalmAnnounced && rmssd >= base.rmssd * 1.3) {
+                message = `Your body is settling — your heart-rate variability has opened above your resting baseline${hr ? `, around ${hr} beats per minute` : ''}. ` +
+                    `That is your nervous system easing toward rest.`;
+                hrvOracleCalmAnnounced = true;
+            }
+
+            if (message) {
+                voiceOracleLastSpoke = now;
+                deliverProactiveInsight(message);
+            }
+        }
+        setInterval(hrvOracleCheck, 4000);
 
         // Called from updateEEGMetrics whenever new data arrives
         function voiceOracleCheck(bandpowers, aethPos) {
@@ -7881,18 +8062,26 @@ return result;</textarea>
                 }
             }
 
+            const coherence = aethPos.coherence;
+            const tbr = (bandpowers && bandpowers.beta) ? bandpowers.theta / bandpowers.beta : null;
+            const beeg = oracleBaseline && oracleBaseline.eeg;
+
+            // Personal-baseline hysteresis (continuous — runs every call, before the
+            // cooldown gate): re-arm each flag once the value returns near baseline.
+            if (beeg && beeg.coherence != null) {
+                if (voiceOracleCohHiAnnounced && coherence < beeg.coherence + 5) voiceOracleCohHiAnnounced = false;
+                if (voiceOracleCohLoAnnounced && coherence > beeg.coherence - 5) voiceOracleCohLoAnnounced = false;
+            }
+            if (beeg && beeg.thetaBetaRatio != null && tbr != null && voiceOracleTbrAnnounced && tbr < beeg.thetaBetaRatio * 1.1) voiceOracleTbrAnnounced = false;
+
             const now = Date.now();
             if (now - voiceOracleLastSpoke < voiceOracleCooldown) return;
 
             const posChanged = aethPos.pos !== voiceOracleLastPos;
-            const coherence = aethPos.coherence;
-            const coherenceJump = Math.abs(coherence - voiceOracleLastCoherence) > 15;
-            const highCoherence = coherence >= 75 && voiceOracleLastCoherence < 75;
-            const lowCoherence = coherence < 30 && voiceOracleLastCoherence >= 30;
 
             let message = null;
 
-            // Position shift — most important event
+            // Position shift — descriptive Aetheria phenomenology (highest priority)
             if (posChanged && voiceOracleLastPos >= 0) {
                 const oldFreq = voiceOracleLastPos >= 0 ? AETHERIA_FREQUENCIES[voiceOracleLastPos] : null;
                 const dir = aethPos.pos > voiceOracleLastPos + 1 ? 'ascending' : aethPos.pos < voiceOracleLastPos - 1 ? 'descending' : 'shifting';
@@ -7914,21 +8103,26 @@ return result;</textarea>
                         `${aethPos.freq} hertz, ${aethPos.keyword}. ${aethPos.state.toLowerCase()}.`;
                 }
             }
-            // Coherence milestones
-            else if (highCoherence) {
-                message = `Beautiful. Your coherence just crossed 75 percent. ` +
-                    `You're at position ${aethPos.pos}, ${aethPos.freq} hertz, ${aethPos.geo}. ` +
-                    `This is an excellent state for a reading.`;
-            } else if (lowCoherence) {
-                message = `Your coherence has dropped below 30 percent. ` +
-                    `Take a slow breath. You're at ${aethPos.freq} hertz, ${aethPos.keyword}. ` +
-                    `The ${aethPos.geo} geometry can help you re-center.`;
+            // Coherence risen well above YOUR captured baseline (personal-baseline —
+            // no absolute cutoff; alphaCoherence has no validated normative target)
+            else if (beeg && beeg.coherence != null && !voiceOracleCohHiAnnounced && coherence >= beeg.coherence + 12) {
+                message = `Your coherence has risen well above your resting baseline — now around ${coherence} percent, up from about ${Math.round(beeg.coherence)}. ` +
+                    `Position ${aethPos.pos}, ${aethPos.freq} hertz, ${aethPos.geo}. Your field is organizing.`;
+                voiceOracleCohHiAnnounced = true;
             }
-            // Significant coherence shift
-            else if (coherenceJump && voiceOracleLastCoherence >= 0) {
-                const direction = coherence > voiceOracleLastCoherence ? 'rising' : 'dropping';
-                message = `Coherence ${direction} — now at ${coherence} percent. ` +
-                    `Position ${aethPos.pos}, ${aethPos.keyword}.`;
+            // Coherence eased below YOUR captured baseline (personal-baseline) — gentle
+            else if (beeg && beeg.coherence != null && !voiceOracleCohLoAnnounced && coherence <= beeg.coherence - 12) {
+                message = `Your coherence has eased below your resting baseline — around ${coherence} percent. ` +
+                    `No judgment; a slow breath and the ${aethPos.geo} geometry can help you re-center.`;
+                voiceOracleCohLoAnnounced = true;
+            }
+            // Theta-to-beta balance shifted notably from baseline. DESCRIPTIVE only —
+            // the literature says TBR direction is ambiguous (meditative vs mind-wandering),
+            // so this is never graded as good/bad.
+            else if (beeg && beeg.thetaBetaRatio != null && tbr != null && !voiceOracleTbrAnnounced && tbr >= beeg.thetaBetaRatio * 1.3) {
+                message = `There's a notable shift in your theta-to-beta balance from where you started — the slower rhythms are more present now. ` +
+                    `Worth noticing where your attention has drifted.`;
+                voiceOracleTbrAnnounced = true;
             }
             // Spiral wave insight — lowest priority, only when nothing else fired
             else if (spiralMessage) {
@@ -7943,11 +8137,11 @@ return result;</textarea>
             }
 
             if (message) {
-                speakText(message);
-                voiceOracleLastSpoke = now;
-
-                // Show as a temporary toast overlay — not a permanent chat message
-                showVoiceOracleToast(message);
+                voiceOracleLastSpoke = now;   // start cooldown now (delivery is async)
+                // Proactive Sophia: re-voice this factual insight in her own voice
+                // (LLM when the model is free, template fallback) and post it as a
+                // chat message you can reply to. Fire-and-forget; it self-gates.
+                deliverProactiveInsight(message);
             }
 
             voiceOracleLastPos = aethPos.pos;
@@ -10760,10 +10954,15 @@ Use this data to personalize your response. Comment on their current state when 
         }
 
         // ── Generation via worker (returns a Promise, never blocks main thread) ──
+        // All generations are serialized through _workerQueue: the worker handles one
+        // at a time via a single _pending slot, so overlapping calls (e.g. a proactive
+        // EEG insight firing during a user turn) would otherwise corrupt each other's
+        // token streams. Queuing makes each call wait its turn.
         const LOCAL_GEN_TIMEOUT = 0; // No timeout — WASM generation is slow, let it finish
+        let _workerQueue = Promise.resolve();
 
-        function workerGenerate(chatMessages, onToken) {
-            return new Promise((resolve, reject) => {
+        function workerGenerate(chatMessages, onToken, maxTokensOverride) {
+            const run = () => new Promise((resolve, reject) => {
                 // No hard timeout — WASM is slow, let it finish.
                 // User can always send a new message or reload to cancel.
 
@@ -10773,7 +10972,7 @@ Use this data to personalize your response. Comment on their current state when 
                     onToken: onToken || (() => {}),
                 };
                 // Cap output tokens based on device/model to keep generation reasonable
-                let maxTokens = config.maxTokens || getLocalMaxNewTokens();
+                let maxTokens = maxTokensOverride || config.maxTokens || getLocalMaxNewTokens();
                 if (selectedLocalModel === 'e4b' && maxTokens > 2048) {
                     maxTokens = 2048;
                 }
@@ -10794,6 +10993,10 @@ Use this data to personalize your response. Comment on their current state when 
                 // Note: images are embedded as data URLs in message.images arrays
                 // and will be loaded by the worker via RawImage.fromURL()
             });
+            // Chain onto the queue (regardless of the previous call's outcome so one
+            // failure can't wedge it); return this call's own run promise.
+            _workerQueue = _workerQueue.then(run, run);
+            return _workerQueue;
         }
 
         // LFM2.5 reasoning models (and sometimes Instruct) emit <think>...</think>
@@ -11034,6 +11237,7 @@ Use this data to personalize your response. Comment on their current state when 
 
             document.getElementById('sendBtn').disabled = true;
             document.getElementById('sendBtn').innerHTML = '<span class="loading"></span>';
+            sophiaBusy = true;   // pause proactive insights while this turn generates
 
             try {
                 // Gemma 4 E2B is capable enough for full context — only skip for
@@ -11116,6 +11320,7 @@ Use this data to personalize your response. Comment on their current state when 
 
             document.getElementById('sendBtn').disabled = false;
             document.getElementById('sendBtn').innerHTML = '➤';
+            sophiaBusy = false;   // resume proactive insights
         }
 
         // ── Remote API streaming (original) ──

@@ -21,7 +21,22 @@ export class ToolRegistry {
 
   get size() { return this.tools.size; }
 
+  // JSON-Schema tool list in the OpenAI/HF function shape — what
+  // apply_chat_template({tools}) expects. Used in native mode, where the model's
+  // own tool_use template renders these instead of instructions() prose.
+  schemas() {
+    return [...this.tools.values()].map(t => ({
+      type: 'function',
+      function: {
+        name: t.name,
+        description: t.description,
+        parameters: t.parameters || { type: 'object', properties: {} },
+      },
+    }));
+  }
+
   // Rendered into the system prompt so the model knows what it can call.
+  // Only used when the model has no trained tool format of its own.
   instructions() {
     const specs = [...this.tools.values()].map(t =>
       `- ${t.name}: ${t.description}\n    args: ${JSON.stringify((t.parameters && t.parameters.properties) || {})}`
@@ -134,23 +149,31 @@ function ensureSystemTools(convo, registry) {
 /**
  * runAgent — generate → parse for a tool call → execute + feed result back → repeat
  *            until the model gives a plain answer or maxSteps is hit.
- * @param messages  Sophia's system+history array (mutated copies only)
- * @param registry  ToolRegistry
- * @param llmCall   async ({messages}) => ({ content })   // worker round-trip
- * @param maxSteps  default 3 (in-browser inference is slow; keep it tight)
- * @param ctx       passed to tool.execute (e.g. { sensorState })
- * @param onEvent   ({type, ...}) for UI status
+ * @param messages     Sophia's system+history array (mutated copies only)
+ * @param registry     ToolRegistry
+ * @param llmCall      async ({messages, tools}) => ({ content })   // worker round-trip
+ * @param maxSteps     default 3 (in-browser inference is slow; keep it tight)
+ * @param ctx          passed to tool.execute (e.g. { sensorState })
+ * @param onEvent      ({type, ...}) for UI status
+ * @param nativeTools  true for models with a trained tool_use chat template
+ *                     (Qwen 3.5). Sends JSON schemas instead of prompt prose and
+ *                     feeds results back as role:'tool'. False keeps the prompt-
+ *                     described path that every other model here relies on.
  * @returns { final, convo }
  */
-export async function runAgent({ messages, registry, llmCall, maxSteps = 3, ctx = {}, onEvent }) {
+export async function runAgent({ messages, registry, llmCall, maxSteps = 3, ctx = {}, onEvent, nativeTools = false }) {
   const convo = messages.map(m => ({ ...m }));
-  if (registry && registry.size > 0) ensureSystemTools(convo, registry);
+  const hasTools = !!(registry && registry.size > 0);
+  // In native mode the template renders the tool list, so injecting our own prose
+  // as well would give the model two conflicting formats to choose between.
+  if (hasTools && !nativeTools) ensureSystemTools(convo, registry);
+  const toolSchemas = (hasTools && nativeTools) ? registry.schemas() : undefined;
 
   let toolResultPending = false;   // a tool ran but its result hasn't been answered yet
 
   for (let step = 0; step < maxSteps; step++) {
     onEvent?.({ type: 'step', step });
-    const { content } = await llmCall({ messages: convo });
+    const { content } = await llmCall({ messages: convo, tools: toolSchemas });
     const call = parseToolCall(content);
 
     if (!call) { onEvent?.({ type: 'final' }); return { final: stripScaffold(content) || content, convo }; }
@@ -163,12 +186,16 @@ export async function runAgent({ messages, registry, llmCall, maxSteps = 3, ctx 
     catch (e) { result = `Error running ${call.name}: ${e.message}`; }
 
     onEvent?.({ type: 'tool_end', name: call.name, result });
-    // Feed back as a plain user turn — small-model chat templates handle this
-    // far more reliably than a dedicated `tool` role.
-    convo.push({
-      role: 'user',
-      content: `TOOL_RESULT (${call.name}):\n${typeof result === 'string' ? result : JSON.stringify(result)}\n\nUse this to answer in your own voice, or call another tool.`
-    });
+    const resultText = typeof result === 'string' ? result : JSON.stringify(result);
+    // Native-template models were TRAINED on a `tool` role and read it correctly.
+    // Everything else gets a plain user turn — small-model chat templates handle
+    // that far more reliably than a dedicated role they've never seen.
+    convo.push(nativeTools
+      ? { role: 'tool', name: call.name, content: resultText }
+      : {
+          role: 'user',
+          content: `TOOL_RESULT (${call.name}):\n${resultText}\n\nUse this to answer in your own voice, or call another tool.`
+        });
     toolResultPending = true;
   }
 
@@ -180,7 +207,7 @@ export async function runAgent({ messages, registry, llmCall, maxSteps = 3, ctx 
   if (toolResultPending) {
     onEvent?.({ type: 'synthesize' });
     try {
-      const { content } = await llmCall({ messages: convo });
+      const { content } = await llmCall({ messages: convo, tools: toolSchemas });
       const answer = stripScaffold(content);
       if (answer && answer.trim()) { onEvent?.({ type: 'final' }); return { final: answer, convo }; }
     } catch { /* fall through to the graceful cap message */ }

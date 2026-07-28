@@ -1620,7 +1620,7 @@
                     Export
                 </button>
             </div>
-            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v69</div>
+            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v70</div>
             </div><!-- end sidebar-scroll -->
         </div>
 
@@ -1944,6 +1944,8 @@
                                     <option value="e4b">Gemma 4 E4B — Warm Deep (~5.1 GB, 16GB+ RAM)</option>
                                 </optgroup>
                                 <optgroup label="🔧 Agent Mode — Tools & Structured Work">
+                                    <option value="agent-qwen-mini">Qwen3.5 0.8B — Agent Mini + Vision (~0.6 GB, native tools)</option>
+                                    <option value="agent-qwen">Qwen3.5 2B — Agent + Vision (~1.5 GB, native tools)</option>
                                     <option value="agent-lite">LFM2.5-1.2B-Instruct — Agent Lite (~0.8 GB, any device)</option>
                                     <option value="agent-vision">LFM2.5-VL-1.6B — Agent + Vision (~1.8 GB, 6GB+ RAM)</option>
                                 </optgroup>
@@ -1969,7 +1971,10 @@
                     </div>
                     <div style="margin-top: 6px; font-size: 0.75rem; color: #888;" id="webgpuStatus">Checking WebGPU...</div>
                     <label style="font-weight: normal; display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 0.75rem; color: #ffaa00;">
-                        <input type="checkbox" id="forceWasm"> Force WASM (no GPU) — use if model crashes on load
+                        <input type="checkbox" id="forceWasm" onchange="onForceWasmChange()"> Force WASM (no GPU) — use if model crashes on load
+                    </label>
+                    <label id="mobileWebGPURow" style="display: none; font-weight: normal; align-items: center; gap: 8px; margin-top: 6px; font-size: 0.75rem; color: #66ccff;">
+                        <input type="checkbox" id="mobileWebGPU" onchange="onMobileWebGPUChange()"> Use WebGPU on this phone — required for Gemma 4, LFM2.5 &amp; Bonsai. Untick if inference crashes.
                     </label>
                 </div>
 
@@ -7064,6 +7069,23 @@ return result;</textarea>
         }
         
         // Device Detection and Auto-Configuration
+        // navigator.deviceMemory is quantized AND capped at 8 by every browser that
+        // implements it — a 24 GB phone and an 8 GB phone both report exactly 8. So
+        // treat 8 as "8 or more, ceiling unknown" rather than a literal figure, and
+        // corroborate with core count + WebGPU before trusting a device with a big model.
+        const DEVICE_MEMORY_API_CAP = 8;
+
+        // Capability test, not a UA test — "is this phone a flagship" rather than
+        // "is this a phone". Gates the mobile WASM downgrade so a 24 GB device with a
+        // working GPU isn't held to the same ceiling as a budget handset.
+        function isHighEndMobileHardware() {
+            const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+            if (!isMobile) return false;
+            return (navigator.deviceMemory || 0) >= DEVICE_MEMORY_API_CAP
+                && (navigator.hardwareConcurrency || 0) >= 8
+                && !!navigator.gpu;
+        }
+
         async function detectDeviceCapabilities() {
             // Check if auto-optimization is enabled
             if (!config.autoOptimization) {
@@ -7092,6 +7114,8 @@ return result;</textarea>
             // WebGPU adapter > navigator.deviceMemory > fallback 4GB
             const reportedMemory = navigator.deviceMemory || 4;
             const bestMemoryEstimate = Math.max(reportedMemory, webgpuMemoryGB);
+            // The 8 GB deviceMemory cap is compensated for by the core-count heuristic
+            // in calculateOptimalSettings — don't add a second overlapping correction here.
 
             const deviceInfo = {
                 isMobile: /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent),
@@ -7260,11 +7284,10 @@ return result;</textarea>
                 // after the first inference, causing [Device] is lost errors.
                 // Downgrade WebGPU-only models (E2B/E4B/LFM2-VL) to Gemma 3 1B which
                 // runs on WASM and is immune to GPU context loss.
-                const currentDtype = LOCAL_MODELS[selectedLocalModel]?.dtype;
-                const isWebGPUOnly = currentDtype === 'q4f16'
-                    || currentDtype === 'q4'
-                    || (typeof currentDtype === 'object' && currentDtype !== null);
-                if (isWebGPUOnly) {
+                // Use the WASM_SAFE_MODELS allowlist rather than sniffing dtype —
+                // the old dtype test missed q2f16 (ternary Bonsai), which is just as
+                // WebGPU-only as q4/q4f16.
+                if (!isWasmSafeModel(selectedLocalModel) && !isHighEndMobileHardware()) {
                     console.log(`📱 Mobile: downgrading ${selectedLocalModel} → lite (WASM-safe, avoids WebGPU instability)`);
                     selectedLocalModel = 'lite';
                     config.contextLength = Math.min(config.contextLength, 8192);
@@ -7273,6 +7296,20 @@ return result;</textarea>
                     config.recommendedModel = 'Gemma 3 1B (Mobile — WASM safe)';
                     config.memoryBudget = effectiveMemory + 'GB est. (Mobile WASM)';
                     config.features = ['Text Only', 'Fast', 'Stable on Mobile'];
+                } else if (modelDownloadGB(selectedLocalModel) > MOBILE_AUTO_MAX_GB) {
+                    // A GPU-capable phone, but effectiveMemory is inferred from core
+                    // count and every flagship reports 8 cores — so this tier could be
+                    // a 24 GB device or an 8 GB one. Auto-pick for the 8 GB case; the
+                    // dropdown still offers the big models to anyone who knows better.
+                    const fit = bestMobileAutoModel();
+                    console.log(`📱 Mobile: ${selectedLocalModel} is ${modelDownloadGB(selectedLocalModel)} GB — capping auto-selection at ${MOBILE_AUTO_MAX_GB} GB → ${fit}`);
+                    selectedLocalModel = fit;
+                    config.contextLength = Math.min(config.contextLength, 8192);
+                    config.maxTokens = Math.min(config.maxTokens, 1024);
+                    config.modelTier = fit;
+                    config.recommendedModel = `${LOCAL_MODELS[fit].name} (Mobile — fits 8GB)`;
+                    config.memoryBudget = effectiveMemory + 'GB est. (Mobile GPU)';
+                    config.features = ['Agent Mode', 'Tool Calling', 'Vision', 'Mobile GPU'];
                 }
                 config.features.push('Mobile Optimized');
             }
@@ -8199,6 +8236,24 @@ return result;</textarea>
                         return { success: false, error: 'web_search runs through Sophia\'s local agentic loop (local WebGPU model), not the remote tool path. Enable a local model.' };
                     },
                     enabled: false,   // opt-in — needs the local proxy running
+                    default: true,
+                    agentTool: true
+                },
+                astrology_report: {
+                    name: 'astrology_report',
+                    description: 'Cast a complete natal chart (placements, houses, aspects, patterns) from birth details, using what Sophia already remembers when they are not given. Offline — no ephemeris files, no network. Enabling this turns on Sophia\'s agentic tool-use loop for the local model.',
+                    params: {
+                        birth_date: { type: 'string', description: 'YYYY-MM-DD (omit to use memory)' },
+                        birth_time: { type: 'string', description: 'HH:MM local to the birth place, or "unknown"' },
+                        birth_place: { type: 'string', description: 'City, or "latitude,longitude"' },
+                        house_system: { type: 'string', description: 'placidus | whole | equal | porphyry' }
+                    },
+                    // Real implementation lives in tools/astrology.js and runs in the
+                    // async agentic loop; this stub only fires via the remote tool path.
+                    code: function() {
+                        return { success: false, error: 'astrology_report runs through Sophia\'s local agentic loop, not the remote tool path. Enable a local model.' };
+                    },
+                    enabled: false,   // opt-in
                     default: true,
                     agentTool: true
                 },
@@ -9504,6 +9559,41 @@ return result;</textarea>
                 dtype: 'q4f16',
                 category: 'warm',
             },
+            // ── Qwen 3.5 — native tool calling ──────────────────────────────
+            // Qwen ships a tool_use chat template, so with transformers.js >= 4.2.0
+            // we hand it a JSON-Schema tool list and it answers in its own trained
+            // <tool_call>{"name":...,"arguments":{...}}</tool_call> format. That is
+            // the "Hermes-like" part: reliability comes from using the format the
+            // model was trained on, not from a better prompt.
+            // Both are Qwen3_5ForConditionalGeneration (vision + text in one).
+            'agent-qwen-mini': {
+                id: 'onnx-community/Qwen3.5-0.8B-ONNX',
+                name: 'Qwen3.5 0.8B — Agent Mini + Vision',
+                params: '~0.8B',
+                download: '~0.6 GB',
+                minMemory: 3,
+                speed: 'Very fast',
+                quality: 'Native tool calling',
+                type: 'qwen35-vision',
+                dtype: 'q4f16',
+                category: 'agent',
+                family: 'qwen35',
+                nativeTools: true,
+            },
+            'agent-qwen': {
+                id: 'onnx-community/Qwen3.5-2B-ONNX',
+                name: 'Qwen3.5 2B — Agent + Vision',
+                params: '~2B',
+                download: '~1.5 GB',
+                minMemory: 6,
+                speed: 'Fast',
+                quality: 'Native tool calling',
+                type: 'qwen35-vision',
+                dtype: 'q4f16',
+                category: 'agent',
+                family: 'qwen35',
+                nativeTools: true,
+            },
             'agent-lite': {
                 id: 'LiquidAI/LFM2.5-1.2B-Instruct-ONNX',
                 name: 'LFM2.5-1.2B-Instruct — Agent Lite',
@@ -9581,6 +9671,50 @@ return result;</textarea>
             },
         };
 
+        // ── WASM (CPU) compatibility ────────────────────────────────────────
+        // onnxruntime-web implements block-quantized weight ops — GatherBlockQuantized
+        // (q4/q8 embeddings), MatMulNBits, ternary q2 — only on the WebGPU backend.
+        // The WASM build ships no CPU kernel, so session creation dies with
+        //   "Could not find an implementation for GatherBlockQuantized(1)".
+        //
+        // Rewriting dtype → 'quantized' does NOT rescue the Gemma 4 family: their
+        // embed_tokens subgraph is block-quantized in the int8 export too, so
+        // embed_tokens_quantized.onnx still carries the op. Only plain-int8
+        // single-graph exports (Qwen 0.5B, Gemma 3 1B) load on WASM.
+        const WASM_SAFE_MODELS = new Set(['tiny', 'lite']);
+
+        function isWasmSafeModel(key) { return WASM_SAFE_MODELS.has(key); }
+
+        function wasmSafeModelNames() {
+            return [...WASM_SAFE_MODELS]
+                .map(k => LOCAL_MODELS[k] && LOCAL_MODELS[k].name)
+                .filter(Boolean)
+                .join(' or ');
+        }
+
+        // ── Mobile auto-selection ceiling ───────────────────────────────────
+        // No browser API distinguishes a 24 GB phone from an 8 GB one: deviceMemory
+        // caps at 8 for both, and every modern handset reports 8 cores. So
+        // AUTO-selection on mobile has to assume the smaller device. Bigger models
+        // stay one manual tap away in the dropdown for anyone who knows their phone
+        // can take it — we just refuse to guess on their behalf.
+        const MOBILE_AUTO_MAX_GB = 2.0;
+
+        // Parses the human-readable download field ("~3.2 GB"). Unparseable means
+        // unknown size, which must not pass a size ceiling — hence Infinity.
+        function modelDownloadGB(key) {
+            const info = LOCAL_MODELS[key];
+            const m = info && /([\d.]+)\s*GB/i.exec(info.download || '');
+            return m ? parseFloat(m[1]) : Infinity;
+        }
+
+        // Best model that fits the mobile ceiling, most capable first. Native tool
+        // callers are preferred so agent mode still works on a phone.
+        function bestMobileAutoModel() {
+            const preference = ['agent-qwen', 'agent-qwen-mini', 'lite', 'tiny'];
+            return preference.find(k => LOCAL_MODELS[k] && modelDownloadGB(k) <= MOBILE_AUTO_MAX_GB) || 'tiny';
+        }
+
         // Italic helper line shown under the dropdown — keyed by model category.
         const MODEL_CATEGORY_HINTS = {
             warm:  "Sophia's softest voice — oracle work, emotional reflection, metaphysical conversation.",
@@ -9625,17 +9759,23 @@ import {
     AutoProcessor,
     AutoTokenizer,
     Gemma4ForConditionalGeneration,
+    Qwen3_5ForConditionalGeneration,
     TextStreamer,
     RawImage,
     read_audio,
     env,
-} from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.1.0';
+} from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.2.0';
 import * as ort from 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.23.2/dist/ort.all.bundle.min.mjs';
 // Both deps pinned to confirmed-working versions. Bump these deliberately
 // (re-test all model load paths) rather than letting jsDelivr auto-resolve.
-//   @huggingface/transformers@4.1.0 — first version registering lfm2_vl,
-//                                     supports use_external_data_format,
-//                                     supports q2/q2f16 dtypes (Bonsai).
+//   @huggingface/transformers@4.2.0 — adds a "tools" option to TextGenerationPipeline
+//                                     (PR #1655), which is what lets us render
+//                                     each model's OWN trained tool-call format
+//                                     via its chat template instead of our
+//                                     ad-hoc prompt description. Also exports
+//                                     Qwen3_5ForConditionalGeneration (4.0.0).
+//                                     Retains lfm2_vl, use_external_data_format,
+//                                     and q2/q2f16 (Bonsai) from 4.1.0.
 //   onnxruntime-web@1.23.2          — matches LiquidAI HF Space, stable
 //                                     WebGPU + WASM bundled backends.
 env.allowLocalModels = false;
@@ -10320,10 +10460,20 @@ self.onmessage = async (e) => {
                 });
                 self.postMessage({ type: 'loaded' });
             } else {
-                // ── Gemma 4 vision model ──
+                // ── Vision-capable conditional-generation models ──
+                // Gemma 4 and Qwen 3.5 share one code path: AutoProcessor + a
+                // *ForConditionalGeneration class, both driven by chat templates.
+                // Only the model class differs.
+                const VLM_CLASSES = {
+                    'gemma4-vision': Gemma4ForConditionalGeneration,
+                    'qwen35-vision': Qwen3_5ForConditionalGeneration,
+                };
+                const ModelClass = VLM_CLASSES[modelType];
+                if (!ModelClass) throw new Error('Unsupported model type: ' + modelType);
+
                 self.postMessage({ type: 'progress', payload: { status: 'progress', name: 'processor', progress: 0 } });
                 processor = await AutoProcessor.from_pretrained(payload.modelId);
-                model = await Gemma4ForConditionalGeneration.from_pretrained(payload.modelId, {
+                model = await ModelClass.from_pretrained(payload.modelId, {
                     dtype: payload.dtype,
                     device: payload.device,
                     progress_callback: (p) => self.postMessage({ type: 'progress', payload: p }),
@@ -10360,6 +10510,9 @@ self.onmessage = async (e) => {
                     do_sample: payload.temperature > 0,
                     streamer,
                     return_full_text: false,
+                    // Routed into apply_chat_template by the pipeline (transformers.js
+                    // >= 4.2.0) so the model sees its own trained tool format.
+                    ...(payload.tools && payload.tools.length ? { tools: payload.tools } : {}),
                 });
                 self.postMessage({ type: 'genDone' });
             } catch (err) {
@@ -10440,9 +10593,15 @@ self.onmessage = async (e) => {
                 return { role: m.role, content: m.content };
             });
 
+            // Passing tools makes the tokenizer select the model's tool_use template,
+            // so the model is asked for tools in the exact format it was TRAINED on
+            // (Qwen emits <tool_call>{...}</tool_call>) rather than our prompt-described
+            // shape. Omit the key entirely when there are no tools — a null would still
+            // switch templates on some models.
             const prompt = processor.apply_chat_template(messages, {
                 enable_thinking: false,
                 add_generation_prompt: true,
+                ...(payload.tools && payload.tools.length ? { tools: payload.tools } : {}),
             });
 
             let imageInputs = null;
@@ -10465,7 +10624,12 @@ self.onmessage = async (e) => {
                 audioInputs = loaded.length === 1 ? loaded[0] : loaded;
             }
 
-            const inputs = await processor(prompt, imageInputs, audioInputs, { add_special_tokens: false });
+            // Gemma 4's processor takes (text, images, audio, opts); Qwen 3.5 has no
+            // audio tower and takes (text, images, opts) — passing a null audio arg
+            // there would land in its options slot.
+            const inputs = (modelType === 'qwen35-vision')
+                ? await processor(prompt, imageInputs, { add_special_tokens: false })
+                : await processor(prompt, imageInputs, audioInputs, { add_special_tokens: false });
 
             const streamer = new TextStreamer(processor.tokenizer, {
                 skip_prompt: true,
@@ -10569,6 +10733,11 @@ self.onmessage = async (e) => {
                     || errLower.includes('404')
                     || errLower.includes('no such file');
                 const isUnsupportedModel = errLower.includes('unsupported model type');
+                // Block-quantized weight ops with no WASM kernel — the model is
+                // WebGPU-only, not broken.
+                const isWebGPUOnlyOp = errLower.includes('gatherblockquantized')
+                    || errLower.includes('matmulnbits')
+                    || errLower.includes('could not find an implementation for');
                 const isRealGpuFailure = wasWebGPU
                     && !isFileNotFound
                     && !isUnsupportedModel
@@ -10588,6 +10757,13 @@ self.onmessage = async (e) => {
                         statusEl.style.color = '#ffaa00';
                     }
                     showStatus('WebGPU failed on this device. WASM fallback enabled — try loading again.', 'warning');
+                } else if (isWebGPUOnlyOp && !wasWebGPU) {
+                    const info = LOCAL_MODELS[selectedLocalModel];
+                    const msg = `${info.name} needs WebGPU — it can't run in WASM mode. Choose ${wasmSafeModelNames()}.`;
+                    if (statusEl) { statusEl.textContent = msg; statusEl.style.color = '#ffaa00'; }
+                    refreshModelPickerAvailability();
+                    resolveInferenceBadge();
+                    showStatus(msg, 'warning');
                 } else {
                     // Show the real error so the user can actually see what failed.
                     const shortErr = payload && payload.length > 220 ? payload.slice(0, 220) + '…' : payload;
@@ -10663,6 +10839,21 @@ self.onmessage = async (e) => {
 
         async function loadLocalModel() {
             if (localInference.ready || localInference.loading) return;
+
+            // Refuse WebGPU-only models before spawning a worker, rather than
+            // downloading several GB and dying on session creation with a raw
+            // ONNX kernel error. See WASM_SAFE_MODELS.
+            if (isWasmMode() && !isWasmSafeModel(selectedLocalModel)) {
+                const info = LOCAL_MODELS[selectedLocalModel];
+                const msg = `${info.name} needs WebGPU — it can't run in WASM mode. Choose ${wasmSafeModelNames()}.`;
+                const el = document.getElementById('localModelStatus');
+                if (el) { el.textContent = msg; el.style.color = '#ffaa00'; }
+                refreshModelPickerAvailability();
+                resolveInferenceBadge();
+                showStatus(msg, 'warning');
+                return;
+            }
+
             localInference.loading = true;
             localInference.failed = false;
             localInference.error = null;
@@ -10685,9 +10876,9 @@ self.onmessage = async (e) => {
                 const forceWasm = document.getElementById('forceWasm')?.checked;
                 const device = (localInference.webgpuAvailable && !forceWasm) ? 'webgpu' : 'wasm';
 
-                // q4/q4f16 use GatherBlockQuantized — a WebGPU-only ONNX operator.
-                // WASM has no kernel for it. Fall back to 'quantized' (standard ONNX
-                // int8 quantization) which has full CPU/WASM support.
+                // Belt-and-braces: the WASM_SAFE_MODELS guard above already ships
+                // 'quantized' here, but keep the remap so a future WASM-safe model
+                // declared with q4/q4f16 can't silently request a WebGPU-only export.
                 let dtype = modelInfo.dtype;
                 if (device === 'wasm' && (dtype === 'q4' || dtype === 'q4f16')) {
                     dtype = 'quantized';
@@ -10712,6 +10903,67 @@ self.onmessage = async (e) => {
                 hideModelProgress();
                 if (statusEl) { statusEl.textContent = 'Failed: ' + err.message; statusEl.style.color = '#ff4444'; }
                 updateInferenceBadge('unavailable', 'Worker Failed');
+            }
+        }
+
+        // True when inference will run on the CPU/WASM backend this load.
+        function isWasmMode() {
+            const forced = document.getElementById('forceWasm')?.checked;
+            return !localInference.webgpuAvailable || !!forced;
+        }
+
+        // Grey out models the current backend can't load, so the user never burns
+        // a multi-GB download to reach a "no implementation for <op>" error.
+        function refreshModelPickerAvailability() {
+            const picker = document.getElementById('localModelPicker');
+            if (!picker) return;
+            const wasm = isWasmMode();
+            for (const opt of picker.options) {
+                if (!opt.dataset.baseLabel) opt.dataset.baseLabel = opt.textContent;
+                const blocked = wasm && !isWasmSafeModel(opt.value);
+                opt.disabled = blocked;
+                opt.textContent = blocked ? opt.dataset.baseLabel + ' — needs GPU' : opt.dataset.baseLabel;
+            }
+        }
+
+        function onForceWasmChange() {
+            refreshModelPickerAvailability();
+        }
+
+        // Explicit mobile-WebGPU preference, remembered across sessions.
+        // null = never chosen, fall back to the hardware guess.
+        const MOBILE_WEBGPU_PREF_KEY = 'sophiaMobileWebGPU';
+
+        function getMobileWebGPUPref() {
+            try {
+                const v = localStorage.getItem(MOBILE_WEBGPU_PREF_KEY);
+                return v === null ? null : v === 'true';
+            } catch (e) { return null; }
+        }
+
+        function setMobileWebGPUPref(on) {
+            try { localStorage.setItem(MOBILE_WEBGPU_PREF_KEY, on ? 'true' : 'false'); } catch (e) {}
+        }
+
+        // Mobile WebGPU toggle. Defaults on for flagship hardware, off otherwise —
+        // without it every block-quantized model is unreachable on a phone.
+        async function onMobileWebGPUChange() {
+            const on = !!document.getElementById('mobileWebGPU')?.checked;
+            setMobileWebGPUPref(on);
+            const wasmBox = document.getElementById('forceWasm');
+            localInference.webgpuAvailable = on ? await checkWebGPU() : false;
+            if (wasmBox) wasmBox.checked = !localInference.webgpuAvailable;
+
+            const webgpuEl = document.getElementById('webgpuStatus');
+            if (webgpuEl) {
+                webgpuEl.textContent = localInference.webgpuAvailable
+                    ? '📱 Mobile — WebGPU enabled (experimental)'
+                    : '📱 Mobile — using WASM (stable)';
+                webgpuEl.style.color = localInference.webgpuAvailable ? '#66ccff' : '#00ff88';
+            }
+            refreshModelPickerAvailability();
+            if (localInference.ready) {
+                showStatus('Backend changed — unload and reload the model to apply.', 'warning');
             }
         }
 
@@ -10747,6 +10999,16 @@ self.onmessage = async (e) => {
             const catEl = document.getElementById('modelCategoryHint');
             if (catEl) catEl.textContent = MODEL_CATEGORY_HINTS[info.category] || '';
 
+            // Clear the previous model's failure text — leaving it up makes a fresh
+            // attempt look like it failed before it started.
+            if (!localInference.ready && !localInference.loading && localInference.failed) {
+                localInference.failed = false;
+                localInference.error = null;
+                const statusEl = document.getElementById('localModelStatus');
+                if (statusEl) { statusEl.textContent = 'Not loaded'; statusEl.style.color = '#ffaa00'; }
+            }
+
+            refreshModelPickerAvailability();
             console.log('🧠 Model selection changed to:', info.name, info.id);
         }
 
@@ -10961,7 +11223,11 @@ Use this data to personalize your response. Comment on their current state when 
         const LOCAL_GEN_TIMEOUT = 0; // No timeout — WASM generation is slow, let it finish
         let _workerQueue = Promise.resolve();
 
-        function workerGenerate(chatMessages, onToken, maxTokensOverride) {
+        // toolSchemas — optional JSON-Schema tool list. When present the worker
+        // routes it through the model's chat template, so the model is asked for
+        // tools in its own trained format. Only pass it for models that declare
+        // nativeTools; on others the tool_use template may not exist.
+        function workerGenerate(chatMessages, onToken, maxTokensOverride, toolSchemas) {
             const run = () => new Promise((resolve, reject) => {
                 // No hard timeout — WASM is slow, let it finish.
                 // User can always send a new message or reload to cancel.
@@ -10988,6 +11254,7 @@ Use this data to personalize your response. Comment on their current state when 
                         messages: chatMessages,
                         max_new_tokens: maxTokens,
                         temperature: config.temperature,
+                        ...(toolSchemas && toolSchemas.length ? { tools: toolSchemas } : {}),
                     }
                 });
                 // Note: images are embedded as data URLs in message.images arrays
@@ -11017,7 +11284,9 @@ Use this data to personalize your response. Comment on their current state when 
         // the fast single-shot streaming path untouched.
         function agentToolsActive() {
             return !!(window.SophiaAgent
-                && typeof tools !== 'undefined' && tools.web_search && tools.web_search.enabled
+                && typeof tools !== 'undefined'
+                && ((tools.web_search && tools.web_search.enabled)
+                    || (tools.astrology_report && tools.astrology_report.enabled))
                 && shouldUseLocal() && localInference.worker);   // only when we'll actually run local
         }
 
@@ -11063,15 +11332,23 @@ Use this data to personalize your response. Comment on their current state when 
             };
 
             // llmCall seam: one worker round-trip, streamed live to the bubble.
-            const llmCall = ({ messages }) => new Promise((resolve, reject) => {
+            // `tools` arrives from agent-core only in native mode; forwarding it makes
+            // the worker render the model's own tool_use chat template.
+            const llmCall = ({ messages, tools: toolSchemas }) => new Promise((resolve, reject) => {
                 currentFull = '';
-                workerGenerate(messages, (t) => { currentFull += t; render(); })
+                workerGenerate(messages, (t) => { currentFull += t; render(); }, undefined, toolSchemas)
                     .then(() => resolve({ content: stripThinkBlocks(currentFull) }))
                     .catch(reject);
             });
 
-            const fam = LOCAL_MODELS[selectedLocalModel] && LOCAL_MODELS[selectedLocalModel].family;
-            const maxSteps = fam === 'lfm25' ? 3 : 1;   // tiny non-agent models: single hop
+            const modelInfo = LOCAL_MODELS[selectedLocalModel] || {};
+            const fam = modelInfo.family;
+            // Models with a trained tool_use template get the schema-driven path and
+            // can be trusted with more hops; prompt-described models stay conservative.
+            const nativeTools = !!modelInfo.nativeTools;
+            const maxSteps = (nativeTools || fam === 'lfm25') ? 3 : 1;   // tiny non-agent models: single hop
+            // astrology_report stays in the list (unlike web_search) so the bootstrap
+            // can see whether it is enabled; it skips bridging it to the sync path.
             const bridgedTools = Object.values(tools).filter(t => t.enabled && t.name !== 'web_search');
 
             const onEvent = (e) => {
@@ -11099,8 +11376,17 @@ Use this data to personalize your response. Comment on their current state when 
             };
 
             const { final } = await window.SophiaAgent.runAgentTurn({
-                messages: base, bridgedTools, llmCall, maxSteps, onEvent,
-                ctx: { sensorState: (typeof currentEEGData !== 'undefined' ? currentEEGData : null) }
+                messages: base, bridgedTools, llmCall, maxSteps, onEvent, nativeTools,
+                ctx: {
+                    sensorState: (typeof currentEEGData !== 'undefined' ? currentEEGData : null),
+                    // Memory adapter. ESM tools can't reach the app's let/const
+                    // globals, so the seam is passed in — same convention as llmCall.
+                    memory: {
+                        all: () => getAllMemories(),
+                        search: (q) => searchMemories(q),
+                        save: (m) => saveMemory(m),
+                    },
+                }
             });
             const out = stripThinkBlocks(final || '').trim();
             if (!out) throw new Error('Model returned empty response after tool use.');
@@ -11176,22 +11462,39 @@ Use this data to personalize your response. Comment on their current state when 
 
         async function initLocalInference() {
             const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
-            localInference.webgpuAvailable = await checkWebGPU();
+            const gpuReal = await checkWebGPU();
+            localInference.webgpuAvailable = gpuReal;
 
-            // Mobile WebGPU is unstable — Android reclaims GPU between inferences.
-            // Force WASM on mobile even if WebGPU reports available.
-            if (isMobile && localInference.webgpuAvailable) {
-                console.log('📱 Mobile detected: disabling WebGPU (unstable on mobile), using WASM');
+            // Only surface the mobile toggle when the device actually reports WebGPU.
+            const mobileOptIn = document.getElementById('mobileWebGPU');
+            const mobileRow = document.getElementById('mobileWebGPURow');
+            if (mobileRow) mobileRow.style.display = (isMobile && gpuReal) ? 'flex' : 'none';
+
+            // Mobile WebGPU is unstable on mid-range hardware — Android reclaims the GPU
+            // between inferences — but a blanket UA disable also locks flagships out of
+            // every block-quantized model (Gemma 4, LFM2.5, Bonsai), which is most of the
+            // catalogue. So default it on where the hardware supports it and off
+            // elsewhere, and let a saved preference beat the hardware guess either way.
+            if (isMobile && gpuReal && mobileOptIn) {
+                mobileOptIn.checked = getMobileWebGPUPref() ?? isHighEndMobileHardware();
+            }
+
+            if (isMobile && gpuReal && !(mobileOptIn && mobileOptIn.checked)) {
+                console.log('📱 Mobile: WebGPU off (unstable on this class of device), using WASM');
                 localInference.webgpuAvailable = false;
                 const wasmBox = document.getElementById('forceWasm');
                 if (wasmBox) wasmBox.checked = true;
+            } else if (isMobile && gpuReal) {
+                console.log('📱 Mobile: WebGPU enabled — flagship hardware or user preference');
             }
 
             const webgpuEl = document.getElementById('webgpuStatus');
             if (webgpuEl) {
                 if (isMobile) {
-                    webgpuEl.textContent = '📱 Mobile — using WASM (stable)';
-                    webgpuEl.style.color = '#00ff88';
+                    webgpuEl.textContent = localInference.webgpuAvailable
+                        ? '📱 Mobile — WebGPU enabled (experimental)'
+                        : '📱 Mobile — using WASM (stable)';
+                    webgpuEl.style.color = localInference.webgpuAvailable ? '#66ccff' : '#00ff88';
                 } else {
                     webgpuEl.textContent = localInference.webgpuAvailable
                         ? '✅ WebGPU available — GPU acceleration'
@@ -11199,6 +11502,7 @@ Use this data to personalize your response. Comment on their current state when 
                     webgpuEl.style.color = localInference.webgpuAvailable ? '#00ff88' : '#ffaa00';
                 }
             }
+            refreshModelPickerAvailability();
             // Don't auto-load model on startup — user clicks "Load Model" when ready
             resolveInferenceBadge();
         }

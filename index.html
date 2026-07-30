@@ -1631,7 +1631,7 @@
                     Export
                 </button>
             </div>
-            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v74</div>
+            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v75</div>
             </div><!-- end sidebar-scroll -->
         </div>
 
@@ -10382,6 +10382,7 @@ return result;</textarea>
             failed: false,
             worker: null,
             webgpuAvailable: false,
+            gpuLimits: null,   // adapter limits, recorded by checkWebGPU()
             error: null,
             _pending: null, // {resolve, reject, onToken} for current generation
         };
@@ -11446,7 +11447,37 @@ self.onmessage = async (e) => {
 
         async function checkWebGPU() {
             if (!navigator.gpu) return false;
-            try { return !!(await navigator.gpu.requestAdapter()); } catch { return false; }
+            try {
+                const adapter = await navigator.gpu.requestAdapter();
+                if (!adapter) return false;
+                // Record the adapter's real limits while we have it. The KV cache grows
+                // with every generated token and lives in GPU memory, so how long a
+                // generation this device can survive is a property of the hardware, not
+                // of the user agent. maxBufferSize on phone-class GPUs is typically
+                // 256MB-1GB; desktops report 2GB+.
+                try {
+                    const lim = adapter.limits || {};
+                    localInference.gpuLimits = {
+                        maxBufferSize: Number(lim.maxBufferSize) || 0,
+                        maxStorageBufferBindingSize: Number(lim.maxStorageBufferBindingSize) || 0
+                    };
+                    console.log('🧠 WebGPU limits: maxBufferSize=' +
+                        Math.round(localInference.gpuLimits.maxBufferSize / 1048576) + 'MB');
+                } catch (_) { /* limits are advisory */ }
+                return true;
+            } catch { return false; }
+        }
+
+        // How many tokens this device can safely generate in one go. Small-GPU devices
+        // crash partway through a long answer rather than degrading, so the cap is
+        // hardware-derived; WASM is capped for time, not memory.
+        function localGenerationCap(requested) {
+            let cap = requested;
+            const limits = localInference.gpuLimits;
+            const smallGpu = limits && limits.maxBufferSize > 0 && limits.maxBufferSize < 1073741824;
+            if (smallGpu && cap > 384) cap = 384;
+            if (selectedLocalModel === 'e4b' && cap > 2048) cap = 2048;
+            return { cap, smallGpu: !!smallGpu };
         }
 
         function updateInferenceBadge(mode, text) {
@@ -11965,15 +11996,22 @@ Use this data to personalize your response. Comment on their current state when 
                     onToken: onToken || (() => {}),
                 };
                 // Cap output tokens based on device/model to keep generation reasonable
-                let maxTokens = maxTokensOverride || config.maxTokens || getLocalMaxNewTokens();
-                if (selectedLocalModel === 'e4b' && maxTokens > 2048) {
-                    maxTokens = 2048;
-                }
+                const requested = maxTokensOverride || config.maxTokens || getLocalMaxNewTokens();
+                const gen = localGenerationCap(requested);
+                let maxTokens = gen.cap;
                 // WASM is ~1-3 tok/s — cap at 512 to avoid 30min+ waits
                 const isWasm = !localInference.webgpuAvailable || document.getElementById('forceWasm')?.checked;
                 if (isWasm && maxTokens > 512) {
                     maxTokens = 512;
                 }
+                // One line that identifies a generation-time crash next time: what the
+                // model was asked for, on what backend, from how big a prompt.
+                const _promptTok = chatMessages.reduce((a, m) => a + estTokens(m.content), 0);
+                console.log('🧠 [Generate] ' + (selectedLocalModel || '?') +
+                    ' · ' + (isWasm ? 'wasm' : 'webgpu') + (gen.smallGpu ? ' (small-GPU cap)' : '') +
+                    ' · prompt ≈' + _promptTok + ' tok · max_new_tokens ' + maxTokens +
+                    (maxTokens < requested ? ' (asked ' + requested + ')' : '') +
+                    ' · context ' + (config.contextLength || '?'));
 
                 localInference.worker.postMessage({
                     type: 'generate',
@@ -12314,7 +12352,9 @@ Use this data to personalize your response. Comment on their current state when 
                     const local = !!localModelInfo;
                     const clip = (d) => {
                         if (!local) return d;
-                        const first = String(d).split(/(?<=\.)\s/)[0];
+                        const s = String(d);
+                        const stop = s.indexOf('. ');            // first sentence, no lookbehind
+                        const first = stop > 0 ? s.slice(0, stop + 1) : s;
                         return first.length > 130 ? first.slice(0, 127) + '…' : first;
                     };
                     const capTokens = local ? Math.floor(localPromptBudget().forPrompt * 0.25) : Infinity;

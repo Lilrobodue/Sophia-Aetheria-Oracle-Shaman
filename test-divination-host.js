@@ -160,6 +160,34 @@ console.log('--- Local prompt budget (mobile context overflow) ---');
   ok(/not advertised this turn/.test(html), 'and omitted tools are named, never silently dropped');
 }
 
+console.log('--- Generation cap (small-GPU crash guard) ---');
+{
+  const gStart = html.indexOf('function localGenerationCap(requested)');
+  const gEnd = html.indexOf('function updateInferenceBadge', gStart);
+  ok(gStart > 0 && gEnd > gStart, 'localGenerationCap found in index.html');
+  const mk = (limits, model) => new Function('localInference', 'selectedLocalModel',
+    html.slice(gStart, gEnd) + '\nreturn localGenerationCap;')({ gpuLimits: limits }, model);
+
+  const phone = mk({ maxBufferSize: 268435456 }, 'agent-lite');       // 256MB — phone class
+  const desktop = mk({ maxBufferSize: 2147483648 }, 'agent-lite');    // 2GB — desktop class
+  ok(phone(2048).cap === 384, 'a phone-class GPU is capped to 384 tokens, got ' + phone(2048).cap);
+  ok(phone(2048).smallGpu === true, 'and says why');
+  ok(phone(128).cap === 128, 'a request below the cap is left alone');
+  ok(desktop(2048).cap === 2048, 'a desktop GPU keeps its full budget, got ' + desktop(2048).cap);
+  ok(desktop(2048).smallGpu === false, 'and is not flagged small');
+  ok(mk({ maxBufferSize: 2147483648 }, 'e4b')(4096).cap === 2048, 'the E4B cap still applies');
+  ok(mk(null, 'agent-lite')(1024).cap === 1024, 'unknown limits do not invent a cap');
+  ok(mk({ maxBufferSize: 0 }, 'agent-lite')(1024).cap === 1024, 'a zero limit is treated as unknown');
+  // The diagnostic line must carry what identifies a generation crash.
+  ok(/\[Generate\]/.test(html) && /max_new_tokens/.test(html) && /prompt ≈/.test(html),
+     'generation logs model, backend, prompt size and token cap');
+  ok(/maxBufferSize=/.test(html), 'and the GPU limits are logged at startup');
+  // No lookbehind in code I added — it is a hard parse error on iOS Safari < 16.4,
+  // which would take the entire inline script down, not just the feature.
+  const clipSrc = html.slice(html.indexOf('const clip = (d) =>'), html.indexOf('const capTokens'));
+  ok(!/\(\?<[=!]/.test(clipSrc), 'the tool-description clip uses no lookbehind');
+}
+
 console.log('--- Remote error reporting ---');
 {
   const dStart = html.indexOf('function describeRemoteError(body)');

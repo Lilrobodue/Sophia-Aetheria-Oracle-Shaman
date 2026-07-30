@@ -1279,6 +1279,10 @@
          tarot, runes, biorhythm, cube walk, bibliomancy. Registers itself into
          the tool registry via window.DIVINATION_TOOLS. -->
     <script src="divination-core.js"></script>
+    <!-- Personal baseline for state-mode pivots: IndexedDB store keyed by
+         device + montage + time bin, drift and time-of-day reports. Must load
+         after divination-core (it hands pivots back to castIChing). -->
+    <script src="baseline-core.js"></script>
     <!-- Sensor event bus + HRV analysis (used by the Polar H10 wiring below) -->
     <script src="aetheria-bus.js"></script>
     <script src="hrv-analysis.js"></script>
@@ -1627,7 +1631,7 @@
                     Export
                 </button>
             </div>
-            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v72</div>
+            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v73</div>
             </div><!-- end sidebar-scroll -->
         </div>
 
@@ -6032,30 +6036,68 @@ return result;</textarea>
             );
         }
 
+        // Pick which memories go into context. Split out from the formatting so the
+        // local-model path can render the same selection compactly — see
+        // getCompactMemoryNote().
+        async function selectMemoriesForContext(userMessage) {
+            const all = await getAllMemories();
+            if (all.length === 0) return [];
+
+            // Recent memories (last 10) — but a reading is now filed on every
+            // cast, so cap readings at 4 of the 10 slots. Otherwise an evening
+            // of casting evicts the personal details that make a reading feel
+            // like it is for this person rather than about a hexagram.
+            const sorted = all.sort((a, b) => b.timestamp - a.timestamp);
+            const recent = [];
+            let recentReadings = 0;
+            for (const m of sorted) {
+                if (recent.length >= 10) break;
+                if (m.type === 'reading') {
+                    if (recentReadings >= 4) continue;
+                    recentReadings++;
+                }
+                recent.push(m);
+            }
+
+            // Keyword-relevant memories from the user's message
+            const words = String(userMessage || '').toLowerCase().split(/\s+/).filter(w => w.length > 3);
+            const relevant = all.filter(m => {
+                const mc = m.content.toLowerCase();
+                return words.some(w => mc.includes(w));
+            });
+
+            // Combine, deduplicate, limit
+            const combined = new Map();
+            for (const m of [...relevant, ...recent]) {
+                combined.set(m.id, m);
+            }
+            return [...combined.values()].slice(0, 15);
+        }
+
+        // Compact rendering for the LOCAL model path. prepareLocalMessages replaces
+        // the system message that carries the verbose block below, so without this a
+        // local model sees NO memories at all — it would answer every session as if
+        // it were the first. Tight caps because a 1.2B model may only have 4k of
+        // context: newest first, one short line each.
+        function getCompactMemoryNote(memories, maxItems, maxChars) {
+            if (!memories || !memories.length) return '';
+            const lines = [];
+            let used = 0;
+            for (const m of memories.slice(0, maxItems || 6)) {
+                const line = `- [${m.date}] ${String(m.content).slice(0, 130)}`;
+                if (used + line.length > (maxChars || 700)) break;
+                lines.push(line);
+                used += line.length;
+            }
+            if (!lines.length) return '';
+            return '\n\n[MEMORIES — past sessions with this person. Reference naturally when relevant; ' +
+                   'never list them back.]\n' + lines.join('\n');
+        }
+
         // Get recent + relevant memories for context injection
         async function getMemoryContext(userMessage) {
             try {
-                const all = await getAllMemories();
-                if (all.length === 0) return '';
-
-                // Recent memories (last 10)
-                const sorted = all.sort((a, b) => b.timestamp - a.timestamp);
-                const recent = sorted.slice(0, 10);
-
-                // Keyword-relevant memories from the user's message
-                const words = userMessage.toLowerCase().split(/\s+/).filter(w => w.length > 3);
-                const relevant = all.filter(m => {
-                    const mc = m.content.toLowerCase();
-                    return words.some(w => mc.includes(w));
-                });
-
-                // Combine, deduplicate, limit
-                const combined = new Map();
-                for (const m of [...relevant, ...recent]) {
-                    combined.set(m.id, m);
-                }
-                const memories = [...combined.values()].slice(0, 15);
-
+                const memories = await selectMemoriesForContext(userMessage);
                 if (memories.length === 0) return '';
 
                 const typeIcons = { reading: '🃏', observation: '👁️', personal: '💜', session: '📝' };
@@ -6662,7 +6704,7 @@ return result;</textarea>
         
         async function initIndexedDB() {
             return new Promise((resolve, reject) => {
-                const request = indexedDB.open('SophiaOracleDB', 2); // v2: adds memories store
+                const request = indexedDB.open('SophiaOracleDB', 3); // v3: adds the baseline store
 
                 request.onerror = () => reject(request.error);
                 request.onsuccess = () => {
@@ -6685,6 +6727,10 @@ return result;</textarea>
                         memStore.createIndex('timestamp', 'timestamp', { unique: false });
                         memStore.createIndex('tags', 'tags', { unique: false, multiEntry: true });
                     }
+                    // v3: the personal-baseline store (baseline-core.js). Guarded the
+                    // same way as the others, so existing files/metadata/memories are
+                    // untouched for anyone upgrading.
+                    if (window.BaselineStore) window.BaselineStore.ensureStore(db);
                 };
             });
         }
@@ -7503,7 +7549,16 @@ return result;</textarea>
             // Restore the divination casting mode for divination-core, whether or
             // not the EEG panel (where the toggle lives) is ever opened.
             window.divinationMode = config.divinationMode === 'state' ? 'state' : 'entropy';
-            loadDivinationBaseline();
+
+            // Personal baseline: start POOLED, not time-binned. Binning splits the
+            // sample and only earns its keep if time of day actually separates —
+            // Baseline.bins(db) answers that from real casts (A12 effect size) after
+            // a month's data. The bin label is still recorded on every entry, so
+            // switching it on later reads the history you already have.
+            if (window.Baseline) {
+                window.Baseline.configure({ binScheme: 'none' });
+                refreshDivinationBaseline();
+            }
 
             updateRagStatus();
         }
@@ -8287,9 +8342,6 @@ return result;</textarea>
         // ═══════════════════════════════════════════════════
 
         const DIV_FRAME_CAP     = 600;   // 60 s of frames at the 10 Hz data rate
-        const DIV_WINDOW        = 60;    // 6 s — one sixth of a 360-frame cast = one line
-        const DIV_BASELINE_CAP  = 200;   // ≈20 min of 6 s windows kept
-        const DIV_BASELINE_MIN  = 20;    // ≈2 min of clean signal before the pivot is personal
         const DIV_MIN_QUALITY   = 0.5;   // same gate the tools apply to a cast
         window.eegFrameBuffer = window.eegFrameBuffer || [];
 
@@ -8322,83 +8374,118 @@ return result;</textarea>
             if (d.source === 'simulation') frame.simulated = true;
             window.eegFrameBuffer.push(frame);
             if (window.eegFrameBuffer.length > DIV_FRAME_CAP) window.eegFrameBuffer.shift();
-            accumulateArousalBaseline(frame);
         }
 
-        // ── Rolling personal baseline ──────────────────────────────────────────
+        // ── Personal baseline (baseline-core.js) ───────────────────────────────
         // State mode compares each sixth of the cast window against a pivot. A
         // fixed 0.5 is fatal: real band power is 1/f-dominated, the beta+gamma
         // share sits near 0.15, and every line comes out yin (hexagram 2 forever).
-        // So the pivot is the user's OWN median arousal, sampled on the same 6 s
-        // timescale a cast uses — "more activated than you usually are" is a real
-        // statement; "more activated than 0.5" is not. Until ~2 min of clean signal
-        // exists we return null and the module falls back to within-cast medians
-        // and says so in provenance.pivots.source.
-        let divBaseline = { samples: [], loaded: false, lastWrite: 0 };
-        let divBaselineBlock = [];
+        // So the pivot is the user's OWN median arousal — "more activated than you
+        // usually are" is a real statement; "more activated than 0.5" is not.
+        //
+        // The store lives in baseline-core (IndexedDB, keyed by device+montage+time
+        // bin), because a baseline built on the Muse 2's four channels is quietly
+        // invalid on Athena's eight — band-power scaling isn't comparable, and the
+        // failure mode is a plausible reading that's wrong for reasons nothing in
+        // the UI would show. One entry per cast, derived scalars only, no raw EEG.
+        //
+        // divination-core's baseline seam is synchronous (a tool's code() cannot
+        // await), so we keep a refreshed SNAPSHOT of the async selection here.
+        let divBaselineSnapshot = null;      // last Baseline.getBaselineFor() result
+        let divBaselineRefreshing = false;
 
-        function loadDivinationBaseline() {
-            if (divBaseline.loaded) return;
-            divBaseline.loaded = true;
+        async function refreshDivinationBaseline() {
+            if (!window.Baseline || !db || divBaselineRefreshing) return divBaselineSnapshot;
+            divBaselineRefreshing = true;
             try {
-                const raw = localStorage.getItem('sophiaDivinationBaseline');
-                if (raw) {
-                    const parsed = JSON.parse(raw);
-                    if (parsed && Array.isArray(parsed.samples)) {
-                        divBaseline.samples = parsed.samples
-                            .filter(s => Array.isArray(s) && s.length === 2 && isFinite(s[0]) && isFinite(s[1]))
-                            .slice(-DIV_BASELINE_CAP);
-                    }
-                }
-            } catch (e) { console.warn('Divination baseline load failed:', e); }
-        }
-
-        function saveDivinationBaseline(force) {
-            const now = Date.now();
-            if (!force && now - divBaseline.lastWrite < 30000) return;   // ≤1 write per 30 s
-            divBaseline.lastWrite = now;
-            try {
-                localStorage.setItem('sophiaDivinationBaseline',
-                    JSON.stringify({ v: 1, updated: now, samples: divBaseline.samples }));
-            } catch (e) { console.warn('Divination baseline save failed:', e); }
-        }
-
-        function accumulateArousalBaseline(frame) {
-            if (!window.Divination) return;
-            loadDivinationBaseline();
-            // A frame below the gate breaks the block: a window must be 6 s of
-            // contiguous usable signal, not 6 s stitched around dropouts.
-            if (frame.quality < DIV_MIN_QUALITY) { divBaselineBlock = []; return; }
-            divBaselineBlock.push(frame);
-            if (divBaselineBlock.length < DIV_WINDOW) return;
-
-            const s = Divination.stats(divBaselineBlock.map(Divination.arousal));
-            divBaselineBlock = [];
-            divBaseline.samples.push([+s.mean.toFixed(4), +s.cv.toFixed(4)]);
-            if (divBaseline.samples.length > DIV_BASELINE_CAP) divBaseline.samples.shift();
-            saveDivinationBaseline(false);
+                divBaselineSnapshot = await window.Baseline.getBaselineFor(db);
+            } catch (e) {
+                console.warn('Baseline refresh failed:', e);
+            } finally {
+                divBaselineRefreshing = false;
+            }
             updateDivinationBaselineHint();
+            return divBaselineSnapshot;
         }
 
         // Read by divination-core (baselineFor) whenever a state cast runs.
+        // Deliberately hands over `baseline` only: the arousal pivot is the half
+        // that fixes hexagram-2-forever and is safe now. cvPivot stays null until
+        // real casts calibrate it — a historical CV threshold measured 0.4-0.5
+        // changing lines per cast against yarrow's 1.5 on synthetic data, i.e. most
+        // readings would lose their relating hexagram. Until then the changing
+        // lines come from the within-cast spread and provenance says exactly that.
         window.getDivinationBaseline = function () {
-            loadDivinationBaseline();
-            const n = divBaseline.samples.length;
-            if (!window.Divination || n < DIV_BASELINE_MIN) return null;
+            const s = divBaselineSnapshot;
+            if (!s || !s.ready || s.baseline == null) return null;
             return {
-                baseline:   Divination.median(divBaseline.samples.map(s => s[0])),
-                baselineCV: Divination.median(divBaseline.samples.map(s => s[1])),
-                samples: n,
-                windowSeconds: DIV_WINDOW / 10
+                baseline: s.baseline,
+                cvPivot: null,               // see above — not yet trusted
+                source: s.source,            // 'device+bin' | 'device-pooled'
+                casts: s.n,
+                device: s.deviceId,
+                montage: s.montage
             };
         };
 
-        function resetDivinationBaseline() {
-            divBaseline.samples = [];
-            divBaselineBlock = [];
-            saveDivinationBaseline(true);
-            updateDivinationBaselineHint();
-            showStatus('Divination baseline cleared — state casts fall back to within-cast medians', 'info');
+        // Record the cast so the baseline matures. State casts hand over the six
+        // window stats they actually used; entropy casts are recorded too (the
+        // brief is right that discarding perfectly good window statistics only
+        // makes the baseline slower), recomputed from the same gated frames.
+        async function recordCastForBaseline(reading) {
+            if (!window.Baseline || !db || !reading || !reading.provenance) return;
+            try {
+                let windows = null;
+                const detail = reading.lineDetail;
+                if (Array.isArray(detail) && detail.length === 6 && detail[0].arousal != null) {
+                    windows = detail.map(l => ({ mean: l.arousal, cv: l.cv }));
+                } else {
+                    windows = divWindowStatsFromBuffer();
+                }
+                if (!windows) return;
+                const used = (window.eegFrameBuffer || []).slice(-360)
+                    .filter(f => (f.quality == null ? 1 : f.quality) >= DIV_MIN_QUALITY);
+                const meanQuality = used.length
+                    ? used.reduce((a, f) => a + (f.quality == null ? 1 : f.quality), 0) / used.length : 0;
+                const res = await window.Baseline.recordCast(db, windows, {
+                    framesUsed: reading.provenance.framesUsedAfterQualityGate,
+                    meanQuality: meanQuality
+                });
+                if (res && res.recorded) await refreshDivinationBaseline();
+                else if (res && res.reason) console.log('Baseline: cast not recorded —', res.reason);
+            } catch (e) {
+                console.warn('Baseline recordCast failed:', e);
+            }
+        }
+
+        // Six window stats over the same frames and gate a state cast would use —
+        // for entropy casts, which never compute them.
+        function divWindowStatsFromBuffer() {
+            if (!window.Divination) return null;
+            const usable = (window.eegFrameBuffer || []).slice(-360)
+                .filter(f => (f.quality == null ? 1 : f.quality) >= DIV_MIN_QUALITY);
+            if (usable.length < 12) return null;
+            const per = Math.max(1, Math.floor(usable.length / 6));
+            const out = [];
+            for (let i = 0; i < 6; i++) {
+                const s = Divination.stats(usable.slice(i * per, (i + 1) * per).map(Divination.arousal));
+                out.push({ mean: s.mean, cv: s.cv });
+            }
+            return out;
+        }
+
+        async function resetDivinationBaseline() {
+            if (!window.Baseline || !db) { showStatus('Baseline store not ready', 'warning'); return; }
+            const deviceOnly = confirm('Clear the baseline for THIS device only?\n\nOK = this device · Cancel = every device');
+            try {
+                const n = await window.Baseline.reset(db, deviceOnly);
+                divBaselineSnapshot = null;
+                await refreshDivinationBaseline();
+                showStatus(`Baseline cleared (${n} cast${n === 1 ? '' : 's'}) — state casts fall back to within-cast medians`, 'info');
+            } catch (e) {
+                console.warn('Baseline reset failed:', e);
+                showStatus('Baseline reset failed: ' + e.message, 'error');
+            }
         }
 
         // Sortilege source for bibliomancy_draw: the user's own uploaded text.
@@ -8449,15 +8536,21 @@ return result;</textarea>
                     'CSPRNG — provenance, not better randomness. Works with the headband off.';
                 return;
             }
-            const b = window.getDivinationBaseline && window.getDivinationBaseline();
-            const n = divBaseline.samples.length;
-            el.textContent = b
-                ? 'Deterministic readout of your last ~30 s — NOT a draw. Pivot: your own median ' +
-                  'arousal ' + b.baseline.toFixed(3) + ' over ' + b.samples + ' windows (~' +
-                  Math.round(b.samples * DIV_WINDOW / 600) + ' min of clean signal).'
-                : 'Deterministic readout of your last ~30 s — NOT a draw. Personal baseline still ' +
-                  'building (' + n + '/' + DIV_BASELINE_MIN + ' windows of clean signal); until then ' +
-                  'casts pivot on within-cast medians and say so.';
+            const s = divBaselineSnapshot;
+            const head = 'Deterministic readout of your last ~30 s — NOT a draw. ';
+            if (s && s.ready) {
+                const where = s.source === 'device+bin' ? ' at this time of day' : '';
+                el.textContent = head + 'Pivot: your own median arousal ' + s.baseline.toFixed(3) +
+                    ' from ' + s.n + ' past cast' + (s.n === 1 ? '' : 's') + ' on ' + s.deviceId +
+                    ' (' + s.montage + 'ch)' + where + '. Changing lines still come from the spread ' +
+                    'within each reading.';
+            } else {
+                const need = (s && s.maturity) ? s.maturity.needForPooled : null;
+                el.textContent = head + 'Personal baseline still building' +
+                    (need != null ? ' — ' + need + ' more cast' + (need === 1 ? '' : 's') +
+                     ' on this headband' : '') + '. Until then casts pivot on within-cast medians ' +
+                    'and say so in the provenance line.';
+            }
         }
 
         // ── Provenance line for a divination result ────────────────────────────
@@ -8526,21 +8619,106 @@ return result;</textarea>
         // than a bug — but it needs data, so every hexagram cast records its six
         // lines. Inspect from the console with divinationLineDistribution().
         function recordDivinationCast(result) {
+            // Anything Sophia should be able to weave from later becomes a memory,
+            // and any EEG cast feeds the baseline. Both are fire-and-forget.
+            saveReadingMemory(result);
+
             const reading = result && result.reading;
             if (!reading || !Array.isArray(reading.lines) || !reading.provenance) return;
+            recordCastForBaseline(reading);
             try {
                 const log = JSON.parse(localStorage.getItem('sophiaDivinationCastLog') || '[]');
                 log.push({
                     t: Date.now(),
                     mode: reading.provenance.mode,
                     pivot: reading.provenance.pivots ? reading.provenance.pivots.source : null,
+                    cvPivot: reading.provenance.pivots ? reading.provenance.pivots.cvSource : null,
                     frames: reading.provenance.framesUsedAfterQualityGate,
                     lines: reading.lines.join(''),
+                    changing: reading.changingLines.length,
                     hex: reading.primary ? reading.primary.num : null
                 });
                 if (log.length > 200) log.splice(0, log.length - 200);
                 localStorage.setItem('sophiaDivinationCastLog', JSON.stringify(log));
             } catch (e) { console.warn('Divination cast log failed:', e); }
+        }
+
+        // ── Readings as memories ───────────────────────────────────────────────
+        // extractMemories() already scrapes Sophia's PROSE for a hexagram number or
+        // a card name, which is lossy and phrasing-dependent — it misses the mode,
+        // the changing lines, the relating hexagram, and every rune past the first.
+        // Here we write the structured truth straight from the tool result, so she
+        // can say "your last three state readouts all moved on the upper lines"
+        // instead of only "you drew 34 once". getMemoryContext() picks these up with
+        // no extra plumbing.
+        function divinationMemoryLine(result) {
+            if (!result || typeof result !== 'object') return null;
+            const r = result.reading;
+
+            // Hexagram cast
+            if (r && Array.isArray(r.lines) && r.primary) {
+                const prov = r.provenance || {};
+                const how = prov.mode === 'state'
+                    ? 'state readout' + (prov.fallbackToCSPRNG ? ' (fell back to a draw — no usable EEG)' : '')
+                    : (prov.method || 'yarrow') + ' draw';
+                let s = `I Ching (${how}): #${r.primary.num} ${r.primary.english} [${r.lines.join('')}]`;
+                s += r.changingLines.length
+                    ? ` · changing line${r.changingLines.length === 1 ? '' : 's'} ${r.changingLines.join(',')}` +
+                      (r.relating ? ` → #${r.relating.num} ${r.relating.english}` : '')
+                    : ' · no changing lines';
+                const bridge = r.primary.aetheria;
+                if (bridge && bridge.positions && bridge.positions.length) {
+                    const p = bridge.positions[0];
+                    s += ` · Aetheria ${p.freq}Hz ${p.regime}` + (bridge.match === 'bridged' ? ' (bridged)' : '');
+                }
+                if (r.question) s += ` · asked: "${String(r.question).slice(0, 120)}"`;
+                return { content: s, tags: ['iching', 'reading', 'hexagram', prov.mode || 'draw'] };
+            }
+
+            // Tarot — every card and position, not just the ones her prose happened to name
+            if (r && Array.isArray(r.cards)) {
+                const cards = r.cards.map(c => `${c.position}: ${c.name}${c.reversed ? ' (rev)' : ''}`).join(' | ');
+                return { content: `Tarot (${r.spread}): ${cards}`, tags: ['tarot', 'reading'] };
+            }
+
+            // Runes — the whole cast
+            if (r && Array.isArray(r.runes)) {
+                const runes = r.runes.map(x => `${x.position}: ${x.name}${x.merkstave ? ' (merkstave)' : ''}`).join(' | ');
+                return { content: `Runes (${r.spread}): ${runes}`, tags: ['rune', 'reading'] };
+            }
+
+            // Geomancy — the judge is the answer; witnesses give it its shape
+            if (result.chart && result.chart.judge) {
+                const c = result.chart;
+                return { content: `Geomancy: Judge ${c.judge.name}, witnesses ${c.witnesses.right.name} / ` +
+                                  `${c.witnesses.left.name}${c.valid ? '' : ' (INVALID chart — odd judge)'}`,
+                         tags: ['geomancy', 'reading'] };
+            }
+
+            // Cube walk
+            if (result.walk && result.walk.destination) {
+                const w = result.walk;
+                return { content: `Cube walk: ${w.path.join('→')} ending ${w.destination.pos} ` +
+                                  `(${w.destination.freq}Hz ${w.destination.regime})` +
+                                  (w.passedCentre ? ' · crossed the centre, 2178Hz' : ''),
+                         tags: ['cube', 'reading', 'aetheria'] };
+            }
+            return null;
+        }
+
+        async function saveReadingMemory(result) {
+            try {
+                if (typeof saveMemory !== 'function' || !db) return;
+                const m = divinationMemoryLine(result);
+                if (!m) return;
+                // Don't double-file a reading the user re-renders or the loop repeats.
+                const recent = (await getAllMemories())
+                    .filter(x => x.type === 'reading' && Date.now() - x.timestamp < 120000);
+                if (recent.some(x => x.content === m.content)) return;
+                await saveMemory({ type: 'reading', content: m.content, tags: m.tags, source: 'divination' });
+            } catch (e) {
+                console.warn('Reading memory not saved:', e);
+            }
         }
 
         function recordDivinationCastFromJSON(text) {
@@ -11621,6 +11799,10 @@ I am warm, conversational, and grounded. I ask follow-up questions. I connect di
             // Casting-mode honesty note (compact — this prompt feeds tiny local models).
             LOCAL_SYSTEM_PROMPT += divinationSystemNote(true);
 
+            // Memories, compact. Without this the local path silently drops them and
+            // Sophia meets you fresh every session — no past readings to weave from.
+            LOCAL_SYSTEM_PROMPT += _cachedCompactMemories;
+
             // Inject live brainwave data into system prompt so Sophia can respond to it
             if (currentAetheriaPosition && currentEEGData && eegStreaming) {
                 const p = currentAetheriaPosition;
@@ -12268,12 +12450,18 @@ Use this data to personalize your response. Comment on their current state when 
 
         // Cache for memory context (refreshed each message to avoid async in buildMessages)
         let _cachedMemoryContext = '';
+        // Same selection, compact — the local path builds its own system prompt and
+        // would otherwise carry no memories at all (see getCompactMemoryNote).
+        let _cachedCompactMemories = '';
 
         async function refreshMemoryContext(userMessage) {
             try {
+                const memories = await selectMemoriesForContext(userMessage);
                 _cachedMemoryContext = await getMemoryContext(userMessage);
+                _cachedCompactMemories = getCompactMemoryNote(memories, 6, 700);
             } catch (e) {
                 _cachedMemoryContext = '';
+                _cachedCompactMemories = '';
             }
         }
 
@@ -13257,7 +13445,11 @@ Use this data to personalize your response. Comment on their current state when 
 
             try {
                 eegIntegration = new EEGIntegration();
-                
+                // Sidecars read the integration off window (a top-level `let` in a
+                // classic script is not a window property). baseline-core needs it
+                // for device identity — which headband, how many channels.
+                window.eegIntegration = eegIntegration;
+
                 // Set focus settings from config
                 eegIntegration.setFocusSettings({
                     sensitivity: config.focusSensitivity,
@@ -13267,6 +13459,9 @@ Use this data to personalize your response. Comment on their current state when 
                 // Set up event listeners
                 eegIntegration.addEventListener('connected', (event) => {
                     eegConnected = true;
+                    // Baselines are per device+montage, so the selection changes the
+                    // moment we know which headband this is.
+                    refreshDivinationBaseline();
                     // Fresh placement window per connection — clears the rolling
                     // average and the old baseline so a new one is captured once
                     // this session's window fills (Step 6).
@@ -14020,7 +14215,9 @@ Use this data to personalize your response. Comment on their current state when 
             if (_walkSel) _walkSel.value = solfeggioSettings.loShuWalk;
             setFrequencyMode(config.frequencyMode || 'solfeggio', true);
 
-            // Divination casting mode toggle — same, silent.
+            // Divination casting mode toggle — same, silent. Refresh the baseline
+            // snapshot first so the hint shows the real maturity, not a stale one.
+            refreshDivinationBaseline();
             setDivinationMode(config.divinationMode || 'entropy', true);
 
             // Update solfeggio display

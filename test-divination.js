@@ -209,10 +209,40 @@ delete globalThis.getDivinationBaseline;
 
 // A baseline pivot must actually move the lines, or it is decoration.
 const hotFrames = mkFrames(180, 1.0);
-const lowPivot  = D.castIChing({ mode:'state', frames: hotFrames, baseline: 0.05, baselineCV: 0.5 });
-const highPivot = D.castIChing({ mode:'state', frames: hotFrames, baseline: 0.95, baselineCV: 0.5 });
+const lowPivot  = D.castIChing({ mode:'state', frames: hotFrames, baseline: 0.05, cvPivot: 0.5 });
+const highPivot = D.castIChing({ mode:'state', frames: hotFrames, baseline: 0.95, cvPivot: 0.5 });
 ok(lowPivot.lines.every(v => v === 7 || v === 9), 'below a low pivot every line reads yang');
 ok(highPivot.lines.every(v => v === 6 || v === 8), 'below a high pivot every line reads yin');
+
+console.log('--- CV pivot: quantile, not multiplier ---');
+// An explicit cvPivot is an ABSOLUTE threshold, used as given.
+const explicit = D.castIChing({ mode:'state', frames: hotFrames, baseline: 0.2, cvPivot: 0.077 });
+ok(explicit.provenance.pivots.cv === 0.077, 'cvPivot is used verbatim, got ' + explicit.provenance.pivots.cv);
+ok(explicit.provenance.pivots.cvSource === 'personal-quantile', 'and labelled as the personal quantile');
+// The legacy multiplier path still works but is labelled, so it can be spotted.
+const legacy = D.castIChing({ mode:'state', frames: hotFrames, baseline: 0.2, baselineCV: 0.05 });
+ok(Math.abs(legacy.provenance.pivots.cv - 0.075) < 1e-9, 'baselineCV keeps the 1.5x legacy behaviour');
+ok(legacy.provenance.pivots.cvSource === 'baseline-multiplier', 'and is labelled as the multiplier');
+// cvPivot wins when both arrive, so a host passing both can't silently re-multiply.
+const both = D.castIChing({ mode:'state', frames: hotFrames, baseline: 0.2, baselineCV: 0.05, cvPivot: 0.2 });
+ok(both.provenance.pivots.cv === 0.2, 'cvPivot beats baselineCV, got ' + both.provenance.pivots.cv);
+// The seam must never forward both — that is how the multiplier crept back in.
+globalThis.getDivinationBaseline = () => ({ baseline: 0.15, baselineCV: 0.05, cvPivot: 0.18 });
+globalThis.eegFrameBuffer = mkFrames(240, 0.9);
+ok(T.neural_iching.code({ mode:'state' }).reading.provenance.pivots.cv === 0.18,
+   'the tool seam prefers cvPivot over baselineCV');
+delete globalThis.getDivinationBaseline;
+
+// Cold start is DETERMINISTIC, and knowing why matters: quantile(6 values, 0.75)
+// is the 5th smallest, so exactly one window sits above it. Every cold-start cast
+// has exactly one changing line. Documented here so it reads as a known property
+// rather than a surprise in the field.
+const coldCasts = Array.from({ length: 50 }, (_, i) =>
+  D.castIChing({ mode:'state', frames: mkFrames(180, 0.3 + i / 100) }));
+ok(coldCasts.every(c => c.provenance.pivots.cvSource === 'within-cast-quantile'), 'cold start uses the within-cast quantile');
+ok(coldCasts.every(c => c.changingLines.length === 1),
+   'cold start yields exactly one changing line every time (see the CV PIVOT note)');
+ok(coldCasts.every(c => c.relating), 'so a relating hexagram always exists at cold start');
 
 // Bibliomancy reads whatever chunk store the host installs.
 globalThis.getBibliomancyChunks = () => [{ source:'notes.txt · chunk 1', text:'the passage' }];
@@ -227,8 +257,18 @@ console.log('--- Provenance line ---');
 const stateProv = T.neural_iching.code({ mode:'state' }).reading.provenance;
 const stateLine = D.provenanceLine(stateProv);
 console.log('  state:', stateLine);
-ok(/^state readout · \d+ frames · (personal baseline|within-cast median)$/.test(stateLine),
+ok(/^state readout · \d+ frames · (personal baseline|personal arousal pivot · within-cast CV|within-cast median)$/.test(stateLine),
    'state provenance line well formed: ' + stateLine);
+// The mixed case must not be described as a full personal baseline.
+globalThis.getDivinationBaseline = () => ({ baseline: 0.15, cvPivot: null });
+const mixed = D.provenanceLine(T.neural_iching.code({ mode:'state' }).reading.provenance);
+console.log('  personal arousal only:', mixed);
+ok(mixed.includes('personal arousal pivot · within-cast CV'),
+   'a personal arousal pivot with within-cast CV says so: ' + mixed);
+globalThis.getDivinationBaseline = () => ({ baseline: 0.15, cvPivot: 0.18 });
+ok(D.provenanceLine(T.neural_iching.code({ mode:'state' }).reading.provenance).includes('personal baseline'),
+   'both pivots personal reads as personal baseline');
+delete globalThis.getDivinationBaseline;
 globalThis.eegFrameBuffer = [];
 const coldLine = D.provenanceLine(T.neural_iching.code({ mode:'state' }).reading.provenance);
 console.log('  no headband:', coldLine);

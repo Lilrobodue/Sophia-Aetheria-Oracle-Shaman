@@ -124,7 +124,32 @@ ok(hist[0] === 27, '27 hexagrams map directly, got ' + hist[0]);
 ok(Object.keys(hist).every(d => Number(d) <= 2), 'every hexagram lands within two line-changes');
 
 /* ------------------------------------------------------------------- stubs */
-function harness() {
+const { Baseline, BaselineStore } = require('./baseline-core.js');
+
+/* In-memory stand-in for the IndexedDB surface baseline-core and saveMemory use. */
+function mockDB() {
+  const stores = { neuralBaselines: [], memories: [] };
+  const next = { neuralBaselines: 1, memories: 1 };
+  const wrap = v => ({ onsuccess: null, onerror: null, result: v });
+  const fire = r => { setTimeout(() => r.onsuccess && r.onsuccess(), 0); return r; };
+  const mk = name => ({
+    add(e) { e.id = next[name]++; stores[name].push(e); return fire(wrap(e.id)); },
+    getAll() { return fire(wrap([...stores[name]])); },
+    count() { return fire(wrap(stores[name].length)); },
+    clear() { stores[name].length = 0; return fire(wrap(undefined)); },
+    delete(id) { const i = stores[name].findIndex(r => r.id === id); if (i >= 0) stores[name].splice(i, 1); return fire(wrap(undefined)); },
+    index(field) { return { getAll(key) { return fire(wrap(stores[name].filter(r => r[field] === key))); } }; }
+  });
+  return {
+    objectStoreNames: { contains: n => n in stores },
+    transaction: names => ({ objectStore: n => mk(Array.isArray(names) ? n : (n || names)) }),
+    _rows: stores.neuralBaselines,
+    _memories: stores.memories
+  };
+}
+
+function harness(opts) {
+  const o = opts || {};
   const store = new Map();
   const localStorage = {
     getItem: k => (store.has(k) ? store.get(k) : null),
@@ -135,26 +160,51 @@ function harness() {
   const document = { getElementById: id => elements[id] || null };
   const statuses = [];
   const showStatus = (msg, kind) => statuses.push({ msg, kind });
-  const win = { Divination: D, DIVINATION_TOOLS: T };
+  const win = { Divination: D, DIVINATION_TOOLS: T, Baseline, BaselineStore };
   const config = {};
   const uploadedFiles = [];
   const tools = {};
   Object.keys(T).forEach(k => { tools[k] = { name: k, enabled: true }; });
+  const db = o.noDB ? null : mockDB();
+
+  // The app's own memory helpers, same call surface as index.html's.
+  const saveMemory = async (m) => {
+    if (!db) return null;
+    const e = Object.assign({ type: 'observation', tags: [], source: 'auto' }, m,
+      { timestamp: Date.now(), date: new Date().toLocaleDateString() });
+    db._memories.push(Object.assign(e, { id: db._memories.length + 1 }));
+    return e.id;
+  };
+  const getAllMemories = async () => [...db._memories];
+  let confirmAnswer = o.confirm !== false;
+  const confirm = () => confirmAnswer;
+
+  // Fresh per-harness identity + config so tests can't leak into each other.
+  globalThis.eegIntegration = o.eeg || { lastConnectionMethod: 'athena', channelCount: 8 };
+  win.eegIntegration = globalThis.eegIntegration;
+  Baseline.configure({ binScheme: 'none', minSamplesPooled: 8, minSamplesBinned: 12, windowSize: 40 });
+  Baseline._cache = null;
 
   const build = new Function('window', 'localStorage', 'document', 'showStatus',
-    'config', 'uploadedFiles', 'tools', 'Divination',
+    'config', 'uploadedFiles', 'tools', 'Divination', 'db', 'saveMemory',
+    'getAllMemories', 'confirm',
     block + `
-    return { divFrameQuality, pushDivinationFrame, accumulateArousalBaseline,
-             loadDivinationBaseline, saveDivinationBaseline, resetDivinationBaseline,
+    return { divFrameQuality, pushDivinationFrame, refreshDivinationBaseline,
+             recordCastForBaseline, divWindowStatsFromBuffer, resetDivinationBaseline,
              setDivinationMode, updateDivinationBaselineHint, divinationSystemNote,
              divinationProvenanceHTML, divinationProvenanceFromJSON,
              divinationRegimeChips, findDivinationProvenance,
              recordDivinationCast, recordDivinationCastFromJSON,
-             baselineSamples: () => divBaseline.samples, DIV_WINDOW, DIV_BASELINE_MIN };`);
+             divinationMemoryLine, saveReadingMemory,
+             snapshot: () => divBaselineSnapshot, DIV_MIN_QUALITY };`);
 
-  const api = build(win, localStorage, document, showStatus, config, uploadedFiles, tools, D);
-  return { api, win, store, localStorage, elements, statuses, config, uploadedFiles, tools };
+  const api = build(win, localStorage, document, showStatus, config, uploadedFiles, tools, D,
+    db, saveMemory, getAllMemories, confirm);
+  return { api, win, store, localStorage, elements, statuses, config, uploadedFiles, tools, db,
+           setConfirm: v => { confirmAnswer = v; } };
 }
+
+const settle = () => new Promise(r => setTimeout(r, 5));   // let the mock IDB callbacks fire
 
 /* ------------------------------------------------------------ frame quality */
 console.log('--- Frame quality gate ---');
@@ -193,93 +243,30 @@ const frame = (i, bias, quality) => ({
   ok(win.eegFrameBuffer[0].t === 1000 + 100 * 100, 'oldest frames are dropped, not the newest');
   const f = win.eegFrameBuffer[0];
   ok(f.bandpowers && f.metrics && typeof f.quality === 'number', 'frames carry bandpowers, metrics and quality');
-  ok(f.bandpowers !== undefined && Object.isFrozen(f) === false, 'frame is a plain copy');
+  ok(win.eegFrameBuffer.every(x => x.quality === 1), 'clean frames score 1');
+  // Frames alone must NOT create a baseline — one entry per CAST, not per window,
+  // so a headband left on the desk can't manufacture a personal pivot.
+  ok(win.getDivinationBaseline() === null, 'streaming frames alone yield no baseline');
+  ok(api.snapshot() === null, 'and no snapshot until one is fetched');
 
-  // 700 clean frames / 60 per window = 11 windows.
-  ok(api.baselineSamples().length === 11, 'one baseline sample per 6 s window, got ' + api.baselineSamples().length);
-  ok(win.getDivinationBaseline() === null, '11 windows is under the 20-window minimum — no personal pivot yet');
-
-  for (let i = 700; i < 1400; i++) api.pushDivinationFrame(frame(i, 0.5));
-  const bl = win.getDivinationBaseline();
-  ok(bl && bl.samples === 23, 'baseline keeps accumulating, got ' + (bl && bl.samples));
-  ok(bl.baseline > 0 && bl.baseline < 1, 'baseline arousal is a fraction, got ' + bl.baseline);
-  ok(bl.windowSeconds === 6, 'window length is reported as 6 s');
-  // Sanity: the pivot should sit near the arousal of the signal it was measured on.
+  // Six window stats for entropy casts, computed over the same gate.
+  const w = api.divWindowStatsFromBuffer();
+  ok(Array.isArray(w) && w.length === 6, 'divWindowStatsFromBuffer returns six windows');
+  ok(w.every(x => typeof x.mean === 'number' && typeof x.cv === 'number'), 'each window carries mean and cv');
   const direct = D.median(Array.from({ length: 600 }, (_, i) => D.arousal(frame(i, 0.5))));
-  ok(Math.abs(bl.baseline - direct) < 0.05,
-     'baseline tracks the signal it was measured on (' + bl.baseline.toFixed(3) + ' vs ' + direct.toFixed(3) + ')');
+  ok(Math.abs(D.median(w.map(x => x.mean)) - direct) < 0.05,
+     'window means track the signal (' + D.median(w.map(x => x.mean)).toFixed(3) + ' vs ' + direct.toFixed(3) + ')');
 }
 
-console.log('--- Baseline honesty: dirty signal must not become a baseline ---');
+console.log('--- Dirty signal cannot become a baseline ---');
 {
-  const { api, win } = harness();
+  const { api } = harness();
   for (let i = 0; i < 600; i++) api.pushDivinationFrame(frame(i, 0.5, 0.25));   // below gate
-  ok(api.baselineSamples().length === 0, 'frames below the quality gate never enter the baseline');
-  ok(win.getDivinationBaseline() === null, 'no baseline from unusable signal');
-
-  // A single dirty frame must break the window, not be quietly stitched over.
-  for (let i = 0; i < 59; i++) api.pushDivinationFrame(frame(i, 0.5));
-  api.pushDivinationFrame(frame(59, 0.5, 0.25));
-  for (let i = 60; i < 119; i++) api.pushDivinationFrame(frame(i, 0.5));
-  ok(api.baselineSamples().length === 0, 'a dropout mid-window discards the partial window');
-  for (let i = 119; i < 179; i++) api.pushDivinationFrame(frame(i, 0.5));
-  ok(api.baselineSamples().length === 1, 'the next contiguous 6 s does produce a sample');
-}
-
-console.log('--- Baseline persistence ---');
-{
-  const h1 = harness();
-  for (let i = 0; i < 1400; i++) h1.api.pushDivinationFrame(frame(i, 0.5));
-  h1.api.saveDivinationBaseline(true);
-  const raw = h1.store.get('sophiaDivinationBaseline');
-  ok(!!raw, 'baseline is written to localStorage');
-  const parsed = JSON.parse(raw);
-  ok(parsed.v === 1 && Array.isArray(parsed.samples) && parsed.samples.length === 23, 'stored shape is versioned');
-  ok(parsed.samples.every(s => s.length === 2), 'each sample is [meanArousal, cv]');
-
-  // A fresh session must pick the same pivot back up.
-  const h2 = harness();
-  h2.store.set('sophiaDivinationBaseline', raw);
-  const reloaded = h2.win.getDivinationBaseline();
-  ok(reloaded && reloaded.samples === 23, 'baseline survives a reload');
-  ok(reloaded.baseline === h1.win.getDivinationBaseline().baseline, 'reloaded pivot is identical');
-
-  // Corrupt / hostile stores must not break casting. The module warns on the way
-  // past, which is correct — muffle it here so it can't read as a test failure.
-  const h3 = harness();
-  h3.store.set('sophiaDivinationBaseline', '{not json');
-  const realWarn = console.warn;
-  let warned = 0;
-  console.warn = () => { warned++; };
-  const corrupt = h3.win.getDivinationBaseline();
-  console.warn = realWarn;
-  ok(corrupt === null, 'unparseable store degrades to no baseline');
-  ok(warned === 1, 'and says so in the console rather than failing silently');
-  const h4 = harness();
-  h4.store.set('sophiaDivinationBaseline', JSON.stringify({ v: 1, samples: [[0.2, 0.1], 'junk', [NaN, 1], [0.3]] }));
-  ok(h4.win.getDivinationBaseline() === null, 'malformed samples are filtered out');
-
-  h1.api.resetDivinationBaseline();
-  ok(h1.win.getDivinationBaseline() === null, 'reset clears the personal baseline');
-  ok(JSON.parse(h1.store.get('sophiaDivinationBaseline')).samples.length === 0, 'reset is persisted');
-}
-
-/* ---------------------------------------------- the baseline reaches the cast */
-console.log('--- Baseline reaches the cast (end to end) ---');
-{
-  const { api, win } = harness();
-  for (let i = 0; i < 1400; i++) api.pushDivinationFrame(frame(i, 0.5));
-  // The tools read globals, so mirror the browser: window IS the global object.
-  globalThis.eegFrameBuffer = win.eegFrameBuffer;
-  globalThis.getDivinationBaseline = win.getDivinationBaseline;
-  const cast = T.neural_iching.code({ mode: 'state' }).reading;
-  ok(cast.provenance.pivots.source === 'personal-history',
-     'a state cast picks up the accumulated personal pivot');
-  ok(Math.abs(cast.provenance.pivots.arousal - win.getDivinationBaseline().baseline) < 0.0001,
-     'the cast pivots on exactly the stored baseline');
-  ok(cast.provenance.framesUsedAfterQualityGate === 360, 'the cast reads the last 360 frames');
-  delete globalThis.getDivinationBaseline;
-  delete globalThis.eegFrameBuffer;
+  ok(api.divWindowStatsFromBuffer() === null, 'frames below the quality gate produce no window stats');
+  const { api: api2 } = harness();
+  for (let i = 0; i < 600; i++) api2.pushDivinationFrame(
+    Object.assign(frame(i, 0.5), { source: 'simulation' }));
+  ok(api2.divWindowStatsFromBuffer() === null, 'a simulated stream produces no window stats either');
 }
 
 /* -------------------------------------------------------------- mode toggle */
@@ -297,7 +284,7 @@ console.log('--- Mode toggle ---');
   ok(elements.divModeStateBtn.style.background === '#5090d4', 'state button is highlighted');
   ok(elements.divModeCastBtn.style.background === 'transparent', 'cast button is dimmed');
   ok(/NOT a draw/.test(elements.divModeHint.textContent), 'state hint says it is not a draw');
-  ok(/Personal baseline still building \(0\/20/.test(elements.divModeHint.textContent),
+  ok(/Personal baseline still building/.test(elements.divModeHint.textContent),
      'hint reports baseline progress honestly: ' + elements.divModeHint.textContent);
   ok(statuses.length === 1, 'toggling announces itself once');
 
@@ -315,11 +302,6 @@ console.log('--- Mode toggle ---');
   ok(statuses.length === before, 'silent mode does not toast');
   ok(win.divinationMode === 'state', 'silent mode still applies');
 
-  // Once a baseline exists the hint should say so instead of "still building".
-  for (let i = 0; i < 1400; i++) api.pushDivinationFrame(frame(i, 0.5));
-  api.setDivinationMode('state', true);
-  ok(/personal median arousal|your own median arousal/.test(elements.divModeHint.textContent),
-     'hint switches to the personal pivot: ' + elements.divModeHint.textContent);
 }
 
 /* ------------------------------------------------------- provenance rendering */
@@ -438,5 +420,253 @@ console.log('--- Knowledge-base hook ---');
   delete globalThis.getBibliomancyChunks;
 }
 
+/* ══════════════════════════════════════════════════════════════════════════
+ * Async: the real baseline store (baseline-core) behind the synchronous seam,
+ * and readings becoming memories. Run against a mock IndexedDB.
+ * ═════════════════════════════════════════════════════════════════════════ */
+(async () => {
+
+console.log('--- Baseline store: one entry per cast, device-keyed ---');
+{
+  const { api, win, db } = harness();
+  for (let i = 0; i < 400; i++) api.pushDivinationFrame(frame(i, 0.5));
+  globalThis.eegFrameBuffer = win.eegFrameBuffer;
+
+  await api.refreshDivinationBaseline();
+  ok(api.snapshot() && !api.snapshot().ready, 'cold start: snapshot fetched but not ready');
+  ok(api.snapshot().deviceId === 'athena' && api.snapshot().montage === 8,
+     'identity comes from eegIntegration, got ' + api.snapshot().deviceId + '/' + api.snapshot().montage);
+  ok(win.getDivinationBaseline() === null, 'and the sync seam reports no baseline');
+  ok(api.snapshot().maturity.needForPooled === 8, 'countdown starts at 8 casts');
+
+  // Eight state casts, recorded the way the app records them.
+  for (let k = 0; k < 8; k++) {
+    const r = T.neural_iching.code({ mode: 'state' }).reading;
+    await api.recordCastForBaseline(r);
+    await settle();
+  }
+  ok(db._rows.length === 8, '8 casts persisted, got ' + db._rows.length);
+  ok(db._rows.every(r => r.windowMeans && r.windowMeans.length === 6), 'each entry holds six window means');
+  ok(db._rows.every(r => !r.bandpowers && !r.raw_eeg && !r.frames), 'NO raw EEG is persisted');
+  ok(db._rows.every(r => r.montage === 8 && r.deviceId === 'athena'), 'entries carry device and montage');
+  ok(db._rows.every(r => r.bucket === 'athena|ch8|all'), 'pooled bucket while binning is off, got ' + db._rows[0].bucket);
+
+  await api.refreshDivinationBaseline();
+  const bl = win.getDivinationBaseline();
+  ok(bl && bl.source === 'device-pooled', 'baseline matures to device-pooled, got ' + (bl && bl.source));
+  ok(bl.casts === 8, 'and reports its sample count, got ' + bl.casts);
+  ok(bl.baseline > 0 && bl.baseline < 1, 'pivot is a fraction, got ' + bl.baseline);
+  ok(bl.cvPivot === null, 'cvPivot is deliberately withheld until real-data calibration');
+
+  // End to end: the cast must actually use it.
+  globalThis.getDivinationBaseline = win.getDivinationBaseline;
+  const cast = T.neural_iching.code({ mode: 'state' }).reading;
+  ok(cast.provenance.pivots.source === 'personal-history', 'a state cast picks up the stored pivot');
+  ok(Math.abs(cast.provenance.pivots.arousal - bl.baseline) < 1e-9, 'pivots on exactly the stored baseline');
+  ok(cast.provenance.pivots.cvSource === 'within-cast-quantile',
+     'while changing lines still come from the within-cast spread');
+  ok(D.provenanceLine(cast.provenance).includes('personal arousal pivot · within-cast CV'),
+     'and the provenance line says exactly that: ' + D.provenanceLine(cast.provenance));
+  ok(cast.relating, 'the relating hexagram survives a matured baseline');
+
+  // Entropy casts feed the baseline too, via recomputed window stats.
+  const before = db._rows.length;
+  const ent = T.neural_iching.code({ mode: 'entropy' }).reading;
+  ok(ent.lineDetail[0].arousal == null, 'entropy casts carry no window stats of their own');
+  await api.recordCastForBaseline(ent);
+  await settle();
+  ok(db._rows.length === before + 1, 'an entropy cast is still recorded');
+  ok(db._rows[db._rows.length - 1].windowMeans.length === 6, 'with six recomputed windows');
+
+  delete globalThis.getDivinationBaseline;
+  delete globalThis.eegFrameBuffer;
+}
+
+console.log('--- A baseline from one headband must not be used on another ---');
+{
+  const { api, win, db } = harness({ eeg: { lastConnectionMethod: 'athena', channelCount: 8 } });
+  for (let i = 0; i < 400; i++) api.pushDivinationFrame(frame(i, 0.5));
+  globalThis.eegFrameBuffer = win.eegFrameBuffer;
+  for (let k = 0; k < 10; k++) {
+    await api.recordCastForBaseline(T.neural_iching.code({ mode: 'state' }).reading);
+    await settle();
+  }
+  await api.refreshDivinationBaseline();
+  ok(win.getDivinationBaseline() !== null, 'Athena baseline is ready');
+
+  // Same person, different headband: 4 channels don't scale like 8.
+  globalThis.eegIntegration = { lastConnectionMethod: 'muse2', channelCount: 4 };
+  win.eegIntegration = globalThis.eegIntegration;
+  Baseline._cache = null;
+  await api.refreshDivinationBaseline();
+  ok(win.getDivinationBaseline() === null, 'the Athena baseline is NOT reused on the Muse 2');
+  ok(api.snapshot().montage === 4, 'snapshot follows the new montage');
+
+  // Unknown device: refuse rather than pool under 'unknown'.
+  globalThis.eegIntegration = { lastConnectionMethod: 'unknown', channelCount: 0 };
+  win.eegIntegration = globalThis.eegIntegration;
+  Baseline._cache = null;
+  const n = db._rows.length;
+  await api.recordCastForBaseline(T.neural_iching.code({ mode: 'state' }).reading);
+  await settle();
+  ok(db._rows.length === n, 'a cast on an unidentified device is refused, not filed under unknown');
+  delete globalThis.eegFrameBuffer;
+}
+
+console.log('--- Baseline hint and reset ---');
+{
+  const { api, win, elements, db } = harness();
+  elements.divModeStateBtn = { style: {} };
+  elements.divModeCastBtn = { style: {} };
+  elements.divModeHint = { textContent: '' };
+  for (let i = 0; i < 400; i++) api.pushDivinationFrame(frame(i, 0.5));
+  globalThis.eegFrameBuffer = win.eegFrameBuffer;
+
+  await api.refreshDivinationBaseline();
+  api.setDivinationMode('state', true);
+  ok(/8 more casts on this headband/.test(elements.divModeHint.textContent),
+     'hint counts down to a personal baseline: ' + elements.divModeHint.textContent);
+
+  for (let k = 0; k < 8; k++) {
+    await api.recordCastForBaseline(T.neural_iching.code({ mode: 'state' }).reading);
+    await settle();
+  }
+  await api.refreshDivinationBaseline();
+  api.setDivinationMode('state', true);
+  const hint = elements.divModeHint.textContent;
+  ok(/your own median arousal/.test(hint), 'hint switches to the personal pivot: ' + hint);
+  ok(/8 past casts on athena \(8ch\)/.test(hint), 'and names the device and sample size');
+  ok(/Changing lines still come from the spread/.test(hint), 'and does not claim the CV pivot is personal');
+
+  await api.resetDivinationBaseline();
+  await settle();
+  ok(db._rows.length === 0, 'reset clears the store');
+  ok(win.getDivinationBaseline() === null, 'and the seam reports no baseline again');
+  delete globalThis.eegFrameBuffer;
+}
+
+console.log('--- Readings become memories ---');
+{
+  const { api, win, db } = harness();
+  for (let i = 0; i < 400; i++) api.pushDivinationFrame(frame(i, 0.5));
+  globalThis.eegFrameBuffer = win.eegFrameBuffer;
+
+  // Hexagram: the structure her prose would lose.
+  const hex = T.neural_iching.code({ mode: 'state', question: 'what needs attention?' });
+  const line = api.divinationMemoryLine(hex);
+  console.log('  ' + line.content);
+  ok(/^I Ching \(state readout\): #\d+ /.test(line.content), 'names the mode and hexagram: ' + line.content);
+  ok(/\[[6789]{6}\]/.test(line.content), 'records the six line values');
+  ok(/changing line|no changing lines/.test(line.content), 'records the changing lines');
+  ok(/asked: "what needs attention\?"/.test(line.content), 'records the question');
+  ok(line.tags.includes('iching') && line.tags.includes('state'), 'tagged for recall');
+
+  // Tarot: every card, not just the first Capitalised phrase in her prose.
+  const tarot = api.divinationMemoryLine(T.tarot_draw.code({ spread: 'celticCross' }));
+  console.log('  ' + tarot.content.slice(0, 110) + '…');
+  ok((tarot.content.match(/\|/g) || []).length === 9, 'all ten Celtic Cross cards recorded');
+  ok(/Tarot \(celticCross\)/.test(tarot.content), 'names the spread');
+
+  // Runes: the whole cast, not just the first rune.
+  const runes = api.divinationMemoryLine(T.rune_cast.code({ spread: 'norn' }));
+  console.log('  ' + runes.content);
+  ok((runes.content.match(/\|/g) || []).length === 2, 'all three Norn runes recorded');
+
+  // The opt-in tools too.
+  ok(/^Geomancy: Judge /.test(api.divinationMemoryLine(T.geomancy_cast.code({})).content), 'geomancy summarised');
+  const cube = api.divinationMemoryLine(T.cube_walk.code({ steps: 4 }));
+  ok(/^Cube walk: /.test(cube.content), 'cube walk summarised: ' + cube.content);
+  // Non-readings write nothing.
+  ok(api.divinationMemoryLine(T.hexagram_lookup.code({ number: 34 })) === null, 'a lookup is not a reading');
+  ok(api.divinationMemoryLine(T.biorhythm_calc.code({ birthDate: '1985-03-14' })) === null, 'biorhythm is not a reading');
+  ok(api.divinationMemoryLine(null) === null && api.divinationMemoryLine({}) === null, 'junk writes nothing');
+
+  // Saving: type, source, and dedupe.
+  await api.saveReadingMemory(hex);
+  await settle();
+  ok(db._memories.length === 1, 'a reading is saved as a memory');
+  ok(db._memories[0].type === 'reading', 'filed under type "reading" so getMemoryContext picks it up');
+  ok(db._memories[0].source === 'divination', 'marked as coming from the tool, not prose scraping');
+  await api.saveReadingMemory(hex);
+  await settle();
+  ok(db._memories.length === 1, 're-rendering the same reading does not double-file it');
+  await api.saveReadingMemory(T.tarot_draw.code({ spread: 'three' }));
+  await settle();
+  ok(db._memories.length === 2, 'a different reading is filed');
+
+  // recordDivinationCast is the single call site: memory + baseline + log.
+  const h2 = harness();
+  for (let i = 0; i < 400; i++) h2.api.pushDivinationFrame(frame(i, 0.5));
+  globalThis.eegFrameBuffer = h2.win.eegFrameBuffer;
+  h2.api.recordDivinationCast(T.neural_iching.code({ mode: 'state' }));
+  await settle(); await settle();
+  ok(h2.db._memories.length === 1, 'recordDivinationCast files the memory');
+  ok(h2.db._rows.length === 1, 'and records the cast for the baseline');
+  ok(h2.win.divinationLineDistribution().casts === 1, 'and keeps the line-distribution log');
+
+  // No database yet? Nothing should throw.
+  const h3 = harness({ noDB: true });
+  h3.api.recordDivinationCast(T.neural_iching.code({ mode: 'entropy' }));
+  await settle();
+  ok(true, 'with no IndexedDB the cast path still completes');
+  delete globalThis.eegFrameBuffer;
+}
+
+console.log('--- Memory context must not be drowned by readings ---');
+{
+  // getMemoryContext caps readings at 4 of the 10 recent slots. Lifted from
+  // index.html and run against a store full of readings plus one personal detail.
+  const mcStart = html.indexOf('async function selectMemoriesForContext(userMessage)');
+  const mcEnd = html.indexOf('// Auto-extract memories from conversation', mcStart);
+  ok(mcStart > 0 && mcEnd > mcStart, 'the memory-context functions were found in index.html');
+  const all = [];
+  for (let i = 0; i < 30; i++) all.push({ id: i + 1, type: 'reading', timestamp: 2000 + i, date: 'd', content: 'I Ching: cast ' + i });
+  all.push({ id: 99, type: 'personal', timestamp: 1000, date: 'd', content: "User's name is Joseph" });
+  const build = new Function('getAllMemories', html.slice(mcStart, mcEnd) + '\nreturn getMemoryContext;');
+  const getMemoryContext = build(async () => all);
+  const ctx = await getMemoryContext('what does today hold');
+  const readingLines = (ctx.match(/I Ching: cast/g) || []).length;
+  console.log(`  context holds ${readingLines} readings out of ${(ctx.match(/^[🃏👁️💜📝📌]/gmu) || []).length} memories`);
+  ok(readingLines <= 4, 'readings are capped at 4 recent slots, got ' + readingLines);
+  ok(ctx.includes("User's name is Joseph"), 'the personal detail is not evicted by a night of casting');
+}
+
+console.log('--- Memories must reach the LOCAL model too ---');
+{
+  // The local path replaces the system message that carries the verbose memory
+  // block, so a reading memory is worthless there unless the compact note is
+  // injected. Regression-guard both the function and its call site.
+  const cStart = html.indexOf('function getCompactMemoryNote(');
+  const cEnd = html.indexOf('// Get recent + relevant memories for context injection', cStart);
+  ok(cStart > 0 && cEnd > cStart, 'getCompactMemoryNote found in index.html');
+  const getCompactMemoryNote = new Function(html.slice(cStart, cEnd) + '\nreturn getCompactMemoryNote;')();
+
+  const mems = [
+    { date: '29/07/2026', type: 'reading', content: 'I Ching (state readout): #22 Grace [987887] · changing line 1 → #52 Keeping Still' },
+    { date: '29/07/2026', type: 'personal', content: "User's name is Joseph" }
+  ];
+  const note = getCompactMemoryNote(mems, 6, 700);
+  console.log('  ' + note.trim().split('\n')[0]);
+  ok(note.includes('#22 Grace'), 'the reading reaches the compact note');
+  ok(note.includes("User's name is Joseph"), 'so do personal details');
+  ok(/never list them back/.test(note), 'with an instruction not to recite them');
+  ok(getCompactMemoryNote([], 6, 700) === '', 'no memories, no note');
+  ok(getCompactMemoryNote(null) === '', 'null is safe');
+
+  // Caps must actually bind — a 1.2B model may only have 4k of context.
+  const many = Array.from({ length: 40 }, (_, i) => ({ date: 'd', type: 'reading', content: 'cast number ' + i + ' '.padEnd(200, 'x') }));
+  const capped = getCompactMemoryNote(many, 6, 700);
+  ok((capped.match(/^- /gm) || []).length <= 6, 'item cap holds, got ' + (capped.match(/^- /gm) || []).length);
+  ok(capped.length < 1100, 'char cap holds, got ' + capped.length);
+  ok(getCompactMemoryNote(mems, 1, 700).split('\n').filter(l => l.startsWith('- ')).length === 1, 'maxItems is honoured');
+
+  // And the call site: LOCAL_SYSTEM_PROMPT must include it, populated per message.
+  ok(/LOCAL_SYSTEM_PROMPT \+= _cachedCompactMemories;/.test(html), 'the local system prompt appends the compact memories');
+  ok(/_cachedCompactMemories = getCompactMemoryNote\(memories, 6, 700\);/.test(html), 'and refreshMemoryContext fills it');
+  ok(/_cachedCompactMemories = '';/.test(html), 'and clears it when memory lookup fails');
+}
+
 console.log(fail === 0 ? '\nALL HOST TESTS PASSED' : `\n${fail} FAILURE(S)`);
 process.exit(fail ? 1 : 0);
+
+})();

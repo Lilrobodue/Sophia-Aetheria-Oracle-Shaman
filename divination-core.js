@@ -161,8 +161,28 @@ const median = arr => { const s = [...arr].sort((x, y) => x - y); const n = s.le
 const quantile = (arr, q) => { const s = [...arr].sort((x, y) => x - y);
   return s.length ? s[Math.min(s.length - 1, Math.floor(q * s.length))] : 0; };
 
+/* CV PIVOT — read this before changing it.
+ * `cvPivot` is an ABSOLUTE threshold on window variability, supplied by the host
+ * from the user's own history (baseline-core hands over the 0.75 quantile of every
+ * past window CV). Prefer it.
+ *
+ * `baselineCV * cvMultiplier` is the legacy path and it is treated as deprecated:
+ * a multiple of a median lands at whatever percentile the spread of that
+ * distribution happens to put it — measured at the 79th on one synthetic signal,
+ * which is benign, but on a tighter distribution it sits above the 95th and
+ * changing lines all but vanish, taking the relating hexagram with them. A
+ * quantile sits at a fixed rank by construction. Do not reintroduce a multiplier
+ * as the primary route.
+ *
+ * With no personal CV history at all we fall back to the within-cast 0.75
+ * quantile. Note what that means: for six windows it is the 5th smallest, so
+ * exactly ONE window is above it, and every cold-start cast has exactly one
+ * changing line. Deterministic, not random — the honest cold-start behaviour is
+ * "the most variable sixth of your window is the moving line", and it is reported
+ * as within-cast-median in provenance. */
 function linesFromState(frames, opts) {
-  const o = Object.assign({ baseline: null, baselineCV: null, cvMultiplier: 1.5 }, opts || {});
+  const o = Object.assign({ baseline: null, baselineCV: null, cvPivot: null,
+                            cvMultiplier: 1.5 }, opts || {});
   const per = Math.max(1, Math.floor(frames.length / 6));
   const windows = [];
   for (let i = 0; i < 6; i++) {
@@ -171,9 +191,15 @@ function linesFromState(frames, opts) {
   }
   const usedPersonalBaseline = o.baseline != null;
   const pivot = usedPersonalBaseline ? o.baseline : median(windows.map(w => w.mean));
-  const cvPivot = (o.baselineCV != null)
-    ? o.baselineCV * o.cvMultiplier
-    : quantile(windows.map(w => w.cv), 0.75);
+
+  let cvPivot, cvSource;
+  if (o.cvPivot != null) {
+    cvPivot = o.cvPivot;               cvSource = 'personal-quantile';
+  } else if (o.baselineCV != null) {
+    cvPivot = o.baselineCV * o.cvMultiplier; cvSource = 'baseline-multiplier';
+  } else {
+    cvPivot = quantile(windows.map(w => w.cv), 0.75); cvSource = 'within-cast-quantile';
+  }
 
   const lines = [], detail = [];
   windows.forEach((s, i) => {
@@ -183,7 +209,7 @@ function linesFromState(frames, opts) {
     detail.push({ line: i + 1, arousal: +s.mean.toFixed(4), cv: +s.cv.toFixed(4), yang, changing });
   });
   return { lines, detail,
-    pivots: { arousal: +pivot.toFixed(4), cv: +cvPivot.toFixed(4),
+    pivots: { arousal: +pivot.toFixed(4), cv: +cvPivot.toFixed(4), cvSource: cvSource,
               source: usedPersonalBaseline ? 'personal-history' : 'within-cast-median' } };
 }
 
@@ -626,8 +652,14 @@ function provenanceLine(p) {
   } else if (n != null) {
     parts.push(n + (n === 1 ? ' frame' : ' frames'));
   }
-  if (p.pivots) parts.push(p.pivots.source === 'personal-history'
-    ? 'personal baseline' : 'within-cast median');
+  // Name both pivots when they come from different places — "personal baseline"
+  // alone would overstate a cast whose polarity is personal but whose changing
+  // lines still come from the within-cast spread.
+  if (p.pivots) {
+    if (p.pivots.source !== 'personal-history')            parts.push('within-cast median');
+    else if (p.pivots.cvSource === 'within-cast-quantile') parts.push('personal arousal pivot · within-cast CV');
+    else                                                   parts.push('personal baseline');
+  }
   return parts.join(' · ');
 }
 
@@ -652,18 +684,25 @@ function frames(params) {
 
 /* State mode needs a PERSONAL pivot (see the note on linesFromState). The host
  * app supplies one through global.getDivinationBaseline(); returning null there
- * is the honest cold-start answer and we fall back to within-cast medians. */
+ * is the honest cold-start answer and we fall back to within-cast medians.
+ * The seam is SYNCHRONOUS by contract — the host keeps a refreshed snapshot of
+ * whatever async store it uses, because a tool's code() cannot await. */
 function baselineFor(params) {
-  if (params && (params.baseline != null || params.baselineCV != null)) {
-    return { baseline: params.baseline != null ? params.baseline : null,
-             baselineCV: params.baselineCV != null ? params.baselineCV : null };
+  const pick = src => ({
+    baseline: (src && src.baseline != null) ? src.baseline : null,
+    /* cvPivot preferred; baselineCV only forwarded when no quantile is offered,
+     * and never both — see the CV PIVOT note above. */
+    cvPivot:    (src && src.cvPivot != null) ? src.cvPivot : null,
+    baselineCV: (src && src.cvPivot == null && src.baselineCV != null) ? src.baselineCV : null
+  });
+  if (params && (params.baseline != null || params.baselineCV != null || params.cvPivot != null)) {
+    return pick(params);
   }
   let g = null;
   if (typeof global.getDivinationBaseline === 'function') {
     try { g = global.getDivinationBaseline(); } catch (e) { g = null; }
   }
-  return { baseline:   (g && g.baseline   != null) ? g.baseline   : null,
-           baselineCV: (g && g.baselineCV != null) ? g.baselineCV : null };
+  return pick(g);
 }
 
 /* The sidebar toggle ("Read my state" / "Cast the lots") parks the user's

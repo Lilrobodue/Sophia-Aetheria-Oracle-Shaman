@@ -1631,7 +1631,7 @@
                     Export
                 </button>
             </div>
-            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v75</div>
+            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v76</div>
             </div><!-- end sidebar-scroll -->
         </div>
 
@@ -10382,7 +10382,9 @@ return result;</textarea>
             failed: false,
             worker: null,
             webgpuAvailable: false,
-            gpuLimits: null,   // adapter limits, recorded by checkWebGPU()
+            gpuLimits: null,      // adapter limits, recorded by checkWebGPU()
+            generations: 0,       // generations this session — reported by the worker
+            gpuExhausted: false,  // set when the GPU died; cleared on a fresh load
             error: null,
             _pending: null, // {resolve, reject, onToken} for current generation
         };
@@ -10445,6 +10447,39 @@ let model = null;
 let pipe = null;       // text-generation pipeline mode
 let vlModel = null;    // lfm2-vision (custom 3-session ORT-Web loader)
 let modelType = null;  // 'gemma4-vision' | 'lfm2-vision' | 'text-generation'
+let genCount = 0;      // generations since load — reported so leaks are visible
+
+// ── GPU memory hygiene ────────────────────────────────────────────────────
+// An ORT tensor on the WebGPU backend owns a GPUBuffer. Letting the JS wrapper
+// go out of scope does NOT free that buffer — it has to be disposed. Two or
+// three generations' worth of orphaned KV cache is enough to exhaust a
+// phone-class GPU, which shows up as a device-lost crash on the SECOND or third
+// request rather than the first. Never dispose a tensor we still hold: the "keep"
+// argument guards the case where an output was swapped straight back into cache.
+// (No backticks anywhere in here — this whole file is a template literal.)
+function disposeTensor(t, keep) {
+    if (!t || t === keep) return;
+    try {
+        if (typeof t.dispose === 'function') t.dispose();
+        else if (t.gpuBuffer && typeof t.gpuBuffer.destroy === 'function') t.gpuBuffer.destroy();
+    } catch (e) { /* already released, or a CPU tensor with no disposer */ }
+}
+
+// Does this failure mean we ran out of GPU memory / lost the device? Those need
+// a different response from an ordinary error: the session is dead and only a
+// reload brings it back, so the app is told explicitly rather than left to retry
+// into a corpse.
+function isGpuExhaustion(msg) {
+    return /out of memory|oom|device is lost|device.*lost|failed to allocate|buffer size|exceeds the limit|createBuffer|mapAsync/i
+        .test(String(msg || ''));
+}
+
+function postGenError(err, where) {
+    const msg = (err && err.message) ? err.message : String(err);
+    const oom = isGpuExhaustion(msg);
+    console.error('[worker] ' + (where || 'generate') + ' failed' + (oom ? ' (GPU exhaustion)' : '') + ':', msg);
+    self.postMessage({ type: 'genError', payload: msg, oom, generations: genCount });
+}
 
 // ═══════════════════════════════════════════════════════════════════════
 // LFM2.5-VL — raw ORT-Web path (ported from LiquidAI's HF Space, Apache-2.0)
@@ -10876,15 +10911,41 @@ class VLModel {
         return cache;
     }
 
+    // Swap the freshly produced present.* / present_conv* tensors in as the next
+    // step's past, DISPOSING what they replace.
+    //
+    // On the WebGPU backend every one of these is a GPU buffer, and this runs once
+    // PER GENERATED TOKEN across every layer. Dropping the JS reference without
+    // disposing leaves the buffer allocated until the device runs out — a 384-token
+    // answer orphaned ~(2 x layers x 384) buffers, which is why the second or third
+    // reading in a row killed the GPU while the first was fine. Held tensors are
+    // freed by freeCache() when the generation ends.
     updateCache(cache, outputs) {
+        const kept = new Set();
         for (const name of Object.keys(outputs)) {
-            if (name.startsWith('present_conv')) {
-                const k = name.replace('present_conv', 'past_conv');
-                if (k in cache) cache[k] = outputs[name];
-            } else if (name.startsWith('present.')) {
-                const k = name.replace('present.', 'past_key_values.');
-                if (k in cache) cache[k] = outputs[name];
-            }
+            let k = null;
+            if (name.startsWith('present_conv')) k = name.replace('present_conv', 'past_conv');
+            else if (name.startsWith('present.')) k = name.replace('present.', 'past_key_values.');
+            if (!k || !(k in cache)) continue;
+            const previous = cache[k];
+            cache[k] = outputs[name];
+            kept.add(name);
+            disposeTensor(previous, cache[k]);
+        }
+        // Everything else the decoder returned (logits above all) is finished with by
+        // the time we get here — its data was copied into the scratch buffer.
+        for (const name of Object.keys(outputs)) {
+            if (!kept.has(name)) disposeTensor(outputs[name]);
+        }
+    }
+
+    // Release every tensor the cache is holding. Called in a finally, so an aborted
+    // or failed generation frees as much as a clean one.
+    freeCache(cache) {
+        if (!cache) return;
+        for (const k of Object.keys(cache)) {
+            disposeTensor(cache[k]);
+            delete cache[k];
         }
     }
 
@@ -10974,6 +11035,10 @@ class VLModel {
         console.log('[VL] cache keys:', Object.keys(cache).length, '—', Object.keys(cache).slice(0, 4).join(', '), '…');
         let curLen = currentEmbeds.dims[1];
         const generated = [];
+        // Everything below allocates GPU buffers per token. The finally frees the
+        // cache and the last embeddings whether we finish, stop early, or throw —
+        // an aborted generation used to leak its entire cache.
+        try {
         for (let step = 0; step < maxNewTokens; step++) {
             const am = new ort.Tensor('int64', new BigInt64Array(curLen).fill(1n), [1, curLen]);
             const feeds = { inputs_embeds: currentEmbeds, attention_mask: am, ...cache };
@@ -10982,8 +11047,10 @@ class VLModel {
                 outputs = await this.decoderSession.run(feeds);
             } catch (err) {
                 console.error('[VL] decoder.run failed at step', step, ':', err);
+                disposeTensor(am);
                 throw err;
             }
+            disposeTensor(am);
             const logits = outputs.logits;
             const vocab = logits.dims[2];
             const lastStart = (logits.dims[1] - 1) * vocab;
@@ -11049,11 +11116,19 @@ class VLModel {
             if (maxIdx === this.eosTokenId) { console.log('[VL] EOS at step', step); break; }
             this.updateCache(cache, outputs);
             const next = await this.getTextEmbeddings([maxIdx]);
+            // The embedding tensor for the step just finished is dead the moment the
+            // next one exists — one more per-token GPU buffer if we only reassign.
+            disposeTensor(currentEmbeds, next);
             currentEmbeds = next;
             curLen++;
         }
         console.log('[VL] generate() done — produced', generated.length, 'tokens');
         return this.tokenizer.decode(generated, { skip_special_tokens: true });
+        } finally {
+            this.freeCache(cache);
+            disposeTensor(currentEmbeds);
+            if (textEmb !== currentEmbeds) disposeTensor(textEmb);
+        }
     }
 
     async dispose() {
@@ -11144,7 +11219,7 @@ self.onmessage = async (e) => {
                     role: m.role,
                     content: m.content,
                 }));
-                await pipe(textMessages, {
+                const out = await pipe(textMessages, {
                     max_new_tokens: payload.max_new_tokens,
                     temperature: payload.temperature,
                     do_sample: payload.temperature > 0,
@@ -11154,10 +11229,13 @@ self.onmessage = async (e) => {
                     // >= 4.2.0) so the model sees its own trained tool format.
                     ...(payload.tools && payload.tools.length ? { tools: payload.tools } : {}),
                 });
-                self.postMessage({ type: 'genDone' });
+                // Whatever the pipeline handed back is finished with — we streamed the
+                // text token by token. On WebGPU it may still be holding buffers.
+                disposeTensor(out);
+                genCount++;
+                self.postMessage({ type: 'genDone', payload: { generations: genCount } });
             } catch (err) {
-                const msg = (err && err.message) ? err.message : String(err);
-                self.postMessage({ type: 'genError', payload: msg });
+                postGenError(err, 'text-generation');
             }
             return;
         }
@@ -11201,11 +11279,10 @@ self.onmessage = async (e) => {
                         self.postMessage({ type: 'token', payload: tokenText });
                     },
                 });
-                self.postMessage({ type: 'genDone' });
+                genCount++;
+                self.postMessage({ type: 'genDone', payload: { generations: genCount } });
             } catch (err) {
-                const msg = (err && err.message) ? err.message : String(err);
-                console.error('[VL-worker] generate failed:', err);
-                self.postMessage({ type: 'genError', payload: msg });
+                postGenError(err, 'lfm2-vision');
             }
             return;
         }
@@ -11279,30 +11356,46 @@ self.onmessage = async (e) => {
                 },
             });
 
-            await model.generate({
+            const sequences = await model.generate({
                 ...inputs,
                 max_new_tokens: payload.max_new_tokens,
                 temperature: payload.temperature,
                 do_sample: payload.temperature > 0,
                 streamer,
             });
-            self.postMessage({ type: 'genDone' });
+            // The sequence tensor and the processed inputs are done with — the text
+            // already went out token by token through the streamer. On WebGPU these
+            // are GPU buffers, and image/audio inputs are the big ones.
+            disposeTensor(sequences);
+            for (const k of Object.keys(inputs)) disposeTensor(inputs[k]);
+            genCount++;
+            self.postMessage({ type: 'genDone', payload: { generations: genCount } });
         } catch (err) {
-            const msg = (err && err.message) ? err.message : String(err);
-            self.postMessage({ type: 'genError', payload: msg });
+            postGenError(err, modelType);
         }
         return;
     }
 
     if (type === 'unload') {
-        model = null;
+        // Release the ORT sessions, not just the JS references — the model weights
+        // are the largest thing on the GPU, so a reference-only unload leaves them
+        // resident and the reload lands on top of them.
+        if (pipe) {
+            try { await pipe.dispose?.(); } catch (e) {}
+            try { await pipe.model?.dispose?.(); } catch (e) {}
+            pipe = null;
+        }
+        if (model) {
+            try { await model.dispose?.(); } catch (e) {}
+            model = null;
+        }
         processor = null;
-        pipe = null;
         if (vlModel) {
             try { await vlModel.dispose(); } catch (e) {}
             vlModel = null;
         }
         modelType = null;
+        genCount = 0;
         self.postMessage({ type: 'unloaded' });
     }
 };
@@ -11318,7 +11411,9 @@ self.onmessage = async (e) => {
 
             worker.onmessage = (e) => {
                 const { type, payload } = e.data;
-                handleWorkerMessage(type, payload);
+                // Pass the raw message too: the worker flags GPU exhaustion as a
+                // sibling of `payload` (e.data.oom), which a two-arg call would drop.
+                handleWorkerMessage(type, payload, e.data);
             };
             worker.onerror = (e) => {
                 console.error('Worker error:', e);
@@ -11327,7 +11422,7 @@ self.onmessage = async (e) => {
             return worker;
         }
 
-        function handleWorkerMessage(type, payload) {
+        function handleWorkerMessage(type, payload, meta) {
             if (type === 'progress') {
                 const p = payload;
                 if (p.status === 'initiate' || p.status === 'download' || p.status === 'progress') {
@@ -11343,6 +11438,8 @@ self.onmessage = async (e) => {
             if (type === 'loaded') {
                 localInference.ready = true;
                 localInference.loading = false;
+                localInference.gpuExhausted = false;   // fresh session, clean slate
+                localInference.generations = 0;
                 const device = localInference.webgpuAvailable ? 'WebGPU' : 'WASM';
                 updateInferenceBadge('local', `Local (${device})`);
                 updateModelProgress(100, 'Model loaded and cached for offline use!');
@@ -11428,12 +11525,33 @@ self.onmessage = async (e) => {
             }
 
             if (type === 'genDone') {
+                if (payload && payload.generations) localInference.generations = payload.generations;
                 if (localInference._pending) localInference._pending.resolve();
                 localInference._pending = null;
                 return;
             }
 
             if (type === 'genError') {
+                // GPU exhaustion is not an ordinary error: the device is gone and the
+                // session with it, so retrying generates into a corpse. Release what
+                // we can, say so plainly, and put the Load button back rather than
+                // pretending the model is still there.
+                if (meta && meta.oom) {
+                    localInference.gpuExhausted = true;
+                    const n = meta.generations || localInference.generations || 0;
+                    console.error('🧠 GPU exhausted after ' + n + ' generation(s) — releasing the session.');
+                    try { localInference.worker.postMessage({ type: 'unload' }); } catch (_) {}
+                    localInference.ready = false;
+                    const loadBtn = document.getElementById('loadModelBtn');
+                    const unloadBtn = document.getElementById('unloadModelBtn');
+                    if (loadBtn) loadBtn.style.display = '';
+                    if (unloadBtn) unloadBtn.style.display = 'none';
+                    const statusEl = document.getElementById('localModelStatus');
+                    if (statusEl) { statusEl.textContent = 'GPU out of memory — reload'; statusEl.style.color = '#ff9966'; }
+                    updateInferenceBadge('remote', 'Remote (API)');
+                    showStatus('The GPU ran out of memory after ' + n + ' generation' + (n === 1 ? '' : 's') +
+                               '. Model released — press Load Model to start clean, or tick Force WASM to trade speed for stability.', 'error');
+                }
                 if (localInference._pending) localInference._pending.reject(new Error(payload));
                 localInference._pending = null;
                 return;
@@ -12111,7 +12229,23 @@ Use this data to personalize your response. Comment on their current state when 
             // Models with a trained tool_use template get the schema-driven path and
             // can be trusted with more hops; prompt-described models stay conservative.
             const nativeTools = !!modelInfo.nativeTools;
-            const maxSteps = (nativeTools || fam === 'lfm25') ? 3 : 1;   // tiny non-agent models: single hop
+            let maxSteps = (nativeTools || fam === 'lfm25') ? 3 : 1;     // tiny non-agent models: single hop
+            // Each step is a separate generation over the WHOLE conversation. Four of
+            // those back to back is what a phone-class GPU dies on, even when every
+            // individual prompt fits — so one hop plus the synthesis pass there.
+            const genCap = localGenerationCap(config.maxTokens || 512);
+            if (genCap.smallGpu && maxSteps > 1) {
+                console.log('🔮 [Agent] small-GPU device — capping the tool loop at 1 hop (was ' + maxSteps + ')');
+                maxSteps = 1;
+            }
+            // The loop appends its own tool-instruction block and a full tool result
+            // on top of the already-budgeted system prompt, then re-sends the lot on
+            // every step. Give it the real ceiling and a result cap.
+            const pb = localPromptBudget();
+            const agentBudget = {
+                maxPromptTokens: pb.forPrompt,
+                maxResultChars: Math.max(600, Math.floor(pb.forPrompt * 0.25) * 4)
+            };
             // astrology_report stays in the list (unlike web_search) so the bootstrap
             // can see whether it is enabled; it skips bridging it to the sync path.
             const bridgedTools = Object.values(tools).filter(t => t.enabled && t.name !== 'web_search');
@@ -12140,6 +12274,12 @@ Use this data to personalize your response. Comment on their current state when 
                 } else if (e.type === 'synthesize') {
                     phaseLabel = 'Sophia is weaving what she found…';
                     currentFull = ''; render();
+                } else if (e.type === 'budget') {
+                    // Every generation in the loop, sized. This is the line that says
+                    // whether a crash was context or something else.
+                    console.log('🔮 [Agent] step ' + e.step + ' · convo ≈' + e.tokens + ' tok' +
+                        (e.limit ? ' / ' + e.limit : '') +
+                        (e.droppedTurns ? ' · dropped ' + e.droppedTurns + ' old turn(s) to fit' : ''));
                 } else if (e.type === 'cap_reached') {
                     showStatus('Tool loop reached its step limit.', 'warning');
                 }
@@ -12147,6 +12287,7 @@ Use this data to personalize your response. Comment on their current state when 
 
             const { final } = await window.SophiaAgent.runAgentTurn({
                 messages: base, bridgedTools, llmCall, maxSteps, onEvent, nativeTools,
+                budget: agentBudget,
                 ctx: {
                     sensorState: (typeof currentEEGData !== 'undefined' ? currentEEGData : null),
                     // Memory adapter. ESM tools can't reach the app's let/const

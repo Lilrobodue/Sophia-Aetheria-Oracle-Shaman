@@ -146,6 +146,38 @@ function ensureSystemTools(convo, registry) {
   else convo.unshift({ role: 'system', content: block });
 }
 
+/* ── Context budget ────────────────────────────────────────────────────────
+ * The host may have budgeted its system prompt already, but THIS loop then adds
+ * a tool-instruction block (measured at 856 tok for 6 tools, ~1600 for eleven)
+ * and pushes a whole tool result per step — and it re-sends the lot on every
+ * one of up to `maxSteps` generations. On a small GPU the KV cache is what runs
+ * out, so the caller passes a ceiling and we hold to it out loud.
+ * budget: { maxPromptTokens, maxResultChars } — both optional.            */
+const estTok = s => Math.ceil(String(s || '').length / 4);
+const convoTokens = convo => convo.reduce((a, m) => a + estTok(m.content), 0);
+
+function capResult(text, maxChars) {
+  if (!maxChars || text.length <= maxChars) return text;
+  const kept = text.slice(0, maxChars);
+  return kept + `\n…[truncated: ${text.length - maxChars} more characters were shown in the app ` +
+                `but not sent to the model, to stay inside its context]`;
+}
+
+/* Drop the OLDEST non-system turns until the conversation fits. Never drops the
+ * system message, and never the last two turns (the tool call and its result —
+ * without them the step is pointless). Returns how many went. */
+function trimConvo(convo, maxPromptTokens) {
+  if (!maxPromptTokens) return 0;
+  let dropped = 0;
+  while (convoTokens(convo) > maxPromptTokens) {
+    const i = convo.findIndex(m => m.role !== 'system');
+    if (i === -1 || convo.length - i <= 2) break;
+    convo.splice(i, 1);
+    dropped++;
+  }
+  return dropped;
+}
+
 /**
  * runAgent — generate → parse for a tool call → execute + feed result back → repeat
  *            until the model gives a plain answer or maxSteps is hit.
@@ -161,18 +193,22 @@ function ensureSystemTools(convo, registry) {
  *                     described path that every other model here relies on.
  * @returns { final, convo }
  */
-export async function runAgent({ messages, registry, llmCall, maxSteps = 3, ctx = {}, onEvent, nativeTools = false }) {
+export async function runAgent({ messages, registry, llmCall, maxSteps = 3, ctx = {}, onEvent, nativeTools = false, budget = null }) {
   const convo = messages.map(m => ({ ...m }));
   const hasTools = !!(registry && registry.size > 0);
   // In native mode the template renders the tool list, so injecting our own prose
   // as well would give the model two conflicting formats to choose between.
   if (hasTools && !nativeTools) ensureSystemTools(convo, registry);
   const toolSchemas = (hasTools && nativeTools) ? registry.schemas() : undefined;
+  const maxPromptTokens = budget && budget.maxPromptTokens;
+  const maxResultChars = budget && budget.maxResultChars;
 
   let toolResultPending = false;   // a tool ran but its result hasn't been answered yet
 
   for (let step = 0; step < maxSteps; step++) {
     onEvent?.({ type: 'step', step });
+    const droppedTurns = trimConvo(convo, maxPromptTokens);
+    onEvent?.({ type: 'budget', step, tokens: convoTokens(convo), limit: maxPromptTokens || null, droppedTurns });
     const { content } = await llmCall({ messages: convo, tools: toolSchemas });
     const call = parseToolCall(content);
 
@@ -186,7 +222,9 @@ export async function runAgent({ messages, registry, llmCall, maxSteps = 3, ctx 
     catch (e) { result = `Error running ${call.name}: ${e.message}`; }
 
     onEvent?.({ type: 'tool_end', name: call.name, result });
-    const resultText = typeof result === 'string' ? result : JSON.stringify(result);
+    // The UI gets the whole result (tool_end above); the MODEL gets only as much
+    // as its context can carry, and is told when that happened.
+    const resultText = capResult(typeof result === 'string' ? result : JSON.stringify(result), maxResultChars);
     // Native-template models were TRAINED on a `tool` role and read it correctly.
     // Everything else gets a plain user turn — small-model chat templates handle
     // that far more reliably than a dedicated role they've never seen.
@@ -207,6 +245,9 @@ export async function runAgent({ messages, registry, llmCall, maxSteps = 3, ctx 
   if (toolResultPending) {
     onEvent?.({ type: 'synthesize' });
     try {
+      const droppedTurns = trimConvo(convo, maxPromptTokens);
+      onEvent?.({ type: 'budget', step: 'synthesize', tokens: convoTokens(convo),
+                  limit: maxPromptTokens || null, droppedTurns });
       const { content } = await llmCall({ messages: convo, tools: toolSchemas });
       const answer = stripScaffold(content);
       if (answer && answer.trim()) { onEvent?.({ type: 'final' }); return { final: answer, convo }; }

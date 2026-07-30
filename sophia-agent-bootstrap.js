@@ -48,9 +48,13 @@ window.SophiaAgent = {
    * @param ctx           passed to tool.execute
    * @param nativeTools   model has a trained tool_use chat template (Qwen 3.5) —
    *                      send JSON schemas instead of prompt prose
+   * @param budget        { maxPromptTokens, maxResultChars } — the loop adds a tool
+   *                      block and a whole tool result per step on top of whatever
+   *                      the host already budgeted, and re-sends it every step. On a
+   *                      small GPU that is what runs out; pass the ceiling.
    * @returns { final, convo }
    */
-  async runAgentTurn({ messages, bridgedTools = [], llmCall, maxSteps = 3, onEvent, ctx = {}, nativeTools = false }) {
+  async runAgentTurn({ messages, bridgedTools = [], llmCall, maxSteps = 3, onEvent, ctx = {}, nativeTools = false, budget = null }) {
     const registry = new ToolRegistry();
     // Tools with a real async implementation here are skipped in the bridge —
     // their classic-side entry is only a stub for the remote tool path.
@@ -65,6 +69,6 @@ window.SophiaAgent = {
     if (bridgedTools.some(t => t && t.name === 'astrology_report' && t.enabled !== false)) {
       registry.register(astrologyTool);
     }
-    return await runAgent({ messages, registry, llmCall, maxSteps, ctx, onEvent, nativeTools });
+    return await runAgent({ messages, registry, llmCall, maxSteps, ctx, onEvent, nativeTools, budget });
   }
 };

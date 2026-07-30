@@ -94,6 +94,92 @@ console.log('--- Tool budget advice ---');
      'switching inference mode re-advises');
 }
 
+/* ------------------------------------------------------- local prompt budget */
+console.log('--- Local prompt budget (mobile context overflow) ---');
+{
+  const bStart = html.indexOf('const estTokens = s =>');
+  const bEnd = html.indexOf('// Prepare messages for local model', bStart);
+  ok(bStart > 0 && bEnd > bStart, 'the budget helpers were found in index.html');
+  const src = html.slice(bStart, bEnd);
+  const mk = (ctx, maxTokens, key) => new Function('config', 'LOCAL_MODELS', 'selectedLocalModel', 'console',
+    src + '\nreturn { estTokens, localPromptBudget, assembleWithinBudget };')(
+      { contextLength: ctx, maxTokens }, { [key || 'k']: {} }, key || 'k', { warn: () => {}, log: () => {} });
+
+  const api = mk(4096, 512, 'agent-lite');
+  const b = api.localPromptBudget();
+  ok(b.ctx === 4096 && b.reply === 512, 'budget reads the live context and reply size');
+  ok(b.forPrompt === 4096 - 512 - 192, 'prompt ceiling = context - reply - margin, got ' + b.forPrompt);
+  ok(mk(4096, 99999, 'k').localPromptBudget().forPrompt >= 512, 'a silly maxTokens cannot drive the ceiling to zero');
+  ok(mk(0, 0, 'k').localPromptBudget().ctx >= 1024, 'a missing context length falls back, not to zero');
+
+  // Required parts are never dropped; optional ones go from the far end, and the
+  // caller is told which — a silently shortened prompt is how this bug hid.
+  const asm = api.assembleWithinBudget([
+    { label: 'persona', text: 'p'.repeat(4000), required: true },
+    { label: 'live sensors', text: 'l'.repeat(400) },
+    { label: 'divination note', text: 'd'.repeat(4000) },
+    { label: 'memories', text: 'm'.repeat(4000) }
+  ], 1100);
+  ok(asm.text.includes('p'.repeat(100)), 'a required part survives even over budget');
+  ok(asm.text.includes('l'.repeat(100)), 'live sensors outrank the optional prose');
+  ok(!asm.text.includes('m'.repeat(100)), 'memories are dropped when they do not fit');
+  ok(asm.dropped.length === 2 && /memories/.test(asm.dropped.join()), 'and the drop is reported: ' + asm.dropped.join(', '));
+  ok(api.assembleWithinBudget([{ label: 'a', text: '' }], 100).text === '', 'empty parts are skipped');
+
+  // The whole point: the worst realistic case must fit the smallest window.
+  const PERSONA = 'x'.repeat(1244), LIVE = 'y'.repeat(337), NOTE = 'z'.repeat(1500), MEM = 'm'.repeat(700);
+  for (const [name, ctx, maxTokens] of [['tiny', 4096, 256], ['agent-lite', 4096, 512], ['lite', 8192, 512]]) {
+    const a = mk(ctx, maxTokens, name);
+    const bb = a.localPromptBudget();
+    const sys = a.assembleWithinBudget([
+      { label: 'persona', text: PERSONA, required: true },
+      { label: 'live sensors', text: LIVE },
+      { label: 'divination note', text: NOTE },
+      { label: 'memories', text: MEM }
+    ], Math.floor(bb.forPrompt * 0.6));
+    let used = a.estTokens(sys.text) + a.estTokens('q'.repeat(600));   // + question and tool list
+    let kept = 0;
+    for (let i = 11; i >= 0; i--) {                                    // 12 prior turns of 2000 chars
+      if (kept >= 7) break;
+      const t = a.estTokens('h'.repeat(2000));
+      if (used + t > bb.forPrompt) break;
+      used += t; kept++;
+    }
+    console.log(`  ${name}: prompt ${used} + reply ${maxTokens} = ${used + maxTokens} / ${ctx} (${kept} turns kept)`);
+    ok(used + maxTokens <= ctx, `${name} stays inside its window, got ${used + maxTokens} of ${ctx}`);
+    ok(kept >= 3, `${name} still keeps some conversation, got ${kept} turns`);
+  }
+  // And confirm the old blind rule really did overflow — this is the bug, pinned.
+  const oldPrompt = Math.ceil((PERSONA + LIVE + NOTE + MEM).length / 4) + 7 * 500 + 150;
+  ok(oldPrompt + 512 > 4096, 'the previous blind 7x2000 history overflowed 4096 by ' + (oldPrompt + 512 - 4096));
+
+  // Call sites: the question must never be dropped, and tools must be capped.
+  ok(/if \(question\) trimmed\.push\(question\);/.test(html), 'the question is always sent');
+  ok(/const capTokens = local \? Math\.floor\(localPromptBudget\(\)\.forPrompt \* 0\.25\)/.test(html),
+     'the tool list is capped for local models');
+  ok(/not advertised this turn/.test(html), 'and omitted tools are named, never silently dropped');
+}
+
+console.log('--- Remote error reporting ---');
+{
+  const dStart = html.indexOf('function describeRemoteError(body)');
+  const dEnd = html.indexOf('// ── Remote API streaming', dStart);
+  ok(dStart > 0 && dEnd > dStart, 'describeRemoteError found in index.html');
+  const describe = new Function(html.slice(dStart, dEnd) + '\nreturn describeRemoteError;')();
+
+  // The exact body LM Studio returned during testing.
+  const lm = "'input' is required · invalid_union · input";
+  const out = describe(lm);
+  console.log('  ' + out.trim());
+  ok(/embeddings API/.test(out), 'the embeddings mismatch is named: ' + out);
+  ok(/\/v1\/chat\/completions/.test(out), 'and the fix is spelled out');
+  ok(/model not loaded/i.test(describe('model not loaded')) || /load the model/.test(describe('model not loaded')),
+     'a missing model gets its own hint');
+  ok(/context/.test(describe('prompt exceeds context length')), 'a context overflow gets its own hint');
+  ok(describe('') === '', 'no body, no noise');
+  ok(describe('some unknown failure') === ': some unknown failure', 'unknown errors are passed through verbatim');
+}
+
 /* ------------------------------------- the real 27-frequency table, from the app */
 const freqStart = html.indexOf('const AETHERIA_FREQUENCIES = [');
 const freqEnd = html.indexOf('window.AETHERIA_FREQUENCIES =', freqStart);
@@ -660,8 +746,11 @@ console.log('--- Memories must reach the LOCAL model too ---');
   ok(capped.length < 1100, 'char cap holds, got ' + capped.length);
   ok(getCompactMemoryNote(mems, 1, 700).split('\n').filter(l => l.startsWith('- ')).length === 1, 'maxItems is honoured');
 
-  // And the call site: LOCAL_SYSTEM_PROMPT must include it, populated per message.
-  ok(/LOCAL_SYSTEM_PROMPT \+= _cachedCompactMemories;/.test(html), 'the local system prompt appends the compact memories');
+  // And the call site: the local prompt must offer it a seat, populated per message.
+  ok(/_optional\.push\(\{ label: 'memories', text: _cachedCompactMemories \}\);/.test(html),
+     'the local prompt includes the compact memories as a budgeted part');
+  ok(/\{ label: 'memories', text: _optional\[1\]\.text \}/.test(html),
+     'and it reaches assembleWithinBudget');
   ok(/_cachedCompactMemories = getCompactMemoryNote\(memories, 6, 700\);/.test(html), 'and refreshMemoryContext fills it');
   ok(/_cachedCompactMemories = '';/.test(html), 'and clears it when memory lookup fails');
 }

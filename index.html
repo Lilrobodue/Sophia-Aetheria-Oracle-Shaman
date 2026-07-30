@@ -1631,7 +1631,7 @@
                     Export
                 </button>
             </div>
-            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v73</div>
+            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v74</div>
             </div><!-- end sidebar-scroll -->
         </div>
 
@@ -6369,8 +6369,16 @@ return result;</textarea>
                     resultEl.textContent = 'Connected!';
                     resultEl.style.color = '#00ff88';
                     updateConnectionStatus(true);
+                } else if (response) {
+                    // Show what the server actually said — "Error 400" alone sent us
+                    // hunting for a client bug when the URL was pointing at the wrong
+                    // endpoint the whole time.
+                    const why = describeRemoteError(await readErrorBody(response));
+                    resultEl.textContent = `Error ${response.status}${why}`;
+                    resultEl.style.color = '#ff4444';
+                    updateConnectionStatus(false);
                 } else {
-                    resultEl.textContent = response ? `Error ${response.status}` : 'No response';
+                    resultEl.textContent = 'No response';
                     resultEl.style.color = '#ff4444';
                     updateConnectionStatus(false);
                 }
@@ -11778,6 +11786,41 @@ self.onmessage = async (e) => {
             });
         }
 
+        // ── Local prompt budget ────────────────────────────────────────────────
+        // A local model's context is small and its KV cache lives in GPU memory, so
+        // overflowing it does NOT degrade gracefully — generation fails or the WebGPU
+        // device is lost, which on a phone reads as "the model never answers" and a
+        // crash once it starts thinking. Measured: persona ≈311 tok, memories ≤175,
+        // brainwave ≈85, tool list 370-590, and history was admitted blind at up to
+        // 7 x 2000 chars ≈ 3500 tok — over 4096 before the question was even added.
+        // So everything is now costed against the real window.
+        const estTokens = s => Math.ceil(String(s || '').length / 4);
+
+        function localPromptBudget() {
+            const info = LOCAL_MODELS[selectedLocalModel] || {};
+            const ctx = Math.max(1024, config.contextLength || info.contextLength || 4096);
+            const reply = Math.max(128, config.maxTokens || 512);
+            const margin = 192;                       // chat-template tokens + estimator slop
+            return { ctx, reply, margin, forPrompt: Math.max(512, ctx - reply - margin) };
+        }
+
+        // Assemble the system prompt within a token ceiling. Parts are dropped from
+        // the LEAST important end and what went is logged — never silently.
+        function assembleWithinBudget(parts, maxTokens) {
+            const kept = [], dropped = [];
+            let used = 0;
+            for (const p of parts) {
+                const t = estTokens(p.text);
+                if (!p.text) continue;
+                if (p.required || used + t <= maxTokens) { kept.push(p.text); used += t; }
+                else dropped.push(p.label + ' (' + t + ' tok)');
+            }
+            if (dropped.length) {
+                console.warn('🔮 [Prompt budget] dropped to fit ' + maxTokens + ' tok: ' + dropped.join(', '));
+            }
+            return { text: kept.join(''), used, dropped };
+        }
+
         // Prepare messages for local model (preserves image data for Gemma 4 vision)
         function prepareLocalMessages(messages) {
             if (config.fullPromptLocal) {
@@ -11796,19 +11839,22 @@ For palmistry: I analyze the palm image carefully. I identify the heart line, he
 
 I am warm, conversational, and grounded. I ask follow-up questions. I connect different systems when patterns emerge. I deliver truth with compassion. I am a wise friend by a fire, not a database.`;
 
+            // Optional blocks are collected, then admitted in priority order against
+            // the real context window below. Persona is required; the rest earn a seat.
+            const _optional = [];
             // Casting-mode honesty note (compact — this prompt feeds tiny local models).
-            LOCAL_SYSTEM_PROMPT += divinationSystemNote(true);
-
+            _optional.push({ label: 'divination note', text: divinationSystemNote(true) });
             // Memories, compact. Without this the local path silently drops them and
             // Sophia meets you fresh every session — no past readings to weave from.
-            LOCAL_SYSTEM_PROMPT += _cachedCompactMemories;
+            _optional.push({ label: 'memories', text: _cachedCompactMemories });
 
             // Inject live brainwave data into system prompt so Sophia can respond to it
+            let LIVE_BLOCK = '';
             if (currentAetheriaPosition && currentEEGData && eegStreaming) {
                 const p = currentAetheriaPosition;
                 const bp = currentEEGData.bandpowers;
                 const m = currentEEGData.metrics;
-                LOCAL_SYSTEM_PROMPT += `\n\n[LIVE BRAINWAVE DATA]
+                LIVE_BLOCK += `\n\n[LIVE BRAINWAVE DATA]
 Aetheria Position: ${p.pos}/27 — ${p.freq}Hz ${p.geo} (${p.regime} regime)
 State: ${p.state} | Keyword: ${p.keyword}
 Bands: Delta ${Math.round(bp.delta)}% | Theta ${Math.round(bp.theta)}% | Alpha ${Math.round(bp.alpha)}% | Beta ${Math.round(bp.beta)}% | Gamma ${Math.round(bp.gamma)}%
@@ -11831,28 +11877,68 @@ Use this data to personalize your response. Comment on their current state when 
                                 fnirsCtx += ` ${pos}:${hbo >= 0 ? '+' : ''}${hbo.toFixed(1)}/${hbr >= 0 ? '+' : ''}${hbr.toFixed(1)}`;
                             }
                         }
-                        LOCAL_SYSTEM_PROMPT += fnirsCtx;
+                        LIVE_BLOCK += fnirsCtx;
                     }
                     if (ppg && ppg.heartRate > 0) {
-                        LOCAL_SYSTEM_PROMPT += `\nHR: ${ppg.heartRate} BPM`;
+                        LIVE_BLOCK += `\nHR: ${ppg.heartRate} BPM`;
                     }
                 }
             }
 
-            const trimmed = [{ role: 'system', content: LOCAL_SYSTEM_PROMPT }];
+            // Live sensor state outranks memories and the casting note: it is the one
+            // block that is only true right now.
+            const budget = localPromptBudget();
+            const sys = assembleWithinBudget([
+                { label: 'persona', text: LOCAL_SYSTEM_PROMPT, required: true },
+                { label: 'live sensors', text: LIVE_BLOCK },
+                { label: 'divination note', text: _optional[0].text },
+                { label: 'memories', text: _optional[1].text }
+            ], Math.floor(budget.forPrompt * 0.6));      // leave 40% for question + history
+
+            const trimmed = [{ role: 'system', content: sys.text }];
             const nonSystem = messages.filter(m => m.role !== 'system');
 
-            // Fewer history messages for large models to save GPU memory
-            // E4B needs more room for KV cache, especially with EEG context
+            // The final message IS the question — it always goes in. Earlier turns are
+            // admitted newest-first only while they fit; the old code took 7 x 2000
+            // chars unconditionally, which alone could exceed a 4096-token window.
+            // Fewer history messages for large models to save GPU memory (E4B needs
+            // room for KV cache), and none of it at the cost of the question.
             const isLargeModel = selectedLocalModel === 'e4b';
             const historyLimit = isLargeModel ? 3 : 7;
-            for (const m of nonSystem.slice(-historyLimit)) {
-                const msg = { role: m.role, content: m.content.substring(0, 2000) };
-                // Preserve image + audio data for Gemma 4 multimodal
-                if (m.images) msg.images = m.images;
-                if (m.audio) msg.audio = m.audio;
-                trimmed.push(msg);
+            const carry = (src) => {
+                const msg = { role: src.role, content: String(src.content || '').substring(0, 2000) };
+                if (src.images) msg.images = src.images;   // Gemma 4 multimodal
+                if (src.audio) msg.audio = src.audio;
+                return msg;
+            };
+
+            let used = estTokens(sys.text);
+            const question = nonSystem.length ? carry(nonSystem[nonSystem.length - 1]) : null;
+            if (question) used += estTokens(question.content);
+            if (used > budget.forPrompt) {
+                console.warn('🔮 [Prompt budget] system + question alone is ' + used +
+                             ' tok against ' + budget.forPrompt + ' — sending with no history.');
             }
+
+            const older = nonSystem.slice(0, -1);
+            const kept = [];
+            let droppedTurns = 0;
+            for (let i = older.length - 1; i >= 0; i--) {
+                if (kept.length >= historyLimit) { droppedTurns += i + 1; break; }
+                const msg = carry(older[i]);
+                const t = estTokens(msg.content);
+                if (used + t > budget.forPrompt) { droppedTurns += i + 1; break; }
+                used += t;
+                kept.unshift(msg);
+            }
+            if (droppedTurns > 0) {
+                console.log('🔮 [Prompt budget] ' + used + '/' + budget.forPrompt + ' tok used · ' +
+                            kept.length + ' turns kept, ' + droppedTurns + ' older turns left out' +
+                            (sys.dropped.length ? ' · also dropped: ' + sys.dropped.join(', ') : ''));
+            }
+
+            kept.forEach(m => trimmed.push(m));
+            if (question) trimmed.push(question);
             return trimmed;
         }
 
@@ -12220,17 +12306,42 @@ Use this data to personalize your response. Comment on their current state when 
                     // TOOL_CALL: {...} as the invocation format so the client-side parser can catch it.
                     const localModelInfo = shouldUseLocal() ? LOCAL_MODELS[selectedLocalModel] : null;
                     const isLFM25 = localModelInfo && localModelInfo.family === 'lfm25';
+                    // On a local model this block rides along on EVERY message and was
+                    // measured at 370-590 tokens of a 4096-token window. Descriptions get
+                    // clipped to their first sentence and the block is capped at a quarter
+                    // of the prompt budget; anything that doesn't fit is named out loud,
+                    // because a tool that isn't advertised cannot be called.
+                    const local = !!localModelInfo;
+                    const clip = (d) => {
+                        if (!local) return d;
+                        const first = String(d).split(/(?<=\.)\s/)[0];
+                        return first.length > 130 ? first.slice(0, 127) + '…' : first;
+                    };
+                    const capTokens = local ? Math.floor(localPromptBudget().forPrompt * 0.25) : Infinity;
+                    const fitting = [], omitted = [];
+                    let toolTokens = 0;
+                    for (const t of enabledTools) {
+                        const cost = estTokens(t.name + (isLFM25 ? JSON.stringify(t.params || {}) : '') + clip(t.description)) + 8;
+                        if (toolTokens + cost > capTokens) { omitted.push(t.name); continue; }
+                        toolTokens += cost;
+                        fitting.push(t);
+                    }
+                    if (omitted.length) {
+                        console.warn('🔮 [Prompt budget] tool list capped at ~' + capTokens + ' tok — not advertised this turn: ' + omitted.join(', '));
+                        showStatus('Too many tools for this model\'s context — ' + omitted.length +
+                                   ' not offered to Sophia this turn. Turn some off in Tools.', 'warning');
+                    }
                     if (isLFM25) {
-                        const toolDefs = enabledTools.map(t => ({
+                        const toolDefs = fitting.map(t => ({
                             name: t.name,
-                            description: t.description,
+                            description: clip(t.description),
                             params: t.params || {},
                         }));
                         toolsContext = '\n\n<|tool_list_start|>' + JSON.stringify(toolDefs) + '<|tool_list_end|>' +
                             '\nTo invoke a tool, emit exactly: TOOL_CALL: {"tool": "name", "params": {...}}';
                     } else {
                         toolsContext = '\n\n[Available Tools - Call with format TOOL_CALL: {"tool": "name", "params": {...}}]:\n' +
-                            enabledTools.map(t => `- ${t.name}: ${t.description}`).join('\n');
+                            fitting.map(t => `- ${t.name}: ${clip(t.description)}`).join('\n');
                     }
                 }
 
@@ -12274,6 +12385,39 @@ Use this data to personalize your response. Comment on their current state when 
             sophiaBusy = false;   // resume proactive insights
         }
 
+        // ── Remote error reporting ──
+        // A bare "Server returned 400" hides the one thing that identifies the
+        // problem. LM Studio, Ollama and the OpenAI API all return a JSON error body;
+        // read it and put it in front of the user.
+        async function readErrorBody(response) {
+            try {
+                const text = await response.text();
+                if (!text) return '';
+                try {
+                    const j = JSON.parse(text);
+                    const e = j.error || j;
+                    return [e.message, e.code, e.param].filter(Boolean).join(' · ');
+                } catch (_) { return text.slice(0, 300); }
+            } catch (_) { return ''; }
+        }
+
+        // Recognise the endpoint mismatch specifically: "'input' is required" is the
+        // EMBEDDINGS schema, so the server URL is pointing at /v1/embeddings (or
+        // another non-chat route) while we are sending a chat body.
+        function describeRemoteError(body) {
+            if (!body) return '';
+            let hint = '';
+            if (/'?input'?\s+is\s+required/i.test(body) || /\binvalid_union\b/i.test(body)) {
+                hint = ' — that is the embeddings API answering a chat request. Set Server URL to ' +
+                       'the chat endpoint, ending in /v1/chat/completions.';
+            } else if (/model.*not.*(found|loaded)/i.test(body)) {
+                hint = ' — load the model in LM Studio, or clear the Model field to use whatever is loaded.';
+            } else if (/context|too many tokens|exceeds/i.test(body)) {
+                hint = ' — the prompt exceeded the server-side context. Shorten history or raise the context length.';
+            }
+            return ': ' + body + hint;
+        }
+
         // ── Remote API streaming (original) ──
         async function generateRemoteStreamingResponse(messages) {
             const payload = {
@@ -12293,7 +12437,7 @@ Use this data to personalize your response. Comment on their current state when 
             console.log('🌐 [Remote] Response status:', response.status);
 
             if (!response.ok) {
-                throw new Error('Server returned ' + response.status);
+                throw new Error('Server returned ' + response.status + describeRemoteError(await readErrorBody(response)));
             }
 
             updateConnectionStatus(true);
@@ -12353,7 +12497,7 @@ Use this data to personalize your response. Comment on their current state when 
             });
 
             if (!response.ok) {
-                throw new Error('Server returned ' + response.status);
+                throw new Error('Server returned ' + response.status + describeRemoteError(await readErrorBody(response)));
             }
 
             updateConnectionStatus(true);

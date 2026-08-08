@@ -605,6 +605,39 @@
             border-radius: 4px;
         }
 
+        /* Reasoning models (Agent Pro, Transparent Reasoning) emit a <think> block
+           before every answer. Collapsed by default: available, never in the way. */
+        .reasoning-block {
+            background: rgba(196, 160, 255, 0.06);
+            border-left: 3px solid rgba(196, 160, 255, 0.35);
+            border-radius: 4px;
+            margin: 0 0 10px;
+            padding: 6px 10px;
+            font-size: 0.85rem;
+        }
+
+        .reasoning-block > summary {
+            cursor: pointer;
+            color: #c4a0ff;
+            font-size: 0.78rem;
+            letter-spacing: 0.3px;
+            list-style: none;
+            user-select: none;
+        }
+
+        .reasoning-block > summary::-webkit-details-marker { display: none; }
+        .reasoning-block > summary::before { content: '▸ '; }
+        .reasoning-block[open] > summary::before { content: '▾ '; }
+
+        .reasoning-block .reasoning-body {
+            margin-top: 8px;
+            color: #b9b3c9;
+            font-style: italic;
+            line-height: 1.5;
+            max-height: 320px;
+            overflow-y: auto;
+        }
+
         .palmistry-report {
             background: linear-gradient(135deg, rgba(255, 0, 85, 0.1) 0%, rgba(255, 107, 0, 0.1) 100%);
             border: 2px solid #ff0055;
@@ -1956,6 +1989,7 @@
                                 <optgroup label="🔧 Agent Mode — Tools & Structured Work">
                                     <option value="agent-qwen-mini">Qwen3.5 0.8B — Agent Mini + Vision (~0.6 GB, native tools)</option>
                                     <option value="agent-qwen">Qwen3.5 2B — Agent + Vision (~1.5 GB, native tools)</option>
+                                    <option value="agent-pro">LFM2.5-2.6B — Agent Pro (~1.9 GB, 8GB+ RAM)</option>
                                     <option value="agent-lite">LFM2.5-1.2B-Instruct — Agent Lite (~0.8 GB, any device)</option>
                                     <option value="agent-vision">LFM2.5-VL-1.6B — Agent + Vision (~1.8 GB, 6GB+ RAM)</option>
                                 </optgroup>
@@ -10239,6 +10273,34 @@ return result;</textarea>
                 family: 'qwen35',
                 nativeTools: true,
             },
+            // Same lfm2 / Lfm2ForCausalLM architecture agent-lite already loads, so the
+            // stock text-generation worker path handles it — no custom ORT-Web loader
+            // like agent-vision needs.
+            //
+            // No WASM path, by construction. Both INT4 variants use a quantized input
+            // embedding, and unlike LFM2.5-350M there is no q4f32 export keeping the
+            // embedding as an FP32 Gather. The repo ships model_q4 / model_q4f16 /
+            // model_q8 / model_fp16 but no model_quantized, so the WASM dtype coercion
+            // (q4 → 'quantized') would 404. It never gets that far: the model is absent
+            // from WASM_SAFE_MODELS, so loadLocalModel() refuses it up front with a
+            // readable message instead of a "could not locate file" error.
+            'agent-pro': {
+                id: 'LiquidAI/LFM2.5-2.6B-ONNX',
+                name: 'LFM2.5-2.6B — Agent Pro',
+                params: '~2.7B',
+                download: '~1.9 GB',
+                minMemory: 8,
+                speed: 'Moderate',
+                quality: 'Best tool calling',
+                type: 'text-generation',
+                dtype: 'q4',
+                category: 'agent',
+                family: 'lfm25',
+                // Pure reasoning model — its chat template injects <think> at the start
+                // of EVERY assistant turn and there is no non-thinking variant. See
+                // stripThinkBlocks(): the reasoning must never reach extractToolCalls().
+                reasoning: true,
+            },
             'agent-lite': {
                 id: 'LiquidAI/LFM2.5-1.2B-Instruct-ONNX',
                 name: 'LFM2.5-1.2B-Instruct — Agent Lite',
@@ -10283,6 +10345,7 @@ return result;</textarea>
                 dtype: 'q4',
                 category: 'reason',
                 family: 'lfm25',
+                reasoning: true,   // reasoning-only, same <think> handling as agent-pro
             },
             'reason-bonsai-4b': {
                 // Bonsai's ternary (1.58-bit) native compression was preserved down to
@@ -12200,8 +12263,44 @@ Use this data to personalize your response. Comment on their current state when 
         // the mid-stream (partial, unclosed) and final (closed) forms.
         function stripThinkBlocks(text) {
             return text
-                .replace(/<think>[\s\S]*?<\/think>\s*/g, '')  // completed blocks
-                .replace(/<think>[\s\S]*$/, '');              // unclosed tail during streaming
+                .replace(/<think>[\s\S]*?<\/think>\s*/gi, '') // completed blocks
+                .replace(/<think>[\s\S]*$/i, '');             // unclosed tail: mid-stream, or truncated by max_tokens
+        }
+
+        // The inverse of stripThinkBlocks — every reasoning block, for display only.
+        // Handles the unterminated case too: when generation hits the token cap
+        // mid-thought there is no closing tag, and dropping that tail on the floor
+        // would lose the only thing the model actually produced.
+        function collectReasoning(text) {
+            const parts = [];
+            const closed = /<think>([\s\S]*?)<\/think>/gi;
+            let m;
+            while ((m = closed.exec(text || '')) !== null) parts.push(m[1]);
+            const tail = (text || '').replace(/<think>[\s\S]*?<\/think>/gi, '');
+            const open = tail.search(/<think>/i);
+            if (open !== -1) parts.push(tail.slice(open).replace(/<think>/i, ''));
+            return parts.join('\n\n').trim();
+        }
+
+        // Sophia's whole posture is showing her work, so the reasoning is rendered
+        // collapsed rather than discarded — but it is never returned to the caller,
+        // because anything a generator returns lands in chatHistory and replaying
+        // reasoning fills the context window within a few turns.
+        function reasoningDetailsHTML(reasoning) {
+            if (!reasoning) return '';
+            const esc = String(reasoning)
+                .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            return '<details class="reasoning-block"><summary>💭 Sophia\'s reasoning</summary>' +
+                   '<div class="reasoning-body">' + esc + '</div></details>';
+        }
+
+        // Non-streaming path: the generator knows the reasoning, processResponse does
+        // the rendering. Consume-once so it can't be attached to a later message.
+        let pendingReasoningHTML = '';
+        function consumePendingReasoningHTML() {
+            const html = pendingReasoningHTML;
+            pendingReasoningHTML = '';
+            return html;
         }
 
         // ── Agentic tool-use path (web_search, …) ───────────────────────────
@@ -12365,6 +12464,7 @@ Use this data to personalize your response. Comment on their current state when 
             if (!stripped.trim()) {
                 throw new Error('Model returned empty response — may be out of GPU memory. Try a shorter question or switch to a smaller model.');
             }
+            pendingReasoningHTML = reasoningDetailsHTML(collectReasoning(fullResponse));
             return stripped;
         }
 
@@ -12375,13 +12475,17 @@ Use this data to personalize your response. Comment on their current state when 
             let fullResponse = '';
             await workerGenerate(chatMessages, (token) => {
                 fullResponse += token;
-                // Display with think blocks hidden — reasoning is for the model, not the UI.
+                // Mid-stream the reasoning stays hidden — it arrives before the answer,
+                // so showing it live would make the whole wait look like the response.
                 updateStreamingMessage(streamingMessageId, stripThinkBlocks(fullResponse));
             });
             const stripped = stripThinkBlocks(fullResponse);
             if (!stripped.trim()) {
                 throw new Error('Model returned empty response — may be out of GPU memory. Try a shorter question or switch to a smaller model.');
             }
+            // Once the answer exists, put the reasoning back above it, collapsed.
+            const reasoningHTML = reasoningDetailsHTML(collectReasoning(fullResponse));
+            if (reasoningHTML) updateStreamingMessage(streamingMessageId, reasoningHTML + stripped);
             return stripped;
         }
 
@@ -12783,6 +12887,8 @@ Use this data to personalize your response. Comment on their current state when 
 
         // ── Dual-mode non-streaming dispatcher ──
         async function generateResponse(prompt, files = []) {
+            // Reasoning from an earlier turn must never attach to this answer.
+            pendingReasoningHTML = '';
             const messages = buildMessages(prompt, files);
 
             const useLocal = shouldUseLocal();
@@ -12892,6 +12998,18 @@ Use this data to personalize your response. Comment on their current state when 
         }
 
         async function processResponse(response) {
+            // Reasoning models (agent-pro, reason-lite) deliberate about tools in prose
+            // before deciding — "I could call TOOL_CALL: {"tool":"neural_iching"...} but
+            // the user didn't ask for a reading". extractToolCalls() scans the whole
+            // string, so parsing that block casts a hexagram the model explicitly
+            // decided against. The reasoning must never reach the parser.
+            //
+            // The local generators already strip before returning, so this is a no-op
+            // there. It is not redundant: the remote path (LM Studio / Ollama serving a
+            // thinking model) hands us raw text, and every tool-follow-up round trip
+            // comes back through here too.
+            response = stripThinkBlocks(response);
+
             // Small local models don't use tools — skip expensive regex parsing
             const skipToolProcessing = shouldUseLocal() && !config.fullPromptLocal;
 
@@ -13013,10 +13131,12 @@ Use this data to personalize your response. Comment on their current state when 
                 content: finalResponse
             };
 
+            // chatHistory carries the answer only — never the reasoning. The <details>
+            // is display, appended after the push so it can't be replayed next turn.
             chatHistory.push(assistantMessage);
-            
+
             if (!config.streamingEnabled) {
-                addMessageToUI('assistant', finalResponse);
+                addMessageToUI('assistant', consumePendingReasoningHTML() + finalResponse);
             }
 
             // Voice output - stream complete message

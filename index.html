@@ -1950,7 +1950,6 @@
                             Model Size:
                             <select id="localModelPicker" onchange="onLocalModelChange()" style="margin-left: 6px; padding: 2px 4px; font-size: 0.8rem; background: #1a1a2e; color: #fff; border: 1px solid #333; border-radius: 4px;">
                                 <optgroup label="🌸 Warm Voice — Oracle & Heart">
-                                    <option value="lite">Gemma 3 1B — Warm Lite (~0.6 GB, any device)</option>
                                     <option value="e2b">Gemma 4 E2B — Warm + Vision + Tools (~3.2 GB, 10GB+ RAM)</option>
                                     <option value="e4b">Gemma 4 E4B — Warm Deep (~5.1 GB, 16GB+ RAM)</option>
                                 </optgroup>
@@ -7266,7 +7265,7 @@ return result;</textarea>
 
             console.log('🔍 Device Detection Complete:', deviceInfo);
             console.log('⚙️ Auto Configuration:', autoConfig);
-            console.log('🧠 Auto-selected model:', LOCAL_MODELS[selectedLocalModel].name);
+            console.log('🧠 Auto-selected model:', LOCAL_MODELS[normalizeSelectedLocalModel()].name);
         }
 
         function applyManualConfiguration() {
@@ -7337,9 +7336,16 @@ return result;</textarea>
             // Defaults by RAM tier — intent-organized:
             //   <4GB  → Spark (Qwen 0.5B)
             //   4–6   → Agent Lite (LFM2.5-1.2B-Instruct)
-            //   6–10  → Warm Lite (Gemma 3 1B, preferred over Agent at this tier)
+            //   6–10  → Agent + Vision (Qwen3.5 2B)
             //   10–16 → Warm + Vision (Gemma 4 E2B) ← overall default
             //   16+   → Warm Deep (Gemma 4 E4B)
+            //
+            // The 6–10 tier used to be Warm Lite (Gemma 3 1B). With that entry retired
+            // there is no warm-voice model left under 3.2 GB, so this tier gets Qwen3.5
+            // 2B instead: 1.5 GB, minMemory 6, native tool calling and vision. It keeps
+            // the ladder ordered (more capable than the 4–6 tier's Agent Lite, smaller
+            // than the 10–16 tier's E2B) at the cost of an agent voice rather than a
+            // warm one at this tier. Revisit if a small warm model appears.
             if (effectiveMemory >= 16) {
                 selectedLocalModel = 'e4b';
                 config.contextLength = 32768;
@@ -7357,13 +7363,13 @@ return result;</textarea>
                 config.memoryBudget = effectiveMemory + 'GB est.';
                 config.features = ['Warm Voice', 'Vision + Audio', 'E2B Quality', 'Image Analysis'];
             } else if (effectiveMemory >= 6) {
-                selectedLocalModel = 'lite';
+                selectedLocalModel = 'agent-qwen';
                 config.contextLength = 8192;
                 config.maxTokens = 512;
-                config.modelTier = 'lite';
-                config.recommendedModel = 'Gemma 3 1B — Warm Lite (~0.6 GB)';
-                config.memoryBudget = effectiveMemory + 'GB est. (Lite)';
-                config.features = ['Warm Voice', 'Text', 'Fast', 'Compact'];
+                config.modelTier = 'agent-qwen';
+                config.recommendedModel = 'Qwen3.5 2B — Agent + Vision (~1.5 GB)';
+                config.memoryBudget = effectiveMemory + 'GB est. (Agent)';
+                config.features = ['Agent Mode', 'Native Tool Calling', 'Vision', 'Fast'];
             } else if (effectiveMemory >= 4) {
                 selectedLocalModel = 'agent-lite';
                 config.contextLength = 4096;
@@ -7390,20 +7396,26 @@ return result;</textarea>
                 }
                 // Mobile WebGPU is unstable — Android aggressively reclaims GPU
                 // after the first inference, causing [Device] is lost errors.
-                // Downgrade WebGPU-only models (E2B/E4B/LFM2-VL) to Gemma 3 1B which
-                // runs on WASM and is immune to GPU context loss.
+                // Downgrade WebGPU-only models (E2B/E4B/LFM2-VL) to Qwen 0.5B, the
+                // only remaining WASM-safe entry, which is immune to GPU context loss.
                 // Use the WASM_SAFE_MODELS allowlist rather than sniffing dtype —
                 // the old dtype test missed q2f16 (ternary Bonsai), which is just as
                 // WebGPU-only as q4/q4f16.
+                //
+                // KNOWN OVER-REACH: this fires on a user-agent match plus a hardware
+                // guess, not on an actual WebGPU probe. A 24 GB flagship with working
+                // WebGPU that isHighEndMobileHardware() fails to recognise gets dropped
+                // all the way to Qwen 0.5B. Gating on a real probe result is the right
+                // fix — deliberately left for its own commit, not folded in here.
                 if (!isWasmSafeModel(selectedLocalModel) && !isHighEndMobileHardware()) {
-                    console.log(`📱 Mobile: downgrading ${selectedLocalModel} → lite (WASM-safe, avoids WebGPU instability)`);
-                    selectedLocalModel = 'lite';
-                    config.contextLength = Math.min(config.contextLength, 8192);
-                    config.maxTokens = Math.min(config.maxTokens, 512);
-                    config.modelTier = 'lite';
-                    config.recommendedModel = 'Gemma 3 1B (Mobile — WASM safe)';
+                    console.log(`📱 Mobile: downgrading ${selectedLocalModel} → tiny (WASM-safe, avoids WebGPU instability)`);
+                    selectedLocalModel = 'tiny';
+                    config.contextLength = Math.min(config.contextLength, 4096);
+                    config.maxTokens = Math.min(config.maxTokens, 256);
+                    config.modelTier = 'tiny';
+                    config.recommendedModel = 'Qwen 0.5B (Mobile — WASM safe)';
                     config.memoryBudget = effectiveMemory + 'GB est. (Mobile WASM)';
-                    config.features = ['Text Only', 'Fast', 'Stable on Mobile'];
+                    config.features = ['Text Only', 'Instant', 'Stable on Mobile'];
                 } else if (modelDownloadGB(selectedLocalModel) > MOBILE_AUTO_MAX_GB) {
                     // A GPU-capable phone, but effectiveMemory is inferred from core
                     // count and every flagship reports 8 cores — so this tier could be
@@ -10162,18 +10174,12 @@ return result;</textarea>
                 dtype: 'quantized',
                 category: 'tiny',
             },
-            'lite': {
-                id: 'onnx-community/gemma-3-1b-it-ONNX',
-                name: 'Gemma 3 1B — Warm Lite',
-                params: '~1B',
-                download: '~0.6 GB',
-                minMemory: 6,
-                speed: 'Very fast',
-                quality: 'Good',
-                type: 'text-generation',
-                dtype: 'quantized',
-                category: 'warm',
-            },
+            // 'lite' (onnx-community/gemma-3-1b-it-ONNX) was REMOVED — do not re-add.
+            // It does not load. Three independent signals: ONNX Runtime issue #26732
+            // (Gemma-3 fp16/q4f16 emits garbage on WebGPU), a community WebGPU demo
+            // reporting this exact repo failing outright, and it never loading on any
+            // phone we have. It was the WASM recovery target and the mobile downgrade
+            // target, which is why its removal touched five call sites.
             'e2b': {
                 id: 'onnx-community/gemma-4-E2B-it-ONNX',
                 name: 'Gemma 4 E2B — Warm + Vision + Tools',
@@ -10319,8 +10325,15 @@ return result;</textarea>
         // Rewriting dtype → 'quantized' does NOT rescue the Gemma 4 family: their
         // embed_tokens subgraph is block-quantized in the int8 export too, so
         // embed_tokens_quantized.onnx still carries the op. Only plain-int8
-        // single-graph exports (Qwen 0.5B, Gemma 3 1B) load on WASM.
-        const WASM_SAFE_MODELS = new Set(['tiny', 'lite']);
+        // single-graph exports load on WASM.
+        //
+        // Since Gemma 3 1B was retired, Qwen 0.5B is the ONLY WASM-safe model in the
+        // registry — everything else is q4/q4f16/q2f16 and therefore WebGPU-only.
+        // That is a real capability reduction on CPU-only devices and on GPU-loss
+        // recovery, and it is the honest price of dropping a model that never loaded.
+        // Do not "fix" it by re-adding a broken entry; fix it by finding a model that
+        // ships a genuine plain-int8 single-graph export.
+        const WASM_SAFE_MODELS = new Set(['tiny']);
 
         function isWasmSafeModel(key) { return WASM_SAFE_MODELS.has(key); }
 
@@ -10350,7 +10363,7 @@ return result;</textarea>
         // Best model that fits the mobile ceiling, most capable first. Native tool
         // callers are preferred so agent mode still works on a phone.
         function bestMobileAutoModel() {
-            const preference = ['agent-qwen', 'agent-qwen-mini', 'lite', 'tiny'];
+            const preference = ['agent-qwen', 'agent-qwen-mini', 'tiny'];
             return preference.find(k => LOCAL_MODELS[k] && modelDownloadGB(k) <= MOBILE_AUTO_MAX_GB) || 'tiny';
         }
 
@@ -10365,8 +10378,25 @@ return result;</textarea>
         // Active model selection — set by device detection, overridable by user
         let selectedLocalModel = 'e2b'; // safe default
 
+        // Fallback when a model key can't be resolved. Small, current, present in the
+        // registry — the point is to land somewhere real, not somewhere optimal.
+        const FALLBACK_LOCAL_MODEL = 'agent-lite';
+
+        // Registry entries get retired between releases (Gemma 3 1B, v76). Any key that
+        // outlives its entry — restored UI state, a stale device-detection branch, a
+        // `<select>` reporting "" because its option was deleted — reaches
+        // LOCAL_MODELS[key].id as `undefined.id` and throws mid-load rather than
+        // failing cleanly. Funnel every restore through here.
+        function normalizeSelectedLocalModel() {
+            if (!LOCAL_MODELS[selectedLocalModel]) {
+                console.warn(`🧠 Model "${selectedLocalModel}" is not in the registry (retired?) — falling back to ${FALLBACK_LOCAL_MODEL}.`);
+                selectedLocalModel = FALLBACK_LOCAL_MODEL;
+            }
+            return selectedLocalModel;
+        }
+
         function getLocalModelId() {
-            return LOCAL_MODELS[selectedLocalModel].id;
+            return LOCAL_MODELS[normalizeSelectedLocalModel()].id;
         }
 
         const LOCAL_MODEL_DTYPE = 'q4f16';
@@ -11758,7 +11788,15 @@ self.onmessage = async (e) => {
         // Handle manual model selection change
         function onLocalModelChange() {
             const picker = document.getElementById('localModelPicker');
-            const newModel = picker.value;
+            // A `<select>` whose option was deleted reports "" — and browsers restore
+            // form state across a soft reload, so a returning user can land here with
+            // a retired key. Repair the picker before anything reads LOCAL_MODELS.
+            let newModel = picker.value;
+            if (!LOCAL_MODELS[newModel]) {
+                console.warn(`🧠 Picker value "${newModel}" is not in the registry (retired?) — falling back to ${FALLBACK_LOCAL_MODEL}.`);
+                newModel = FALLBACK_LOCAL_MODEL;
+                picker.value = newModel;
+            }
             const info = LOCAL_MODELS[newModel];
 
             // If model is already loaded with a different selection, warn user
@@ -11807,7 +11845,7 @@ self.onmessage = async (e) => {
         function syncModelPickerUI() {
             const picker = document.getElementById('localModelPicker');
             if (picker) {
-                picker.value = selectedLocalModel;
+                picker.value = normalizeSelectedLocalModel();
                 onLocalModelChange();
             }
         }
@@ -11846,10 +11884,13 @@ self.onmessage = async (e) => {
         // Best WASM-compatible model for recovery fallback.
         // Gemma 4 E2B/E4B use GatherBlockQuantized — a WebGPU-only ONNX op with
         // no WASM kernel, so we must switch to a different model entirely.
+        //
+        // Since Gemma 3 1B was retired, 'tiny' (Qwen 0.5B) is the only WASM-safe
+        // entry left, so recovery has exactly one destination and it is a real step
+        // down in quality. That is the honest cost of dropping a model that never
+        // loaded; the fix is a new plain-int8 export, not a resurrected broken one.
         function getBestWasmModel() {
-            // Prefer 'lite' (Gemma 3 1B) — good quality, WASM-safe int8
-            // Fall back to 'tiny' (Qwen 0.5B) if lite isn't defined
-            return LOCAL_MODELS['lite'] ? 'lite' : 'tiny';
+            return 'tiny';
         }
 
         // Silently reload the local model after WebGPU device loss.
@@ -11871,9 +11912,12 @@ self.onmessage = async (e) => {
                 const wasmBox = document.getElementById('forceWasm');
                 if (wasmBox) wasmBox.checked = true;
 
-                // If the current model is WebGPU-only (q4f16), switch to a WASM-safe model
+                // If the current model is WebGPU-only, switch to a WASM-safe model.
+                // Test the allowlist, not the dtype string: the old q4/q4f16 check
+                // missed q2f16 (Bonsai) and the object dtype used by agent-vision,
+                // so those two limped into a WASM load that cannot succeed.
                 const currentModel = LOCAL_MODELS[selectedLocalModel];
-                const needsModelSwitch = currentModel.dtype === 'q4f16' || currentModel.dtype === 'q4';
+                const needsModelSwitch = !isWasmSafeModel(selectedLocalModel);
                 const recoveryModelKey = needsModelSwitch ? getBestWasmModel() : selectedLocalModel;
                 const modelInfo = LOCAL_MODELS[recoveryModelKey];
 

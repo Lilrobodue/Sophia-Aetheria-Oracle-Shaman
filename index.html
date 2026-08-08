@@ -8210,16 +8210,25 @@ return result;</textarea>
                 { role: 'system', content: buildProactiveSystemPrompt() },
                 { role: 'user', content: `You just noticed this about the user's live state:\n"${factText}"\n\nShare it now in your own voice — one or two warm sentences.` }
             ];
+            // A reasoning model spends its budget deliberating before it says anything,
+            // so 140 tokens would be consumed entirely inside the <think> block and
+            // never reach the actual line. Give it room to finish thinking AND speak;
+            // if it still doesn't close the block we return null and the caller falls
+            // back to the template sentence.
+            const preopened = activeModelPreopensReasoning();
             let full = '';
             try {
                 await Promise.race([
-                    workerGenerate(messages, (t) => { full += t; }, 140),
+                    workerGenerate(messages, (t) => { full += t; }, preopened ? 384 : 140),
                     new Promise((_, reject) => setTimeout(() => reject(new Error('proactive timeout')), 15000))
                 ]);
             } catch (e) {
                 return null;
             }
-            const out = stripThinkBlocks(full).trim();
+            // Normalise before stripping. This path speaks UNPROMPTED, so a leaked
+            // reasoning block here is the worst version of the bug: Sophia narrating
+            // her own planning aloud, unasked, in the middle of a session.
+            const out = stripThinkBlocks(normalizeReasoningTags(full, preopened)).trim();
             return out || null;
         }
 
@@ -10468,10 +10477,18 @@ return result;</textarea>
                 dtype: 'q4',
                 category: 'agent',
                 family: 'lfm25',
-                // Pure reasoning model — its chat template injects <think> at the start
-                // of EVERY assistant turn and there is no non-thinking variant. See
-                // stripThinkBlocks(): the reasoning must never reach extractToolCalls().
+                // Pure reasoning model — no non-thinking variant exists.
                 reasoning: true,
+                // And its chat template pre-opens the block: with
+                // add_generation_prompt it appends "<|im_start|>assistant\n<think>"
+                // to the PROMPT, so with skip_prompt:true generation begins INSIDE
+                // the reasoning and the opening tag never reaches us. Output is
+                //     ...reasoning...</think>the answer
+                // Verified against the repo's tokenizer_config.json, line 123 of the
+                // template. LFM2.5-1.2B-Thinking does NOT do this — it emits its own
+                // <think> — so this is a per-model fact, not a family one. See
+                // normalizeReasoningTags().
+                reasoningPreopened: true,
                 license: { name: 'LFM Open License v1.0', url: 'https://huggingface.co/LiquidAI/LFM2.5-2.6B-ONNX/blob/main/LICENSE' },
             },
             'agent-lite': {
@@ -12475,6 +12492,55 @@ Use this data to personalize your response. Comment on their current state when 
                 .replace(/<think>[\s\S]*$/i, '');             // unclosed tail: mid-stream, or truncated by max_tokens
         }
 
+        // Reasoning output arrives in three shapes, and everything downstream —
+        // the chat bubble, text-to-speech, chatHistory, extractToolCalls — assumes
+        // the first:
+        //   (a) "<think>reasoning</think>answer"  — well-formed. Most models,
+        //       including LFM2.5-1.2B-Thinking, which emits its own opening tag.
+        //   (b) "reasoning</think>answer"  — no opening tag at all. LFM2.5-2.6B's
+        //       chat template appends "<|im_start|>assistant\n<think>" to the PROMPT,
+        //       so with skip_prompt:true generation starts inside the block.
+        //   (c) no tags at all, on a model that always opens in reasoning —
+        //       generation hit max_tokens before it ever closed the block, so the
+        //       whole output is reasoning and there is no answer.
+        //
+        // Shape (b) is why Sophia was reading her own planning aloud: tag-matching
+        // on <think> found nothing, so the deliberation went straight to the bubble
+        // and the voice. Re-insert the implied opening tag and the rest of the
+        // pipeline works unchanged.
+        //
+        // `preopened` (registry: reasoningPreopened) is needed only to recognise (c);
+        // without it a truncated reasoning dump is indistinguishable from a reply.
+        //
+        // ONLY EVER CALL THIS ON RAW MODEL OUTPUT. With preopened=true, tag-free text
+        // is assumed to be case (c) and gets wrapped as reasoning — so passing an
+        // already-stripped answer through would delete it entirely. Call sites that
+        // handle post-processed text (processResponse) deliberately omit the flag,
+        // which limits the function to the stray-</think> repair.
+        function normalizeReasoningTags(text, preopened) {
+            const s = text || '';
+            if (/<think>/i.test(s.split(/<\/think>/i)[0])) return s;   // (a)
+            if (/<\/think>/i.test(s)) return '<think>' + s;            // (b)
+            return preopened ? '<think>' + s : s;                      // (c), or no reasoning
+        }
+
+        // Does the active local model's template pre-open the reasoning block?
+        function activeModelPreopensReasoning() {
+            const info = LOCAL_MODELS[selectedLocalModel];
+            return !!(info && info.reasoningPreopened);
+        }
+
+        // Still inside the reasoning block: a pre-opened model that hasn't emitted
+        // </think> yet. Everything produced so far is deliberation, not answer.
+        function reasoningStillOpen(raw, preopened) {
+            return !!preopened && !/<\/think>/i.test(raw || '');
+        }
+
+        // Same condition once generation has finished — meaning it hit max_tokens
+        // before closing the block, so there is no answer at all. Worth naming
+        // separately: the user needs a different remedy than "out of GPU memory".
+        const reasoningRanOutOfTokens = reasoningStillOpen;
+
         // The inverse of stripThinkBlocks — every reasoning block, for display only.
         // Handles the unterminated case too: when generation hits the token cap
         // mid-thought there is no closing tag, and dropping that tail on the floor
@@ -12557,7 +12623,11 @@ Use this data to personalize your response. Comment on their current state when 
                 const parts = [];
                 for (const t of trail) parts.push(dim(t));
                 if (phaseLabel) parts.push(dim('<em>✨ ' + phaseLabel + '</em>'));
-                const { reasoning, body } = splitThink(currentFull);
+                // Normalise first: on a pre-opened model splitThink() finds no opening
+                // tag, reports reasoning:'' and hands the whole deliberation back as
+                // the body — which then renders as if it were Sophia's answer.
+                const { reasoning, body } = splitThink(
+                    normalizeReasoningTags(currentFull, activeModelPreopensReasoning()));
                 if (reasoning) parts.push(dim('<em>💭 ' + escHtml(reasoning).replace(/\s+/g, ' ') + '</em>'));
                 const looksTool = /^[\[{]/.test(body) || /^TOOL_CALL:/i.test(body);
                 if (body && !looksTool) parts.push(body);
@@ -12571,7 +12641,8 @@ Use this data to personalize your response. Comment on their current state when 
             const llmCall = ({ messages, tools: toolSchemas }) => new Promise((resolve, reject) => {
                 currentFull = '';
                 workerGenerate(messages, (t) => { currentFull += t; render(); }, undefined, toolSchemas)
-                    .then(() => resolve({ content: stripThinkBlocks(currentFull) }))
+                    .then(() => resolve({ content: stripThinkBlocks(
+                        normalizeReasoningTags(currentFull, activeModelPreopensReasoning())) }))
                     .catch(reject);
             });
 
@@ -12666,13 +12737,17 @@ Use this data to personalize your response. Comment on their current state when 
             if (!localInference.ready || !localInference.worker) throw new Error('Local model not loaded');
             if (agentToolsActive()) return await runLocalAgentTurn(messages, null);
             const chatMessages = prepareLocalMessages(messages);
+            const preopened = activeModelPreopensReasoning();
             let fullResponse = '';
             await workerGenerate(chatMessages, (token) => { fullResponse += token; });
-            const stripped = stripThinkBlocks(fullResponse);
+            const normalized = normalizeReasoningTags(fullResponse, preopened);
+            const stripped = stripThinkBlocks(normalized);
             if (!stripped.trim()) {
-                throw new Error('Model returned empty response — may be out of GPU memory. Try a shorter question or switch to a smaller model.');
+                throw new Error(reasoningRanOutOfTokens(fullResponse, preopened)
+                    ? 'Sophia ran out of tokens while still thinking, so there was no answer left to give. Raise Max Tokens in Settings, or choose a model that answers without reasoning first.'
+                    : 'Model returned empty response — may be out of GPU memory. Try a shorter question or switch to a smaller model.');
             }
-            pendingReasoningHTML = reasoningDetailsHTML(collectReasoning(fullResponse));
+            pendingReasoningHTML = reasoningDetailsHTML(collectReasoning(normalized));
             return stripped;
         }
 
@@ -12680,19 +12755,29 @@ Use this data to personalize your response. Comment on their current state when 
             if (!localInference.ready || !localInference.worker) throw new Error('Local model not loaded');
             if (agentToolsActive()) return await runLocalAgentTurn(messages, streamingMessageId);
             const chatMessages = prepareLocalMessages(messages);
+            const preopened = activeModelPreopensReasoning();
             let fullResponse = '';
             await workerGenerate(chatMessages, (token) => {
                 fullResponse += token;
                 // Mid-stream the reasoning stays hidden — it arrives before the answer,
                 // so showing it live would make the whole wait look like the response.
-                updateStreamingMessage(streamingMessageId, stripThinkBlocks(fullResponse));
+                // On a pre-opened model there is no closing tag to strip against until
+                // </think> lands, so hold a placeholder rather than streaming Sophia's
+                // private deliberation into the bubble.
+                updateStreamingMessage(streamingMessageId,
+                    reasoningStillOpen(fullResponse, preopened)
+                        ? '<em style="opacity:0.6">💭 Sophia is thinking…</em>'
+                        : stripThinkBlocks(normalizeReasoningTags(fullResponse, preopened)));
             });
-            const stripped = stripThinkBlocks(fullResponse);
+            const normalized = normalizeReasoningTags(fullResponse, preopened);
+            const stripped = stripThinkBlocks(normalized);
             if (!stripped.trim()) {
-                throw new Error('Model returned empty response — may be out of GPU memory. Try a shorter question or switch to a smaller model.');
+                throw new Error(reasoningRanOutOfTokens(fullResponse, preopened)
+                    ? 'Sophia ran out of tokens while still thinking, so there was no answer left to give. Raise Max Tokens in Settings, or choose a model that answers without reasoning first.'
+                    : 'Model returned empty response — may be out of GPU memory. Try a shorter question or switch to a smaller model.');
             }
             // Once the answer exists, put the reasoning back above it, collapsed.
-            const reasoningHTML = reasoningDetailsHTML(collectReasoning(fullResponse));
+            const reasoningHTML = reasoningDetailsHTML(collectReasoning(normalized));
             if (reasoningHTML) updateStreamingMessage(streamingMessageId, reasoningHTML + stripped);
             return stripped;
         }
@@ -13215,8 +13300,10 @@ Use this data to personalize your response. Comment on their current state when 
             // The local generators already strip before returning, so this is a no-op
             // there. It is not redundant: the remote path (LM Studio / Ollama serving a
             // thinking model) hands us raw text, and every tool-follow-up round trip
-            // comes back through here too.
-            response = stripThinkBlocks(response);
+            // comes back through here too. normalizeReasoningTags() with no flag still
+            // catches a stray </think> with no opener, which is how a pre-opened model
+            // arrives from a remote server too.
+            response = stripThinkBlocks(normalizeReasoningTags(response));
 
             // Small local models don't use tools — skip expensive regex parsing
             const skipToolProcessing = shouldUseLocal() && !config.fullPromptLocal;

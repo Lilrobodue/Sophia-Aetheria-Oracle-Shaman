@@ -1149,6 +1149,31 @@
             display: flex;
             justify-content: space-between;
             align-items: center;
+            gap: 8px;
+        }
+
+        /* cursor:help advertises the title= tooltip; the row is also tappable to
+           unclamp the description, for touch where hover doesn't exist. */
+        .tool-info {
+            flex: 1;
+            min-width: 0;
+            overflow: hidden;
+            cursor: help;
+        }
+
+        .tool-desc {
+            color: #888;
+            font-size: 0.75rem;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .tool-desc.expanded {
+            overflow: visible;
+            white-space: normal;
+            line-height: 1.45;
+            margin-top: 2px;
         }
 
         .tool-toggle {
@@ -1441,6 +1466,12 @@
             </div>
 
             <div class="sidebar-scroll">
+            <div class="sidebar-section">
+                <button class="btn btn-small btn-secondary" onclick="openSettings()" style="width: 100%;">
+                    ⚙️ Settings
+                </button>
+            </div>
+
             <div class="sidebar-section">
                 <h3>📊 Performance Status</h3>
                 <div class="context-info" id="contextInfo">
@@ -1748,9 +1779,8 @@
             </div>
             <div class="sidebar-section">
                 <h3>⚙️ Quick Actions</h3>
-                <button class="btn btn-small btn-secondary" onclick="openSettings()" style="width: 100%; margin-bottom: 8px;">
-                    Settings
-                </button>
+                <!-- Settings moved to the top of the sidebar — it's the most-used
+                     entry point and shouldn't be a scroll away. -->
                 <button class="btn btn-small btn-secondary" onclick="openMCPConfigEditor()" style="width: 100%; margin-bottom: 8px;">
                     🔧 MCP Config
                 </button>
@@ -1761,7 +1791,7 @@
                     Export
                 </button>
             </div>
-            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v76</div>
+            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v77</div>
             </div><!-- end sidebar-scroll -->
         </div>
 
@@ -9693,10 +9723,23 @@ return result;</textarea>
                     `<button class="btn btn-small" style="padding: 2px 6px; margin-right: 8px; background: rgba(255, 0, 85, 0.3); border: 1px solid #ff0055;" onclick="deleteCustomTool('${tool.name}')">🗑️</button>` : 
                     '';
                 
+                // The description line is clipped to one line, so the full text needs
+                // somewhere to live. A native title= is the right tool here: the tool
+                // list is a max-height overflow-y:auto box, and a CSS tooltip would be
+                // clipped at its edge. title= also wraps arbitrary length for free and
+                // is reachable by screen readers.
+                //
+                // Descriptions are escaped rather than injected raw — custom and
+                // Sophia-created tools carry user/model-authored text.
+                const desc = tool.description || '';
+                const escHtml = (s) => String(s)
+                    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                const escAttr = (s) => escHtml(s).replace(/"/g, '&quot;');
+
                 toolItem.innerHTML = `
-                    <div style="flex: 1; overflow: hidden;">
+                    <div class="tool-info" title="${escAttr(tool.name + (desc ? ' — ' + desc : ''))}" onclick="toggleToolDescription(this)">
                         <div style="font-weight: 500;">${tool.name}${badge}</div>
-                        <div style="font-size: 0.75rem; color: #888; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${tool.description}</div>
+                        <div class="tool-desc">${escHtml(desc)}</div>
                     </div>
                     <div style="display: flex; align-items: center; gap: 8px;">
                         ${deleteBtn}
@@ -9705,6 +9748,15 @@ return result;</textarea>
                 `;
                 toolList.appendChild(toolItem);
             });
+        }
+
+        // Touch devices have no hover, so title= alone would hide the description from
+        // exactly the device Sophia is most used on. Tapping the name/description
+        // unclamps it inline. The toggle is a separate element, so this can't
+        // accidentally enable a tool.
+        function toggleToolDescription(el) {
+            const desc = el.querySelector('.tool-desc');
+            if (desc) desc.classList.toggle('expanded');
         }
 
         function deleteCustomTool(toolName) {

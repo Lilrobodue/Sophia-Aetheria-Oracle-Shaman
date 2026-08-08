@@ -605,6 +605,77 @@
             border-radius: 4px;
         }
 
+        /* Models & Licenses panel. Gold rather than the app's magenta: this is
+           reference material, not oracle work, and shouldn't compete with it.
+           Cormorant Garamond / JetBrains Mono are named per house style but the app
+           imports no webfonts (offline-first PWA), so both fall back gracefully. */
+        .license-panel {
+            background: rgba(0, 0, 0, 0.35);
+            border: 1px solid rgba(212, 175, 55, 0.25);
+            border-radius: 6px;
+            padding: 8px 10px;
+        }
+
+        .license-panel > summary {
+            cursor: pointer;
+            color: #d4af37;
+            font-family: 'Cormorant Garamond', Georgia, 'Times New Roman', serif;
+            font-size: 0.95rem;
+            letter-spacing: 0.3px;
+            list-style: none;
+            user-select: none;
+        }
+
+        .license-panel > summary::-webkit-details-marker { display: none; }
+        .license-panel > summary::before { content: '▸ '; }
+        .license-panel[open] > summary::before { content: '▾ '; }
+
+        .license-intro,
+        .license-note {
+            color: #9a9a9a;
+            font-size: 0.7rem;
+            line-height: 1.55;
+            margin: 8px 0;
+        }
+
+        .license-note { border-top: 1px solid rgba(212, 175, 55, 0.15); padding-top: 8px; }
+        .license-note strong { color: #d4af37; font-weight: 600; }
+        .license-note code {
+            font-family: 'JetBrains Mono', 'Courier New', monospace;
+            font-size: 0.65rem;
+            color: #b9b3c9;
+        }
+
+        .license-row {
+            border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+            padding: 7px 0;
+        }
+
+        .license-row:last-child { border-bottom: none; }
+
+        .license-model {
+            color: #e4e4e4;
+            display: block;
+            font-size: 0.75rem;
+            text-decoration: none;
+        }
+
+        .license-model:hover { color: #d4af37; text-decoration: underline; }
+
+        .license-repo {
+            color: #6f6f7a;
+            font-family: 'JetBrains Mono', 'Courier New', monospace;
+            font-size: 0.63rem;
+            letter-spacing: 0.2px;
+            margin-top: 1px;
+            overflow-wrap: anywhere;
+        }
+
+        .license-name { font-size: 0.68rem; margin-top: 3px; }
+        .license-name a { color: #d4af37; text-decoration: none; }
+        .license-name a:hover { text-decoration: underline; }
+        .license-unverified { color: #ffaa00; font-style: italic; }
+
         /* Reasoning models (Agent Pro, Transparent Reasoning) emit a <think> block
            before every answer. Collapsed by default: available, never in the way. */
         .reasoning-block {
@@ -1649,6 +1720,32 @@
                 </div>
             </div>
 
+            <div class="sidebar-section">
+                <h3>📜 Models &amp; Licenses</h3>
+                <details class="license-panel">
+                    <summary>Whose weights Sophia runs</summary>
+                    <p class="license-intro">
+                        Sophia runs models on your device. The weights are downloaded directly from
+                        Hugging Face by your browser and cached locally — Sophia doesn't host or
+                        redistribute them. Each model carries its own license, listed below. If you
+                        fork or build on Sophia, these are the terms you inherit.
+                    </p>
+                    <div id="modelLicenseList" class="license-list"></div>
+                    <p class="license-note">
+                        This list is informational, not a legal notice. Most obligations in these
+                        licenses trigger on <em>distribution</em>, which Hugging Face is doing rather
+                        than Sophia. Two carry conditions worth knowing:
+                        <strong>LFM Open License v1.0</strong> is Apache-2.0-based and permits
+                        commercial use below $10M annual revenue, with nonprofits exempt from that
+                        threshold. The <strong>Gemma Terms of Use</strong> carry pass-through
+                        requirements for anyone making Gemma available to others — Sophia causes your
+                        browser to fetch Google's hosted weights, and the linked terms are the ones to
+                        read. Note that the Gemma 4 ONNX mirrors label their own metadata
+                        <code>apache-2.0</code> while linking Google's Gemma terms; the terms linked
+                        here are the ones the repository itself points to.
+                    </p>
+                </details>
+            </div>
             <div class="sidebar-section">
                 <h3>⚙️ Quick Actions</h3>
                 <button class="btn btn-small btn-secondary" onclick="openSettings()" style="width: 100%; margin-bottom: 8px;">
@@ -7017,6 +7114,9 @@ return result;</textarea>
                 // Load memory panel
                 renderMemoryPanel();
 
+                // Models & Licenses panel (static, straight from LOCAL_MODELS)
+                renderModelLicenses();
+
                 // Restore server preset UI
                 if (config.serverPreset) {
                     const presetEl = document.getElementById('serverPreset');
@@ -10195,6 +10295,13 @@ return result;</textarea>
         // Smart model picker — organized by intent (Warm / Agent / Reasoning / Spark).
         // `category` drives the dropdown optgroup and the italic helper line.
         // `family` selects tool-call formatting (lfm25 uses <|tool_list_start|>).
+        //
+        // `license` is the single source of truth for the Models & Licenses panel —
+        // there is no second hardcoded list to drift out of sync. Every field below
+        // was read off the Hugging Face model card, not inferred. An entry with NO
+        // license field renders as "not verified", which is the correct and honest
+        // display for a model whose terms nobody has confirmed. Leave it absent
+        // rather than guessing: a wrong licence notice is worse than a missing one.
         const LOCAL_MODELS = {
             'tiny': {
                 id: 'onnx-community/Qwen2.5-0.5B-Instruct',
@@ -10207,6 +10314,10 @@ return result;</textarea>
                 type: 'text-generation',
                 dtype: 'quantized',
                 category: 'tiny',
+                // The onnx-community mirror carries no license metadata at all; the
+                // upstream Qwen/Qwen2.5-0.5B-Instruct card states apache-2.0, so the
+                // link points upstream rather than at the mirror.
+                license: { name: 'Apache 2.0', url: 'https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct' },
             },
             // 'lite' (onnx-community/gemma-3-1b-it-ONNX) was REMOVED — do not re-add.
             // It does not load. Three independent signals: ONNX Runtime issue #26732
@@ -10225,6 +10336,12 @@ return result;</textarea>
                 type: 'gemma4-vision',
                 dtype: 'q4f16',
                 category: 'warm',
+                // The ONNX mirror's metadata says "apache-2.0" while its own
+                // license_link points at Google's Gemma 4 terms. Those are different
+                // documents saying different things, so the panel shows the terms the
+                // repo itself links to and flags the discrepancy rather than picking
+                // the more convenient of the two.
+                license: { name: 'Gemma Terms of Use', url: 'https://ai.google.dev/gemma/docs/gemma_4_license' },
             },
             'e4b': {
                 id: 'onnx-community/gemma-4-E4B-it-ONNX',
@@ -10237,6 +10354,7 @@ return result;</textarea>
                 type: 'gemma4-vision',
                 dtype: 'q4f16',
                 category: 'warm',
+                license: { name: 'Gemma Terms of Use', url: 'https://ai.google.dev/gemma/docs/gemma_4_license' },
             },
             // ── Qwen 3.5 — native tool calling ──────────────────────────────
             // Qwen ships a tool_use chat template, so with transformers.js >= 4.2.0
@@ -10258,6 +10376,7 @@ return result;</textarea>
                 category: 'agent',
                 family: 'qwen35',
                 nativeTools: true,
+                license: { name: 'Apache 2.0', url: 'https://huggingface.co/Qwen/Qwen3.5-0.8B/blob/main/LICENSE' },
             },
             'agent-qwen': {
                 id: 'onnx-community/Qwen3.5-2B-ONNX',
@@ -10272,6 +10391,7 @@ return result;</textarea>
                 category: 'agent',
                 family: 'qwen35',
                 nativeTools: true,
+                license: { name: 'Apache 2.0', url: 'https://huggingface.co/Qwen/Qwen3.5-2B/blob/main/LICENSE' },
             },
             // Same lfm2 / Lfm2ForCausalLM architecture agent-lite already loads, so the
             // stock text-generation worker path handles it — no custom ORT-Web loader
@@ -10300,6 +10420,7 @@ return result;</textarea>
                 // of EVERY assistant turn and there is no non-thinking variant. See
                 // stripThinkBlocks(): the reasoning must never reach extractToolCalls().
                 reasoning: true,
+                license: { name: 'LFM Open License v1.0', url: 'https://huggingface.co/LiquidAI/LFM2.5-2.6B-ONNX/blob/main/LICENSE' },
             },
             'agent-lite': {
                 id: 'LiquidAI/LFM2.5-1.2B-Instruct-ONNX',
@@ -10313,6 +10434,7 @@ return result;</textarea>
                 dtype: 'q4',
                 category: 'agent',
                 family: 'lfm25',
+                license: { name: 'LFM Open License v1.0', url: 'https://huggingface.co/LiquidAI/LFM2.5-1.2B-Instruct-ONNX/blob/main/LICENSE' },
             },
             'agent-vision': {
                 id: 'LiquidAI/LFM2.5-VL-1.6B-ONNX',
@@ -10332,6 +10454,7 @@ return result;</textarea>
                 dtype: { embedImages: 'q4', decoder: 'q4' },
                 category: 'agent',
                 family: 'lfm25',
+                license: { name: 'LFM Open License v1.0', url: 'https://huggingface.co/LiquidAI/LFM2.5-VL-1.6B-ONNX/blob/main/LICENSE' },
             },
             'reason-lite': {
                 id: 'LiquidAI/LFM2.5-1.2B-Thinking-ONNX',
@@ -10346,7 +10469,13 @@ return result;</textarea>
                 category: 'reason',
                 family: 'lfm25',
                 reasoning: true,   // reasoning-only, same <think> handling as agent-pro
+                license: { name: 'LFM Open License v1.0', url: 'https://huggingface.co/LiquidAI/LFM2.5-1.2B-Thinking-ONNX/blob/main/LICENSE' },
             },
+            // NO license field on either Bonsai entry, deliberately. Both repos have
+            // no model card at all and no license in their metadata, and neither
+            // names a base model, so there is nothing upstream to inherit from. They
+            // render as "not verified" until someone confirms the terms — do not fill
+            // these in by analogy with the other onnx-community repos.
             'reason-bonsai-4b': {
                 // Bonsai's ternary (1.58-bit) native compression was preserved down to
                 // Q2 in the ONNX export. The repo only ships q2 and q2f16 variants —
@@ -10428,6 +10557,33 @@ return result;</textarea>
         function bestMobileAutoModel() {
             const preference = ['agent-qwen', 'agent-qwen-mini', 'tiny'];
             return preference.find(k => LOCAL_MODELS[k] && modelDownloadGB(k) <= MOBILE_AUTO_MAX_GB) || 'tiny';
+        }
+
+        // Models & Licenses panel, rendered from LOCAL_MODELS so it cannot drift from
+        // what actually loads — the registry is canonical, exactly as constants.ts is
+        // for frequencies. A model with no license field renders as "not verified"
+        // rather than being quietly omitted: an unchecked licence should be visible.
+        // Static, no state, no persistence — the sidebar just shows what's in the map.
+        function renderModelLicenses() {
+            const host = document.getElementById('modelLicenseList');
+            if (!host) return;
+            const esc = (s) => String(s)
+                .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+            host.innerHTML = Object.values(LOCAL_MODELS).map((m) => {
+                const repo = 'https://huggingface.co/' + m.id;
+                const lic = (m.license && m.license.name)
+                    ? '<a href="' + esc(m.license.url || repo) + '" target="_blank" rel="noopener noreferrer">' +
+                      esc(m.license.name) + '</a>'
+                    : '<span class="license-unverified">License not verified — check the model card</span>';
+                return '<div class="license-row">' +
+                    '<a class="license-model" href="' + esc(repo) + '" target="_blank" rel="noopener noreferrer">' +
+                    esc(m.name) + '</a>' +
+                    '<div class="license-repo">' + esc(m.id) + '</div>' +
+                    '<div class="license-name">' + lic + '</div>' +
+                '</div>';
+            }).join('');
         }
 
         // Italic helper line shown under the dropdown — keyed by model category.

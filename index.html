@@ -12968,9 +12968,15 @@ Use this data to personalize your response. Comment on their current state when 
                             description: clip(t.description),
                             parameters: { type: 'object', properties: t.params || {} },
                         }));
-                        toolsContext = '\n\n<|tool_list_start|>' + JSON.stringify(toolDefs) + '<|tool_list_end|>' +
-                            '\nTo invoke a tool, use your own tool-call format, or emit ' +
-                            'TOOL_CALL: {"tool": "name", "params": {...}} — both are understood.';
+                        // No invocation-format instruction at all. Offering a choice
+                        // ("either yours or TOOL_CALL:") made agent-pro fuse the two:
+                        //   [TOOL_CALL_tool_name='tarot_draw', parameters={...})]
+                        // — native delimiters, the TOOL_CALL prefix, kwargs where a
+                        // function call belongs, and an unbalanced paren. Naming a
+                        // second format is what created that. A model trained on this
+                        // tool-list block already knows how to call from it, and the
+                        // parser accepts its native output, so say nothing.
+                        toolsContext = '\n\n<|tool_list_start|>' + JSON.stringify(toolDefs) + '<|tool_list_end|>';
                     } else {
                         toolsContext = '\n\n[Available Tools - Call with format TOOL_CALL: {"tool": "name", "params": {...}}]:\n' +
                             fitting.map(t => `- ${t.name}: ${clip(t.description)}`).join('\n');
@@ -13360,6 +13366,10 @@ Use this data to personalize your response. Comment on their current state when 
                 }
             }
             
+            // Tool-call markup that no dialect could parse. Collected by the extractors
+            // so it can be stripped from the visible answer instead of being shown.
+            const unparsedToolBlocks = [];
+
             // Check for tool calls.
             // Balanced-brace extraction (string-aware) so nested `params` objects
             // parse correctly — a simple /\{[^}]+\}/ regex stops at the first inner
@@ -13409,6 +13419,7 @@ Use this data to personalize your response. Comment on their current state when 
                 const re = /<\|tool_call_start\|>\s*\[([\s\S]*?)\]\s*<\|tool_call_end\|>/g;
                 let m;
                 while ((m = re.exec(text)) !== null) {
+                    let matched = false;
                     for (const call of splitTopLevel(m[1], ',')) {
                         const fn = /^\s*([A-Za-z_]\w*)\s*\(([\s\S]*)\)\s*$/.exec(call);
                         if (!fn) continue;
@@ -13416,9 +13427,63 @@ Use this data to personalize your response. Comment on their current state when 
                         for (const arg of splitTopLevel(fn[2], ',')) {
                             const kv = /^\s*([A-Za-z_]\w*)\s*=([\s\S]*)$/.exec(arg);
                             if (!kv) continue;
-                            params[kv[1]] = parsePythonicValue(kv[2].trim());
+                            params[kv[1]] = parsePyLiteral(kv[2].trim());
                         }
+                        matched = true;
                         calls.push({ tool: fn[1], params, raw: m[0] });
+                    }
+                    // Nothing in the block looked like name(args) — try to recover.
+                    if (!matched) {
+                        const s = salvageNativeCall(m[1], m[0]);
+                        if (s) calls.push(s);
+                        else unparsedToolBlocks.push(m[0]);
+                    }
+                }
+                return calls;
+            }
+
+            // A native block whose contents don't parse as name(args). Seen in live
+            // testing while the prompt still offered two formats and the model fused
+            // them:
+            //   [TOOL_CALL_tool_name='tarot_draw', parameters={'drawType': 'full'})]
+            // — the delimiters, the TOOL_CALL prefix, kwargs where a function call
+            // belongs, and an unbalanced paren. The intent is unambiguous even though
+            // the syntax isn't, so recover the name and the argument object.
+            function salvageNativeCall(inner, raw) {
+                // No \b before "name": the fused form is TOOL_CALL_tool_name='…', and
+                // the preceding underscore is a word character, so \b never fires there.
+                const name = /name\s*=\s*['"]([A-Za-z_]\w*)['"]/.exec(inner)
+                          || /\btool\s*=\s*['"]([A-Za-z_]\w*)['"]/.exec(inner)
+                          || /^\s*['"]?([A-Za-z_]\w*)['"]?\s*[({]/.exec(inner);
+                if (!name) return null;
+                let params = {};
+                const argsAt = /\b(?:parameters|params|arguments|args)\s*=\s*(?=[{[])/.exec(inner);
+                if (argsAt) {
+                    const v = parsePyLiteral(inner.slice(argsAt.index + argsAt[0].length));
+                    if (v && typeof v === 'object') params = v;
+                }
+                console.warn('🛠️ Recovered a malformed tool call:', raw);
+                return { tool: name[1], params, raw };
+            }
+
+            // Qwen3.5 and other Hermes-lineage models are trained on
+            //   <tool_call>{"name": "tarot_draw", "arguments": {...}}</tool_call>
+            // Normal chat doesn't hand the worker a tool schema, so these models get
+            // the prose tool list — but they still reach for their trained delimiters,
+            // and nothing here understood them until now.
+            function extractHermesToolCalls(text) {
+                const calls = [];
+                const re = /<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/g;
+                let m;
+                while ((m = re.exec(text)) !== null) {
+                    const v = parsePyLiteral(m[1]);
+                    const o = Array.isArray(v) ? v[0] : v;
+                    const tool = o && typeof o === 'object' && (o.name || o.tool);
+                    if (tool) {
+                        const args = o.arguments ?? o.parameters ?? o.args ?? o.params ?? {};
+                        calls.push({ tool, params: args, raw: m[0] });
+                    } else {
+                        unparsedToolBlocks.push(m[0]);
                     }
                 }
                 return calls;
@@ -13448,19 +13513,80 @@ Use this data to personalize your response. Comment on their current state when 
                 return out;
             }
 
-            function parsePythonicValue(v) {
-                if (v === 'True') return true;
-                if (v === 'False') return false;
-                if (v === 'None' || v === 'null') return null;
-                if (/^-?\d+(\.\d+)?([eE][+-]?\d+)?$/.test(v)) return Number(v);
-                const q = v[0];
-                if ((q === "'" || q === '"') && v[v.length - 1] === q && v.length >= 2) {
-                    // Single pass, so an escaped backslash isn't re-unescaped.
-                    return v.slice(1, -1).replace(/\\(.)/g, (_, c) =>
-                        c === 'n' ? '\n' : c === 'r' ? '\r' : c === 't' ? '\t' : c);
+            // Parses the union of JSON and Python literal syntax. The chat template's
+            // format_arg_value macro emits JSON for mappings, but models write Python
+            // dict literals just as often — {'drawType': 'full', 'spreadSize': 78,
+            // 'withoutReplacement': True} — which JSON.parse rejects on the single
+            // quotes alone, before it even reaches True. Both must parse, or a tool
+            // silently receives no arguments and falls back to its defaults.
+            //
+            // Deliberately lenient: on malformed input it returns what it managed to
+            // read rather than throwing, because a partly-recovered argument object
+            // still beats none.
+            function parsePyLiteral(src) {
+                let i = 0;
+                const ws = () => { while (i < src.length && /\s/.test(src[i])) i++; };
+
+                function value() {
+                    ws();
+                    const ch = src[i];
+                    if (ch === '{') return object();
+                    if (ch === '[') return array();
+                    if (ch === '"' || ch === "'") return string();
+                    return scalar();
                 }
-                if (q === '{' || q === '[') { try { return JSON.parse(v); } catch (e) { return v; } }
-                return v;   // bare word — hand it over as a string
+                function object() {
+                    const o = {}; i++; ws();
+                    if (src[i] === '}') { i++; return o; }
+                    while (i < src.length) {
+                        ws();
+                        const k = (src[i] === '"' || src[i] === "'") ? string() : scalar();
+                        ws();
+                        if (src[i] === ':') i++;
+                        o[k] = value();
+                        ws();
+                        if (src[i] === ',') { i++; continue; }
+                        if (src[i] === '}') i++;
+                        break;
+                    }
+                    return o;
+                }
+                function array() {
+                    const a = []; i++; ws();
+                    if (src[i] === ']') { i++; return a; }
+                    while (i < src.length) {
+                        a.push(value()); ws();
+                        if (src[i] === ',') { i++; continue; }
+                        if (src[i] === ']') i++;
+                        break;
+                    }
+                    return a;
+                }
+                function string() {
+                    const q = src[i++];
+                    let out = '';
+                    while (i < src.length && src[i] !== q) {
+                        if (src[i] === '\\') {
+                            i++;
+                            const c = src[i++];
+                            out += c === 'n' ? '\n' : c === 'r' ? '\r' : c === 't' ? '\t' : c;
+                        } else out += src[i++];
+                    }
+                    i++;   // closing quote
+                    return out;
+                }
+                function scalar() {
+                    const start = i;
+                    while (i < src.length && !/[,:\]}\s]/.test(src[i])) i++;
+                    const raw = src.slice(start, i);
+                    if (raw === 'True' || raw === 'true') return true;
+                    if (raw === 'False' || raw === 'false') return false;
+                    if (raw === 'None' || raw === 'null') return null;
+                    if (/^-?\d+(\.\d+)?([eE][+-]?\d+)?$/.test(raw)) return Number(raw);
+                    return raw;   // bare word — hand it over as a string
+                }
+
+                try { return value(); } catch (e) { return src; }
             }
 
             // Sophia's TOOL_CALL shape nests arguments under "params", and a model
@@ -13478,21 +13604,51 @@ Use this data to personalize your response. Comment on their current state when 
                 return params;
             }
 
-            // Two invocation formats reach this point, so both are parsed and
-            // normalised to {tool, params, raw} before execution.
+            // Three trained dialects reach this point, one per model family:
+            //   TOOL_CALL: {...}                          prompted (Gemma, Bonsai, Qwen 0.5B)
+            //   <|tool_call_start|>[name(args)]…          LFM2.5 family
+            //   <tool_call>{"name","arguments"}</tool_call>  Qwen3.5 / Hermes lineage
+            // A model reaches for the format it was trained on regardless of which one
+            // the prompt asked for, so all three are parsed and normalised to
+            // {tool, params, raw}. Which model is loaded is not consulted: the text
+            // says what it is, and remote servers can serve any of them.
             const toolCalls = skipToolProcessing ? [] : [
                 ...extractToolCalls(response).map(c => {
-                    try {
-                        const j = JSON.parse(c.json);
-                        return { tool: j.tool, params: j.params, raw: c.raw };
-                    } catch (e) {
-                        console.warn('🛠️ Malformed TOOL_CALL JSON, ignoring:', c.json);
-                        return null;
+                    // parsePyLiteral, not JSON.parse — a prompted model can still write
+                    // {'tool': 'x'} with Python quoting, and that is recoverable.
+                    const j = parsePyLiteral(c.json);
+                    if (j && typeof j === 'object' && (j.tool || j.name)) {
+                        return {
+                            tool: j.tool || j.name,
+                            params: j.params ?? j.arguments ?? j.parameters ?? j.args ?? {},
+                            raw: c.raw,
+                        };
                     }
+                    console.warn('🛠️ Malformed TOOL_CALL payload, ignoring:', c.json);
+                    unparsedToolBlocks.push(c.raw);
+                    return null;
                 }).filter(Boolean),
                 ...extractNativeToolCalls(response),
+                ...extractHermesToolCalls(response),
             ];
             let finalResponse = response;
+
+            // A tool-call block nobody could parse must not reach the user as raw
+            // delimiters — that is what the failed tarot draw looked like on screen.
+            // Strip the markup and say plainly that an attempt was made and failed,
+            // rather than leaving Sophia to look like she is talking in protocol.
+            for (const block of unparsedToolBlocks) {
+                finalResponse = finalResponse.split(block).join('');
+            }
+            if (unparsedToolBlocks.length) {
+                addMessageToUI('system', `
+                    <div class="tool-call">
+                        <strong>🛠️ Tool call not understood</strong><br>
+                        Sophia tried to use a tool but the request came back malformed, so nothing ran.
+                        Asking again usually works; if it keeps happening, this model may need a parser branch.
+                    </div>
+                `);
+            }
 
             for (const match of toolCalls) {
                 try {

@@ -119,15 +119,18 @@ export function parseToolCall(text) {
   // one strongly enough that it uses it even when told otherwise.
   const native = parseNativeToolCall(text);
   if (native) return native;
+  const hermes = parseHermesToolCall(text);
+  if (hermes) return hermes;
   const candidates = [];
   const fenced = text.match(/```(?:json)?\s*([[{][\s\S]*?[\]}])\s*```/);
   if (fenced) candidates.push(fenced[1]);
   for (const obj of findBalancedObjects(text)) candidates.push(obj);
   for (const c of candidates) {
-    try {
-      const call = toCall(JSON.parse(c));
-      if (call) return call;
-    } catch { /* try next candidate */ }
+    // parsePyLiteral, not JSON.parse: a model asked for JSON still writes
+    // {'tool': 'x', 'params': {...}} often enough that rejecting it on the quote
+    // style alone loses a perfectly clear call.
+    const call = toCall(parsePyLiteral(c));
+    if (call) return call;
   }
   return null;
 }
@@ -146,16 +149,46 @@ export function parseNativeToolCall(text) {
     const args = {};
     for (const arg of splitTopLevel(fn[2], ',')) {
       const kv = /^\s*([A-Za-z_]\w*)\s*=([\s\S]*)$/.exec(arg);
-      if (kv) args[kv[1]] = parsePythonicValue(kv[2].trim());
+      if (kv) args[kv[1]] = parsePyLiteral(kv[2].trim());
     }
-    // The prompted shape nests arguments under "params"; a model that has seen it
-    // can carry the wrapper into a native call. No tool takes a literal "params".
-    const keys = Object.keys(args);
-    const unwrapped = (keys.length === 1 && keys[0] === 'params' &&
-      args.params && typeof args.params === 'object') ? args.params : args;
-    return { name: fn[1], args: unwrapped };
+    return { name: fn[1], args: unwrapParams(args) };
   }
-  return null;
+  // Nothing parsed as name(args) — recover a fused/malformed block, e.g.
+  //   [TOOL_CALL_tool_name='tarot_draw', parameters={'drawType': 'full'})]
+  // No \b before "name": the fused form is TOOL_CALL_tool_name='…', where the
+  // preceding underscore is a word character, so \b never fires there.
+  const name = /name\s*=\s*['"]([A-Za-z_]\w*)['"]/.exec(m[1])
+            || /\btool\s*=\s*['"]([A-Za-z_]\w*)['"]/.exec(m[1]);
+  if (!name) return null;
+  let args = {};
+  const argsAt = /\b(?:parameters|params|arguments|args)\s*=\s*(?=[{[])/.exec(m[1]);
+  if (argsAt) {
+    const v = parsePyLiteral(m[1].slice(argsAt.index + argsAt[0].length));
+    if (v && typeof v === 'object') args = v;
+  }
+  return { name: name[1], args: unwrapParams(args) };
+}
+
+// Qwen3.5 and other Hermes-lineage models are trained on
+//   <tool_call>{"name": "web_search", "arguments": {...}}</tool_call>
+export function parseHermesToolCall(text) {
+  const m = /<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/.exec(text || '');
+  if (!m) return null;
+  const v = parsePyLiteral(m[1]);
+  const o = Array.isArray(v) ? v[0] : v;
+  if (!o || typeof o !== 'object') return null;
+  const name = o.name || o.tool;
+  if (!name) return null;
+  return { name, args: unwrapParams(o.arguments ?? o.parameters ?? o.args ?? o.params ?? {}) };
+}
+
+// The prompted shape nests arguments under "params"; a model that has seen it can
+// carry the wrapper into a native call. No tool takes a parameter named "params".
+function unwrapParams(args) {
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return args;
+  const keys = Object.keys(args);
+  return (keys.length === 1 && keys[0] === 'params' &&
+    args.params && typeof args.params === 'object') ? args.params : args;
 }
 
 // Split on a separator that isn't inside quotes, brackets or braces, so a JSON
@@ -181,19 +214,75 @@ function splitTopLevel(s, sep) {
   return out;
 }
 
-function parsePythonicValue(v) {
-  if (v === 'True') return true;
-  if (v === 'False') return false;
-  if (v === 'None' || v === 'null') return null;
-  if (/^-?\d+(\.\d+)?([eE][+-]?\d+)?$/.test(v)) return Number(v);
-  const q = v[0];
-  if ((q === "'" || q === '"') && v[v.length - 1] === q && v.length >= 2) {
-    // Single pass, so an escaped backslash isn't unescaped twice.
-    return v.slice(1, -1).replace(/\\(.)/g, (_, c) =>
-      c === 'n' ? '\n' : c === 'r' ? '\r' : c === 't' ? '\t' : c);
+// Parses the union of JSON and Python literal syntax. The chat template emits JSON
+// for mappings, but models write Python dict literals just as often —
+// {'query': 'moon phase', 'max_results': 3, 'strict': True} — which JSON.parse
+// rejects on the single quotes alone. Lenient by design: returns whatever it
+// managed to read rather than throwing, since partial arguments beat none.
+export function parsePyLiteral(src) {
+  let i = 0;
+  const ws = () => { while (i < src.length && /\s/.test(src[i])) i++; };
+
+  function value() {
+    ws();
+    const ch = src[i];
+    if (ch === '{') return object();
+    if (ch === '[') return array();
+    if (ch === '"' || ch === "'") return string();
+    return scalar();
   }
-  if (q === '{' || q === '[') { try { return JSON.parse(v); } catch { return v; } }
-  return v;
+  function object() {
+    const o = {}; i++; ws();
+    if (src[i] === '}') { i++; return o; }
+    while (i < src.length) {
+      ws();
+      const k = (src[i] === '"' || src[i] === "'") ? string() : scalar();
+      ws();
+      if (src[i] === ':') i++;
+      o[k] = value();
+      ws();
+      if (src[i] === ',') { i++; continue; }
+      if (src[i] === '}') i++;
+      break;
+    }
+    return o;
+  }
+  function array() {
+    const a = []; i++; ws();
+    if (src[i] === ']') { i++; return a; }
+    while (i < src.length) {
+      a.push(value()); ws();
+      if (src[i] === ',') { i++; continue; }
+      if (src[i] === ']') i++;
+      break;
+    }
+    return a;
+  }
+  function string() {
+    const q = src[i++];
+    let out = '';
+    while (i < src.length && src[i] !== q) {
+      if (src[i] === '\\') {
+        i++;
+        const c = src[i++];
+        out += c === 'n' ? '\n' : c === 'r' ? '\r' : c === 't' ? '\t' : c;
+      } else out += src[i++];
+    }
+    i++;
+    return out;
+  }
+  function scalar() {
+    const start = i;
+    while (i < src.length && !/[,:\]}\s]/.test(src[i])) i++;
+    const raw = src.slice(start, i);
+    if (raw === 'True' || raw === 'true') return true;
+    if (raw === 'False' || raw === 'false') return false;
+    if (raw === 'None' || raw === 'null') return null;
+    if (/^-?\d+(\.\d+)?([eE][+-]?\d+)?$/.test(raw)) return Number(raw);
+    return raw;
+  }
+
+  try { return value(); } catch { return src; }
 }
 
 // If the model both answered and leaked scaffold JSON, strip the blob so the final
@@ -207,7 +296,8 @@ export function stripScaffold(text) {
   }
   // Native calls carry no JSON, so the object scan above leaves them behind as
   // visible <|tool_call_start|>… markup in the answer.
-  out = out.replace(/<\|tool_call_start\|>[\s\S]*?<\|tool_call_end\|>/g, '');
+  out = out.replace(/<\|tool_call_start\|>[\s\S]*?<\|tool_call_end\|>/g, '')
+           .replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '');
   return out.replace(/TOOL_CALL:\s*/g, '').replace(/\[\s*\]/g, '').trim();
 }
 

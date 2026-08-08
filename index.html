@@ -12943,7 +12943,10 @@ Use this data to personalize your response. Comment on their current state when 
                     const fitting = [], omitted = [];
                     let toolTokens = 0;
                     for (const t of enabledTools) {
-                        const cost = estTokens(t.name + (isLFM25 ? JSON.stringify(t.params || {}) : '') + clip(t.description)) + 8;
+                        // +8 covers the JSON punctuation; the extra +8 for LFM2.5 covers
+                        // the {"type":"object","properties":…} wrapper added below, so
+                        // the budget doesn't quietly under-count and overflow the window.
+                        const cost = estTokens(t.name + (isLFM25 ? JSON.stringify(t.params || {}) : '') + clip(t.description)) + 8 + (isLFM25 ? 8 : 0);
                         if (toolTokens + cost > capTokens) { omitted.push(t.name); continue; }
                         toolTokens += cost;
                         fitting.push(t);
@@ -12954,13 +12957,20 @@ Use this data to personalize your response. Comment on their current state when 
                                    ' not offered to Sophia this turn. Turn some off in Tools.', 'warning');
                     }
                     if (isLFM25) {
+                        // JSON-Schema shape, not our own {params:{...}} shape. The old
+                        // form advertised a key literally called "params", and the model
+                        // duly emitted rune_cast(params='spread: Wunjo, Pertho, Iord') —
+                        // one string argument by that name instead of the real ones.
+                        // "parameters" with a properties object is the format LFM2.5 was
+                        // trained on, so it reads the actual argument names off it.
                         const toolDefs = fitting.map(t => ({
                             name: t.name,
                             description: clip(t.description),
-                            params: t.params || {},
+                            parameters: { type: 'object', properties: t.params || {} },
                         }));
                         toolsContext = '\n\n<|tool_list_start|>' + JSON.stringify(toolDefs) + '<|tool_list_end|>' +
-                            '\nTo invoke a tool, emit exactly: TOOL_CALL: {"tool": "name", "params": {...}}';
+                            '\nTo invoke a tool, use your own tool-call format, or emit ' +
+                            'TOOL_CALL: {"tool": "name", "params": {...}} — both are understood.';
                     } else {
                         toolsContext = '\n\n[Available Tools - Call with format TOOL_CALL: {"tool": "name", "params": {...}}]:\n' +
                             fitting.map(t => `- ${t.name}: ${clip(t.description)}`).join('\n');
@@ -13379,14 +13389,115 @@ Use this data to personalize your response. Comment on their current state when 
                 return calls;
             }
 
-            const toolCalls = skipToolProcessing ? [] : extractToolCalls(response);
+            // ── LFM2.5's own tool-call format ────────────────────────────────
+            // LFM2.5 is trained to emit calls in a Pythonic form between its own
+            // delimiters, and the 2.6B — more heavily agentic-RL-trained than the
+            // 1.2B — reaches for it in preference to the TOOL_CALL: shape the
+            // prompt asks for, even when told not to:
+            //
+            //   <|tool_call_start|>[rune_cast(spread='norn', includeWyrd=True)]<|tool_call_end|>
+            //
+            // Observed in live testing: the call was printed as prose and never
+            // ran. Parsing the model's trained format is more reliable than
+            // fighting it with prompt wording, so both are now accepted.
+            //
+            // Value syntax follows the template's format_arg_value macro: strings
+            // single-quoted with \\ \' \n \r escapes, mappings and lists as JSON,
+            // everything else bare (numbers, True/False/None).
+            function extractNativeToolCalls(text) {
+                const calls = [];
+                const re = /<\|tool_call_start\|>\s*\[([\s\S]*?)\]\s*<\|tool_call_end\|>/g;
+                let m;
+                while ((m = re.exec(text)) !== null) {
+                    for (const call of splitTopLevel(m[1], ',')) {
+                        const fn = /^\s*([A-Za-z_]\w*)\s*\(([\s\S]*)\)\s*$/.exec(call);
+                        if (!fn) continue;
+                        const params = {};
+                        for (const arg of splitTopLevel(fn[2], ',')) {
+                            const kv = /^\s*([A-Za-z_]\w*)\s*=([\s\S]*)$/.exec(arg);
+                            if (!kv) continue;
+                            params[kv[1]] = parsePythonicValue(kv[2].trim());
+                        }
+                        calls.push({ tool: fn[1], params, raw: m[0] });
+                    }
+                }
+                return calls;
+            }
+
+            // Split on a separator that isn't inside quotes, brackets or braces —
+            // so a JSON object argument, or a comma inside a quoted question,
+            // doesn't get chopped in half.
+            function splitTopLevel(s, sep) {
+                const out = [];
+                let depth = 0, quote = null, esc = false, buf = '';
+                for (const ch of s) {
+                    if (esc) { buf += ch; esc = false; continue; }
+                    if (quote) {
+                        buf += ch;
+                        if (ch === '\\') esc = true;
+                        else if (ch === quote) quote = null;
+                        continue;
+                    }
+                    if (ch === '"' || ch === "'") { quote = ch; buf += ch; continue; }
+                    if (ch === '[' || ch === '{' || ch === '(') depth++;
+                    else if (ch === ']' || ch === '}' || ch === ')') depth--;
+                    if (ch === sep && depth === 0) { out.push(buf); buf = ''; continue; }
+                    buf += ch;
+                }
+                if (buf.trim()) out.push(buf);
+                return out;
+            }
+
+            function parsePythonicValue(v) {
+                if (v === 'True') return true;
+                if (v === 'False') return false;
+                if (v === 'None' || v === 'null') return null;
+                if (/^-?\d+(\.\d+)?([eE][+-]?\d+)?$/.test(v)) return Number(v);
+                const q = v[0];
+                if ((q === "'" || q === '"') && v[v.length - 1] === q && v.length >= 2) {
+                    // Single pass, so an escaped backslash isn't re-unescaped.
+                    return v.slice(1, -1).replace(/\\(.)/g, (_, c) =>
+                        c === 'n' ? '\n' : c === 'r' ? '\r' : c === 't' ? '\t' : c);
+                }
+                if (q === '{' || q === '[') { try { return JSON.parse(v); } catch (e) { return v; } }
+                return v;   // bare word — hand it over as a string
+            }
+
+            // Sophia's TOOL_CALL shape nests arguments under "params", and a model
+            // that has seen that can carry the wrapper into a native call as
+            // rune_cast(params={...}). Unwrap it: no tool in the registry takes a
+            // parameter literally named "params".
+            function normalizeToolParams(params) {
+                if (params && typeof params === 'object' && !Array.isArray(params)) {
+                    const keys = Object.keys(params);
+                    if (keys.length === 1 && keys[0] === 'params' &&
+                        params.params && typeof params.params === 'object') {
+                        return params.params;
+                    }
+                }
+                return params;
+            }
+
+            // Two invocation formats reach this point, so both are parsed and
+            // normalised to {tool, params, raw} before execution.
+            const toolCalls = skipToolProcessing ? [] : [
+                ...extractToolCalls(response).map(c => {
+                    try {
+                        const j = JSON.parse(c.json);
+                        return { tool: j.tool, params: j.params, raw: c.raw };
+                    } catch (e) {
+                        console.warn('🛠️ Malformed TOOL_CALL JSON, ignoring:', c.json);
+                        return null;
+                    }
+                }).filter(Boolean),
+                ...extractNativeToolCalls(response),
+            ];
             let finalResponse = response;
 
             for (const match of toolCalls) {
                 try {
-                    const toolCall = JSON.parse(match.json);
-                    const toolName = toolCall.tool;
-                    const params = toolCall.params;
+                    const toolName = match.tool;
+                    const params = normalizeToolParams(match.params);
 
                     const toolResult = executeTool(toolName, params);
 

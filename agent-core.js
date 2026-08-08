@@ -114,6 +114,11 @@ export function findBalancedObjects(text) {
 // args | arguments | params | parameters, or as a bare scalar (handled downstream).
 export function parseToolCall(text) {
   if (!text) return null;
+  // LFM2.5's own Pythonic format first — it contains no JSON, so the balanced-object
+  // scan below cannot see it at all. LFM2.5-2.6B prefers this shape over the prompted
+  // one strongly enough that it uses it even when told otherwise.
+  const native = parseNativeToolCall(text);
+  if (native) return native;
   const candidates = [];
   const fenced = text.match(/```(?:json)?\s*([[{][\s\S]*?[\]}])\s*```/);
   if (fenced) candidates.push(fenced[1]);
@@ -127,6 +132,70 @@ export function parseToolCall(text) {
   return null;
 }
 
+// LFM2.5's trained tool-call syntax:
+//   <|tool_call_start|>[web_search(query='moon phase', max_results=3)]<|tool_call_end|>
+// Values follow the chat template's format_arg_value macro — strings single-quoted
+// with \\ \' \n \r escapes, mappings and lists as JSON, everything else bare.
+// Returns the first call only, matching parseToolCall's one-call-per-step contract.
+export function parseNativeToolCall(text) {
+  const m = /<\|tool_call_start\|>\s*\[([\s\S]*?)\]\s*<\|tool_call_end\|>/.exec(text || '');
+  if (!m) return null;
+  for (const call of splitTopLevel(m[1], ',')) {
+    const fn = /^\s*([A-Za-z_]\w*)\s*\(([\s\S]*)\)\s*$/.exec(call);
+    if (!fn) continue;
+    const args = {};
+    for (const arg of splitTopLevel(fn[2], ',')) {
+      const kv = /^\s*([A-Za-z_]\w*)\s*=([\s\S]*)$/.exec(arg);
+      if (kv) args[kv[1]] = parsePythonicValue(kv[2].trim());
+    }
+    // The prompted shape nests arguments under "params"; a model that has seen it
+    // can carry the wrapper into a native call. No tool takes a literal "params".
+    const keys = Object.keys(args);
+    const unwrapped = (keys.length === 1 && keys[0] === 'params' &&
+      args.params && typeof args.params === 'object') ? args.params : args;
+    return { name: fn[1], args: unwrapped };
+  }
+  return null;
+}
+
+// Split on a separator that isn't inside quotes, brackets or braces, so a JSON
+// argument or a comma inside a quoted query survives intact.
+function splitTopLevel(s, sep) {
+  const out = [];
+  let depth = 0, quote = null, esc = false, buf = '';
+  for (const ch of s) {
+    if (esc) { buf += ch; esc = false; continue; }
+    if (quote) {
+      buf += ch;
+      if (ch === '\\') esc = true;
+      else if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { quote = ch; buf += ch; continue; }
+    if (ch === '[' || ch === '{' || ch === '(') depth++;
+    else if (ch === ']' || ch === '}' || ch === ')') depth--;
+    if (ch === sep && depth === 0) { out.push(buf); buf = ''; continue; }
+    buf += ch;
+  }
+  if (buf.trim()) out.push(buf);
+  return out;
+}
+
+function parsePythonicValue(v) {
+  if (v === 'True') return true;
+  if (v === 'False') return false;
+  if (v === 'None' || v === 'null') return null;
+  if (/^-?\d+(\.\d+)?([eE][+-]?\d+)?$/.test(v)) return Number(v);
+  const q = v[0];
+  if ((q === "'" || q === '"') && v[v.length - 1] === q && v.length >= 2) {
+    // Single pass, so an escaped backslash isn't unescaped twice.
+    return v.slice(1, -1).replace(/\\(.)/g, (_, c) =>
+      c === 'n' ? '\n' : c === 'r' ? '\r' : c === 't' ? '\t' : c);
+  }
+  if (q === '{' || q === '[') { try { return JSON.parse(v); } catch { return v; } }
+  return v;
+}
+
 // If the model both answered and leaked scaffold JSON, strip the blob so the final
 // answer reads clean. Removes fenced json, tool-call objects, TOOL_CALL:, and an
 // empty [] left behind when an array-wrapped call is removed.
@@ -136,6 +205,9 @@ export function stripScaffold(text) {
   for (const obj of findBalancedObjects(out)) {
     try { if (toCall(JSON.parse(obj))) out = out.split(obj).join(''); } catch { /* keep non-call JSON */ }
   }
+  // Native calls carry no JSON, so the object scan above leaves them behind as
+  // visible <|tool_call_start|>… markup in the answer.
+  out = out.replace(/<\|tool_call_start\|>[\s\S]*?<\|tool_call_end\|>/g, '');
   return out.replace(/TOOL_CALL:\s*/g, '').replace(/\[\s*\]/g, '').trim();
 }
 

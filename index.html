@@ -12777,7 +12777,10 @@ Use this data to personalize your response. Comment on their current state when 
                     : 'Model returned empty response — may be out of GPU memory. Try a shorter question or switch to a smaller model.');
             }
             // Once the answer exists, put the reasoning back above it, collapsed.
+            // Also published for processResponse, which repaints this bubble after
+            // stripping tool markup and would otherwise drop the reasoning panel.
             const reasoningHTML = reasoningDetailsHTML(collectReasoning(normalized));
+            pendingReasoningHTML = reasoningHTML;
             if (reasoningHTML) updateStreamingMessage(streamingMessageId, reasoningHTML + stripped);
             return stripped;
         }
@@ -13057,7 +13060,10 @@ Use this data to personalize your response. Comment on their current state when 
         }
 
         // ── Remote API streaming (original) ──
-        async function generateRemoteStreamingResponse(messages) {
+        // `existingStreamId` lets a caller own the bubble's lifetime — it must then
+        // finalise it. Without one this creates its own and leaves it open for
+        // processResponse to repaint and close.
+        async function generateRemoteStreamingResponse(messages, existingStreamId = null) {
             const payload = {
                 messages: messages,
                 temperature: config.temperature,
@@ -13085,7 +13091,7 @@ Use this data to personalize your response. Comment on their current state when 
             let buffer = '';
             let fullResponse = '';
 
-            const streamingMessageId = addStreamingMessage();
+            const streamingMessageId = existingStreamId || addStreamingMessage();
 
             while (true) {
                 const { done, value } = await reader.read();
@@ -13114,7 +13120,9 @@ Use this data to personalize your response. Comment on their current state when 
                 }
             }
 
-            finalizeStreamingMessage(streamingMessageId);
+            // Left open on purpose when we created it: processResponse repaints the
+            // bubble with the tool markup removed, then closes it.
+            if (existingStreamId) finalizeStreamingMessage(streamingMessageId);
             return fullResponse;
         }
 
@@ -13156,8 +13164,9 @@ Use this data to personalize your response. Comment on their current state when 
                     console.log('🔮 [Dispatch] → Local inference (worker)');
                     const streamingMessageId = addStreamingMessage();
                     fullResponse = await generateLocalStreamingResponse(messages, streamingMessageId);
-                    finalizeStreamingMessage(streamingMessageId);
-                    await processResponse(fullResponse);
+                    // Not finalised here: the bubble streamed the raw tool protocol,
+                    // so processResponse repaints it clean and closes it.
+                    await processResponse(fullResponse, streamingMessageId);
                     return;
                 } catch (localErr) {
                     console.warn('🔮 [Dispatch] Local failed:', localErr.message, '→ falling back to remote');
@@ -13172,8 +13181,7 @@ Use this data to personalize your response. Comment on their current state when 
                             showStatus('Model recovered — retrying...', 'success');
                             const retryMsgId = addStreamingMessage();
                             fullResponse = await generateLocalStreamingResponse(messages, retryMsgId);
-                            finalizeStreamingMessage(retryMsgId);
-                            await processResponse(fullResponse);
+                            await processResponse(fullResponse, retryMsgId);
                             return;
                         } catch (retryErr) {
                             console.warn('🔮 [Dispatch] Retry after reload also failed:', retryErr.message);
@@ -13191,7 +13199,7 @@ Use this data to personalize your response. Comment on their current state when 
             // Remote path
             console.log('🔮 [Dispatch] → Remote API:', config.serverUrl, '| model:', config.remoteModel || '(none)');
             fullResponse = await generateRemoteStreamingResponse(messages);
-            await processResponse(fullResponse);
+            await processResponse(fullResponse, STREAM_MSG_ID);
         }
 
         // ── Dual-mode non-streaming dispatcher ──
@@ -13306,7 +13314,10 @@ Use this data to personalize your response. Comment on their current state when 
             return messages;
         }
 
-        async function processResponse(response) {
+        // `streamId` is the still-open live bubble, when there is one. processResponse
+        // owns closing it: the bubble streamed the raw tool protocol, and it has to be
+        // repainted and finalised before anything renders below it.
+        async function processResponse(response, streamId = null) {
             // Reasoning models (agent-pro, reason-lite) deliberate about tools in prose
             // before deciding — "I could call TOOL_CALL: {"tool":"neural_iching"...} but
             // the user didn't ask for a reading". extractToolCalls() scans the whole
@@ -13320,6 +13331,11 @@ Use this data to personalize your response. Comment on their current state when 
             // catches a stray </think> with no opener, which is how a pre-opened model
             // arrives from a remote server too.
             response = stripThinkBlocks(normalizeReasoningTags(response));
+
+            // Claim this turn's reasoning now. A tool follow-up runs its own
+            // generation, which publishes ITS reasoning over the top — so reading it
+            // later would attach the follow-up's thinking to the opening message.
+            const initialReasoningHTML = consumePendingReasoningHTML();
 
             // Small local models don't use tools — skip expensive regex parsing
             const skipToolProcessing = shouldUseLocal() && !config.fullPromptLocal;
@@ -13633,13 +13649,32 @@ Use this data to personalize your response. Comment on their current state when 
             ];
             let finalResponse = response;
 
-            // A tool-call block nobody could parse must not reach the user as raw
-            // delimiters — that is what the failed tarot draw looked like on screen.
-            // Strip the markup and say plainly that an attempt was made and failed,
-            // rather than leaving Sophia to look like she is talking in protocol.
-            for (const block of unparsedToolBlocks) {
-                finalResponse = finalResponse.split(block).join('');
+            // Take every scrap of tool protocol out of the visible text BEFORE it is
+            // shown — both the calls we understood and the markup nobody could parse.
+            // Leaving either in is what made Sophia appear to talk in protocol.
+            for (const c of toolCalls) finalResponse = finalResponse.split(c.raw).join('');
+            for (const block of unparsedToolBlocks) finalResponse = finalResponse.split(block).join('');
+            finalResponse = finalResponse.trim();
+
+            // The live bubble streamed the raw protocol, so repaint it with the clean
+            // text and close it. This must happen before any tool card or follow-up
+            // renders: addStreamingMessage() reuses one element id (STREAM_MSG_ID), so
+            // a follow-up stream cannot start while this bubble is still open.
+            if (streamId) {
+                const reasoningHTML = initialReasoningHTML;
+                if (!finalResponse && !reasoningHTML) {
+                    // The entire turn was a tool call — drop the empty bubble rather
+                    // than leaving a blank one sitting above the result card.
+                    const el = document.getElementById(streamId);
+                    if (el) el.remove();
+                    const dot = document.getElementById('connectionDot');
+                    if (dot) dot.classList.remove('streaming');
+                } else {
+                    updateStreamingMessage(streamId, reasoningHTML + finalResponse);
+                    finalizeStreamingMessage(streamId);
+                }
             }
+
             if (unparsedToolBlocks.length) {
                 addMessageToUI('system', `
                     <div class="tool-call">
@@ -13674,13 +13709,17 @@ Use this data to personalize your response. Comment on their current state when 
                         </div>
                     `);
 
-                    finalResponse = finalResponse.replace(match.raw, '');
-
+                    // Interpret the result. This used to run only when streaming was on
+                    // AND was then never rendered — the text was appended to
+                    // chatHistory and shown nowhere, so a tool call ended in a bare
+                    // result card and silence. It now runs in both modes and streams
+                    // into its own bubble, which is also what makes it visible.
                     const followUpPrompt = `The ${toolName} tool returned: ${JSON.stringify(toolResult)}. Please interpret this result naturally in your response.`;
-                    
-                    if (config.streamingEnabled) {
-                        const followUp = await generateResponse(followUpPrompt, []);
-                        finalResponse += '\n\n' + followUp;
+                    const followUp = config.streamingEnabled
+                        ? await streamFollowUp(followUpPrompt)
+                        : await generateResponse(followUpPrompt, []);
+                    if (followUp && followUp.trim()) {
+                        finalResponse += (finalResponse ? '\n\n' : '') + followUp.trim();
                     }
 
                 } catch (error) {
@@ -13698,7 +13737,7 @@ Use this data to personalize your response. Comment on their current state when 
             chatHistory.push(assistantMessage);
 
             if (!config.streamingEnabled) {
-                addMessageToUI('assistant', consumePendingReasoningHTML() + finalResponse);
+                addMessageToUI('assistant', initialReasoningHTML + finalResponse);
             }
 
             // Voice output - stream complete message
@@ -13713,11 +13752,17 @@ Use this data to personalize your response. Comment on their current state when 
             }
         }
 
+        // One fixed element id for the live bubble, so only ONE stream can be open at
+        // a time — every stream must be finalised before the next one starts, or the
+        // two collide on the same element. This is why processResponse() closes the
+        // main bubble before it renders tool cards or streams a follow-up.
+        const STREAM_MSG_ID = 'streaming-message';
+
         function addStreamingMessage() {
             const container = document.getElementById('chatContainer');
             const messageDiv = document.createElement('div');
             messageDiv.className = 'message assistant';
-            messageDiv.id = 'streaming-message';
+            messageDiv.id = STREAM_MSG_ID;
 
             messageDiv.innerHTML = `
                 <div class="message-avatar">🔮</div>
@@ -13726,11 +13771,29 @@ Use this data to personalize your response. Comment on their current state when 
 
             container.appendChild(messageDiv);
             container.scrollTop = container.scrollHeight;
-            
+
             const dot = document.getElementById('connectionDot');
             dot.classList.add('streaming');
-            
-            return 'streaming-message';
+
+            return STREAM_MSG_ID;
+        }
+
+        // Streams one prompt into a fresh bubble and returns its text, WITHOUT running
+        // processResponse on the result. Used for tool follow-ups: re-processing one
+        // would let a tool result trigger another tool call, and round again.
+        async function streamFollowUp(prompt) {
+            const messages = buildMessages(prompt, []);
+            const id = addStreamingMessage();
+            try {
+                const text = shouldUseLocal()
+                    ? await generateLocalStreamingResponse(messages, id)
+                    : await generateRemoteStreamingResponse(messages, id);
+                const reasoning = consumePendingReasoningHTML();
+                if (reasoning) updateStreamingMessage(id, reasoning + text);
+                return text;
+            } finally {
+                finalizeStreamingMessage(id);
+            }
         }
 
         function updateStreamingMessage(id, content) {

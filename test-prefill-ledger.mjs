@@ -238,6 +238,39 @@ console.log('--- the slowest observed rate is the one that is trusted ---');
      'a later fast run does not erase it — predicting a prefill as faster than it has been is what kills a device');
 }
 
+console.log('--- a model whose ONLY history is a crash still gets a ceiling ---');
+{
+  // Batch 6, verbatim: agent-lite had failed twice and still had no protection,
+  // because both ceilings required a SUCCESS to exist. A killed prefill bounds
+  // the rate from below — it had not finished 1898 tokens in 25 273 ms — and that
+  // is enough to derive a ceiling.
+  const L = makeLedger();
+  L.setModel('agent-lite');
+  L.recordPrefillOutcome(1898, 'fail', 25273);
+  const ev = L.prefillEvidence();
+  ok(ev.maxOk === 0, 'there is no successful run to lean on');
+  ok(Math.abs(ev.msPerToken - 25273 / 1898) < 0.01,
+     'the rate is inferred from the killed prefill, got ' + ev.msPerToken.toFixed(2));
+  ok(ev.rateIsLowerBound === true, 'and flagged as a lower bound, not a measurement');
+  const ceiling = L.timeBasedPrefillCeiling();
+  ok(ceiling > 0, 'a ceiling now exists where before there was none, got ' + ceiling);
+  // The real bracket from the phone was 1519 completed / 1885 killed.
+  ok(ceiling > 1400 && ceiling < 1600,
+     'and it lands inside the bracket the device actually demonstrated, got ' + ceiling);
+  ok(L.prefillRisk(1898) !== null, 'the prompt that killed it would now be warned about');
+}
+
+console.log('--- a real measurement always outranks an inferred bound ---');
+{
+  const L = makeLedger();
+  L.recordPrefillOutcome(1898, 'fail', 25273);     // bound: 13.3 ms/tok
+  ok(L.prefillEvidence().rateIsLowerBound === true, 'the bound is in use');
+  L.recordPrefillOutcome(949, 'ok', 13998);        // measured: 14.75 ms/tok
+  const ev = L.prefillEvidence();
+  ok(ev.rateIsLowerBound === false, 'a completed run replaces it');
+  ok(Math.abs(ev.msPerToken - 14.75) < 0.05, 'with the measured rate, got ' + ev.msPerToken.toFixed(2));
+}
+
 console.log('--- no timing, no time-based claims ---');
 {
   const L = makeLedger();

@@ -281,6 +281,10 @@ ok(done[0].payload.tokensThisGen === 3, 'reporting how many tokens it produced, 
 // so a success has to carry the size that succeeded.
 ok(done[0].payload.promptTokens === Math.round((400 + TOOL_CHARS) / 4),
    'and the prompt size that survived, got ' + done[0].payload.promptTokens);
+// This one has to be IN THE MESSAGE, not merely in the diag record: the page's
+// whole time-based ceiling is derived from it, and it was missing for a build.
+ok(typeof done[0].payload.msToFirstToken === 'number',
+   'and the first-token time the page needs to learn a prefill rate');
 
 // Second generation: the estimate must NOT be taken again (it walks the quota
 // accounting, and this runs on the path to every reply).

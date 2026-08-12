@@ -132,8 +132,15 @@ ok(/lastDeviceLoss = \{ reason: payload\.reason/.test(src),
 ok(/if \(\/out of memory\|failed to allocate\|allocation failed\|exceeds the limit\|createBuffer\/i\.test\(s\)\) return 'oom'/.test(src),
    'a genuine allocation failure still classifies as oom');
 ok(/genCount\+\+/.test(src), 'generations are counted so a leak is visible');
-ok(/payload: \{ generations: genCount, tokensThisGen: tokensThisGen, promptTokens: lastPromptTokens \}/.test(src),
-   'and reported on success, with the prompt size that survived');
+{
+  const gd = src.slice(src.indexOf("type: 'genDone',", src.indexOf('function postGenDone')));
+  ok(/promptTokens: lastPromptTokens/.test(gd.slice(0, 400)),
+     'and reported on success, with the prompt size that survived');
+  // The page's time-based ceiling is derived from this, so it must be in the
+  // MESSAGE and not only in the diag record — it was missing for one build.
+  ok(/msToFirstToken: msToFirstToken >= 0 \? msToFirstToken : null/.test(gd.slice(0, 400)),
+     'plus the first-token time the page needs to learn a prefill rate');
+}
 
 // Page side: the flag has to survive the postMessage hop and be acted on.
 ok(/handleWorkerMessage\(type, payload, e\.data\)/.test(html),

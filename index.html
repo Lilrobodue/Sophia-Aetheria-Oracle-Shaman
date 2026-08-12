@@ -1791,7 +1791,7 @@
                     Export
                 </button>
             </div>
-            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v85</div>
+            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v86</div>
             </div><!-- end sidebar-scroll -->
         </div>
 
@@ -10716,7 +10716,7 @@ return result;</textarea>
         // Keep in step with the footer version and sw.js CACHE_VERSION — it only
         // labels the diagnostics export, but a report that can't be tied to a
         // build is a report you can't act on.
-        const SOPHIA_BUILD = 'v85';
+        const SOPHIA_BUILD = 'v86';
 
         // ═══════════════════════════════════════════════════════════════════
         // Runtime diagnostics — SOPHIA_RUNTIME_BRIEF Phase A (page side)
@@ -11043,6 +11043,29 @@ import * as ort from 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.23.2/dist/o
 // 25.2 and 25.9 s across two different models), so it protects a model that has
 // never crashed; the PREFILL RATE belongs to the model, measured from
 // msToFirstToken. See localPromptBudget() and prefillRisk().
+//
+// ── SIXTH BATCH, agent-lite 1898 tok, 2026-08-12 ───────────────────────────
+//   died in prefill at 25 255 ms. Predicted 1898 x 14.75 = 28.0 s against a
+//   ~25 s limit. Seventh run, seventh time the time model holds.
+//
+// The ledger did nothing to stop it, and the export said why — two defects, both
+// found by the data rather than by re-reading the code:
+//
+//   1. msToFirstToken went into the diag record but NOT into the genDone
+//      message, so the page received undefined on every successful run and the
+//      ledger never learned a single rate. The whole time model was disconnected
+//      from its only input by one missing line.
+//   2. A model whose only history is a crash got no protection at all: the
+//      size-based ceiling needs maxOk and the time-based one needs a rate from a
+//      COMPLETED run, and agent-lite had failed twice with neither.
+//
+// The second is a design gap with a principled fix, and it is why msPerTokenMin
+// exists: a prefill still running when the driver killed it bounds the rate from
+// below. It had not finished 1898 tokens in 25 273 ms, so the model is at least
+// that slow. Weaker than a measurement — an unfinished job says nothing about how
+// much was left — so it is flagged rateIsLowerBound wherever it is used. On batch
+// 6's own numbers it yields a ceiling near 1518 tokens, inside the 1519 OK /
+// 1885 FAIL bracket this device actually demonstrated.
 env.allowLocalModels = false;
 env.useBrowserCache = true;
 // v4 hides ONNX Runtime's WebGPU warnings by default (env.logLevel defaults to
@@ -11091,7 +11114,9 @@ let standaloneOrtSessions = 0;  // sessions created on the STANDALONE runtime
 let lastPromptTokens = 0;  // size of the prompt currently being prefilled — the
                            // page pairs this with the outcome to learn what this
                            // particular device can actually swallow in one go
-let msToFirstToken = 0;    // THE number, as of the 2026-08-12 batch 3 runs: every
+let msToFirstToken = -1;   // -1 = not measured this generation, so a genuine
+                           // 0 ms is never mistaken for an absent reading.
+                           // THE number, as of the 2026-08-12 batch 3 runs: every
                            // failure on record died with zero tokens emitted, and
                            // nothing has ever died after the first one. The window
                            // of risk is everything before token 1.
@@ -11445,7 +11470,7 @@ async function preDispatchSnapshot(mode, payload) {
     }
     diag('preDispatch', rec);
     lastPromptTokens = rec.approxPromptTokens;
-    msToFirstToken = 0;
+    msToFirstToken = -1;
     dispatchStartedAt = Date.now();
 }
 
@@ -11456,7 +11481,7 @@ async function preDispatchSnapshot(mode, payload) {
 // stronger effect, since a 582-token prompt died after 464 s while a 678-token
 // one on the same model answered.
 function noteFirstToken() {
-    if (msToFirstToken || !dispatchStartedAt) return;
+    if (msToFirstToken >= 0 || !dispatchStartedAt) return;
     msToFirstToken = Date.now() - dispatchStartedAt;
     diag('firstToken', {
         generation: genCount + 1,
@@ -11480,14 +11505,24 @@ function postGenDone() {
         ms: dispatchStartedAt ? (Date.now() - dispatchStartedAt) : null,
         // Split the total: everything before the first token is the dangerous
         // part, everything after is decode, and the two behave nothing alike.
-        msToFirstToken: msToFirstToken || null,
+        msToFirstToken: msToFirstToken >= 0 ? msToFirstToken : null,
         promptTokens: lastPromptTokens,
         gpuDevices: gpuDeviceCount,
         standaloneOrtSessions: standaloneOrtSessions,
     });
+    // msToFirstToken has to travel with the message, not just sit in the diag
+    // record: the page's whole time-based model is built from it, and without it
+    // here the ledger silently learns no rate at all. (It was missing until the
+    // 2026-08-12 batch 6 export showed "ms: null" against a genDone that plainly
+    // had a first-token time.)
     self.postMessage({
         type: 'genDone',
-        payload: { generations: genCount, tokensThisGen: tokensThisGen, promptTokens: lastPromptTokens },
+        payload: {
+            generations: genCount,
+            tokensThisGen: tokensThisGen,
+            promptTokens: lastPromptTokens,
+            msToFirstToken: msToFirstToken >= 0 ? msToFirstToken : null,
+        },
     });
     dispatchStartedAt = 0;
 }
@@ -13390,6 +13425,17 @@ self.onmessage = async (e) => {
                     // that is what lets a model that has never crashed still be
                     // protected on its first oversized prompt.
                     if (dur > 0) {
+                        // A prefill that was STILL RUNNING when the driver killed it
+                        // bounds this model's rate from below: it had not finished
+                        // those tokens in that time, so it is at least this slow.
+                        // Weaker than a measured rate — an unfinished job says
+                        // nothing about how much was left — but it is real
+                        // information, and without it a model whose only history is
+                        // a crash gets no protection at all. Which is exactly what
+                        // happened to agent-lite on 2026-08-12: it had failed twice
+                        // and still had no ceiling, because both ceilings needed a
+                        // SUCCESS to exist.
+                        e.msPerTokenMin = Math.max(e.msPerTokenMin || 0, dur / tok);
                         const dev = ledger[prefillDeviceKey()] || {};
                         dev.killMs = dev.killMs ? Math.min(dev.killMs, dur) : dur;
                         dev.kills = (dev.kills || 0) + 1;
@@ -13428,9 +13474,16 @@ self.onmessage = async (e) => {
             const e = ledger[prefillLedgerKey()] || {};
             const dev = ledger[prefillDeviceKey()] || {};
             const contradicted = !!(e.minFail && e.maxOk && e.maxOk >= e.minFail);
+            // A rate measured on a run that finished is the real thing. A rate
+            // inferred from one that was killed mid-prefill is a lower bound, and
+            // only used when there is nothing better — flagged so every consumer
+            // can say which it is rather than quietly treating them alike.
+            const measuredRate = e.msPerToken || 0;
+            const boundRate = e.msPerTokenMin || 0;
             return {
                 maxOk: e.maxOk || 0, minFail: e.minFail || 0, runs: e.runs || 0, contradicted,
-                msPerToken: e.msPerToken || 0,
+                msPerToken: measuredRate || boundRate,
+                rateIsLowerBound: !measuredRate && !!boundRate,
                 killMs: dev.killMs || 0, maxOkMs: dev.maxOkMs || 0,
             };
         }
@@ -13524,8 +13577,10 @@ self.onmessage = async (e) => {
             if (ceiling && ceiling < forPrompt) {
                 const ev = prefillEvidence();
                 const why = timeBasedPrefillCeiling() === ceiling
-                    ? 'at ' + ev.msPerToken.toFixed(1) + ' ms/token this model would cross the ' +
-                      Math.round(safePrefillMs() / 1000) + ' s the driver has been shown to allow'
+                    ? 'at ' + ev.msPerToken.toFixed(1) + ' ms/token' +
+                      (ev.rateIsLowerBound ? ' (a lower bound, inferred from a prefill that was killed part-way)' : '') +
+                      ' this model would cross the ' + Math.round(safePrefillMs() / 1000) +
+                      ' s the driver has been shown to allow'
                     : 'the GPU died at ' + ev.minFail + ' tok and ' + ceiling + ' is the largest that has completed';
                 console.warn('🧠 [Prompt budget] clamped ' + forPrompt + ' → ' + ceiling +
                              ' tok on ' + prefillLedgerKey() + ': ' + why + '.');

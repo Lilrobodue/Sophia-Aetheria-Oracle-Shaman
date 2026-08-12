@@ -64,6 +64,7 @@ export async function pipeline(task, modelId, opts) {
     if (opts && opts.progress_callback) opts.progress_callback({ status: 'progress', progress: 50 });
     const fn = async (messages, o) => {
         globalThis.__PIPE_CALLS__.push({ messages, o });
+        if (globalThis.__PIPE_THROW__) throw new Error(globalThis.__PIPE_THROW__);
         if (o && o.streamer && o.streamer._cb) { o.streamer._cb('one'); o.streamer._cb('two'); o.streamer._cb('three'); }
         return [{ generated_text: 'onetwothree' }];
     };
@@ -134,6 +135,7 @@ const fakeGpu = { async requestAdapter() { return fakeAdapter; } };
 
 globalThis.self = fakeSelf;
 globalThis.__PIPE_CALLS__ = [];
+globalThis.__PIPE_THROW__ = null;
 Object.defineProperty(globalThis, 'navigator', {
   configurable: true,
   value: {
@@ -250,15 +252,73 @@ ok(diagOf('preDispatch')[1].payload.storageUsedMB === undefined,
    'but the storage estimate is taken once per load, not once per reply');
 
 console.log('--- A1: device loss reports a REASON, not a matched string ---');
-lostResolve({ reason: 'unknown', message: 'Device lost by the driver' });
+// Verbatim from the ROG Phone capture of 2026-08-12 — the point of this harness
+// is that the pipeline handles what the device actually produces, not a stand-in.
+const REAL_VULKAN_LOSS = 'vkQueueSubmit failed with VK_ERROR_DEVICE_LOST\n' +
+  ' - While handling unexpected error type DeviceLost when allowed errors are Validation.\n' +
+  ' at CheckVkSuccessImpl (../../third_party/dawn/src/dawn/native/vulkan/VulkanError.cpp:104)\n';
+lostResolve({ reason: 'unknown', message: REAL_VULKAN_LOSS });
 await settle();
 const lost = posted.filter((m) => m.type === 'gpuLost');
 ok(lost.length === 1, 'the page is told the device died');
-ok(lost[0].payload.reason === 'unknown', 'with the reason code');
-ok(lost[0].payload.message === 'Device lost by the driver', 'and the driver message');
+ok(lost[0].payload.reason === 'unknown',
+   'with the reason code — which on Adreno is "unknown", so the MESSAGE is the evidence');
+ok(/VK_ERROR_DEVICE_LOST/.test(lost[0].payload.message), 'and the driver message that names the real fault');
 ok(lost[0].payload.generations === 2, 'after how many generations');
 ok(typeof lost[0].payload.tokensThisGen === 'number', 'and how far into the current one');
+ok(lost[0].payload.phase === 'idle', 'a loss between generations is marked idle, not blamed on one');
 ok(diagOf('gpuDeviceLost').length === 1, 'and it lands in the diagnostics record too');
+
+console.log('--- why it died: a driver abort is not an out-of-memory ---');
+// The failure the ROG Phone actually produced on 2026-08-12: the device dies
+// with a Vulkan error, and the runtime then reports the mapAsync it could no
+// longer complete. Before this, the mapAsync alone made the app tell the user
+// the GPU was out of memory — sending them to Force WASM over what the evidence
+// says is a prompt-length timeout.
+globalThis.__PIPE_THROW__ = "failed to call OrtRun(). ERROR_CODE: 1, ERROR_MESSAGE: " +
+  "onnxruntime/core/providers/webgpu/buffer_manager.cc:553 ... Failed to download data from buffer: " +
+  "Failed to execute 'mapAsync' on 'GPUBuffer'";
+await fakeSelf.onmessage({ data: { type: 'generate', payload: {
+  messages: [{ role: 'user', content: 'x'.repeat(7538) }], max_new_tokens: 1024 } } });
+await settle();
+const errs = posted.filter((m) => m.type === 'genError');
+ok(errs.length === 1, 'the failure reaches the page');
+ok(errs[0].oom === true, 'still flagged as a dead session, so recovery is unchanged');
+ok(errs[0].cause === 'driver-abort',
+   'but the CAUSE is the Vulkan device loss, not memory, got: ' + errs[0].cause);
+ok(errs[0].phase === 'prefill', 'and it is known to have died in the prefill, got: ' + errs[0].phase);
+ok(typeof errs[0].msSinceDispatch === 'number', 'with a time-to-failure to compare against a good run');
+const failed = diagOf('genFailed');
+ok(failed[0].payload.deviceLoss && /VK_ERROR_DEVICE_LOST/.test(failed[0].payload.deviceLoss.message),
+   'the device-lost record is attached to the failure that followed it');
+
+// A real allocation failure must still read as one, even with the earlier
+// device loss on the record — otherwise the fix swaps one wrong answer for another.
+globalThis.__PIPE_THROW__ = 'Failed to allocate buffer: failed to allocate 2400 MB';
+await fakeSelf.onmessage({ data: { type: 'generate', payload: {
+  messages: [{ role: 'user', content: 'x' }], max_new_tokens: 64 } } });
+await settle();
+const errs2 = posted.filter((m) => m.type === 'genError');
+ok(errs2[1].cause === 'oom', 'a genuine allocation failure still classifies as oom, got: ' + errs2[1].cause);
+globalThis.__PIPE_THROW__ = null;
+
+console.log('--- is the standalone runtime doing anything at all? ---');
+// The first capture showed exactly ONE GPUDevice, requested from a wasm glue
+// blob that names neither bundle. This answers it from the other end: VLModel is
+// the only caller of the standalone InferenceSession, so a count of 0 means the
+// standalone import never ran a thing.
+ok(diagOf('standaloneOrtProbeInstalled').length === 1, 'the standalone-session probe installed');
+ok(census[0].payload.standaloneOrtSessions === 0, 'and starts at zero');
+await ortStub.InferenceSession.create();
+await settle();
+const sessions = diagOf('standaloneOrtSession');
+ok(sessions.length === 1, 'a session created on the standalone runtime is counted');
+ok(sessions[0].payload.count === 1, 'with a running total');
+
+console.log('--- the census reports what it CAN see when the shape is unknown ---');
+// env.backends.onnx is not where transformers.js v4 keeps its ORT — the real
+// capture returned null for sameOrtEnv twice. The census now says what IS there.
+ok(Array.isArray(census[0].payload.backendKeys), 'the census enumerates env.backends');
 
 console.log('--- unhandled rejections are classified, both ways ---');
 const rejectionHandlers = listeners['unhandledrejection'] || [];

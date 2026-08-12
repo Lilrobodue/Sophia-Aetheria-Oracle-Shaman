@@ -1791,7 +1791,7 @@
                     Export
                 </button>
             </div>
-            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v82</div>
+            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v83</div>
             </div><!-- end sidebar-scroll -->
         </div>
 
@@ -10716,7 +10716,7 @@ return result;</textarea>
         // Keep in step with the footer version and sw.js CACHE_VERSION — it only
         // labels the diagnostics export, but a report that can't be tied to a
         // build is a report you can't act on.
-        const SOPHIA_BUILD = 'v82';
+        const SOPHIA_BUILD = 'v83';
 
         // ═══════════════════════════════════════════════════════════════════
         // Runtime diagnostics — SOPHIA_RUNTIME_BRIEF Phase A (page side)
@@ -10915,6 +10915,35 @@ import * as ort from 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.23.2/dist/o
 // That is what makes the dual-runtime hypothesis below worth measuring: the
 // standalone onnxruntime-web@1.23.2 import IS still JSEP-era, so this worker
 // runs both the new EP and the old one in a single scope.
+//
+// ── FIRST MEASUREMENT, ROG Phone (Adreno 8xx), 2026-08-12 ──────────────────
+// Two runs on agent-lite / WebGPU, captured by the Phase A instrumentation.
+//
+//   Run 1  prompt ~1427 tokens  →  loaded in 2.2 s, streamed 147 tokens, fine.
+//   Run 2  prompt ~1885 tokens  →  device lost 25 s in, 0 tokens emitted:
+//            "vkQueueSubmit failed with VK_ERROR_DEVICE_LOST"
+//            at dawn/native/vulkan/VulkanError.cpp:104
+//          then ORT reported a mapAsync failure from
+//            onnxruntime/core/providers/webgpu/buffer_manager.cc
+//          (note the path: that is the NATIVE WebGPU EP, not JSEP — v4 is
+//           genuinely what is running). Auto-recovery to WASM + Qwen 0.5B
+//          worked and answered.
+//
+// THE DUAL-RUNTIME HYPOTHESIS DID NOT SURVIVE CONTACT WITH THE DATA. Both runs
+// created exactly ONE GPUDevice in the worker (gpuDevices: 1), and the only
+// requestAdapter chain traces back to transformers.js's own init. The standalone
+// import is loaded but appears to be inert for text-generation paths — it is
+// VLModel's dependency and VLModel never runs unless agent-vision is selected.
+// Phase B (?ortIsolation=1) is therefore no longer the priority; the census
+// already answered it. Recorded rather than quietly dropped, per the brief §4.
+//
+// What the data points at instead is the brief's own fallback explanation: the
+// defect is below the WebGPU API, in Dawn's Vulkan backend or the Adreno driver
+// (cf. LiteRT #8065). The failure is a long-submission watchdog kill during
+// PREFILL — it scales with prompt size, not with generation length, and it is a
+// timeout rather than an allocation failure (2 GB maxBufferSize, no allocation
+// error anywhere in the capture). See gpuFailureCause() below, which exists
+// because this build used to call that an out-of-memory.
 env.allowLocalModels = false;
 env.useBrowserCache = true;
 // v4 hides ONNX Runtime's WebGPU warnings by default (env.logLevel defaults to
@@ -10956,6 +10985,16 @@ function diag(event, data) {
 let gpuDeviceCount = 0;    // >1 in one worker is the dual-runtime smoking gun
 let gpuAdapterInfo = null; // vendor/architecture — the Adreno driver question
 let gpuLimits = null;      // real device limits, not the page's separate probe
+let dispatchStartedAt = 0; // when the current generation was handed to the GPU —
+                           // time-to-failure is what separates a driver watchdog
+                           // kill from an instant allocation refusal
+let standaloneOrtSessions = 0;  // sessions created on the STANDALONE runtime
+
+// This worker's own blob URL, so a blob: frame in a stack can be told apart
+// from one belonging to a module the runtimes created for themselves.
+const WORKER_URL = (function () {
+    try { return String(self.location && self.location.href) || ''; } catch (e) { return ''; }
+})();
 
 // Which bundle asked for the GPU? Both CDN URLs appear in the call stack, so
 // this one string answers "is the standalone ORT initialising WebGPU too?".
@@ -10973,6 +11012,19 @@ function requesterFromStack(stack) {
     if (ort19 && tjs) return 'both-in-stack';
     if (ort19) return 'onnxruntime-web@1.23.2 (standalone, JSEP)';
     if (tjs) return 'transformers.js@4.2.0 (bundled native EP)';
+    // ROG PHONE CAPTURE, 2026-08-12: the call that actually created the device
+    // came back 'unknown', because ONNX Runtime's WebGPU EP asks from inside its
+    // compiled wasm module through a glue blob — no CDN URL survives in the
+    // stack, just wasm:// frames and a blob: URL that is not this worker's own.
+    // Naming that is more useful than 'unknown', and standaloneOrtSessions
+    // settles which runtime it belongs to.
+    // No regex literals here on purpose: a backslash inside this template
+    // literal is eaten when the page evaluates it, so an escaped slash would
+    // ship as a broken pattern. String matching needs no escapes.
+    if (s.indexOf('wasm://wasm') !== -1) return 'ONNX Runtime wasm EP (glue blob) — see standaloneOrtSessions';
+    const blobFrames = s.split('blob:').length - 1;
+    const ownFrames = WORKER_URL ? (s.split(WORKER_URL).length - 1) : 0;
+    if (blobFrames > ownFrames) return 'a blob module that is not this worker';
     return 'unknown';
 }
 
@@ -11017,7 +11069,16 @@ function hookDevice(device, requester, stack) {
                     requester: requester,
                     generations: genCount,
                     tokensThisGen: tokensThisGen,
+                    // Where in the generation it died. 0 tokens means it never
+                    // finished the prefill — a different failure from one that
+                    // dies partway through decoding, and the ROG Phone capture
+                    // was the first kind.
+                    phase: dispatchStartedAt ? (tokensThisGen === 0 ? 'prefill' : 'decode') : 'idle',
+                    msSinceDispatch: dispatchStartedAt ? (Date.now() - dispatchStartedAt) : null,
                 };
+                // Kept for gpuFailureCause(): whatever the runtime throws next is
+                // downstream of this, so this is the evidence that should win.
+                lastDeviceLoss = { reason: payload.reason, message: payload.message, t: Date.now() };
                 diag('gpuDeviceLost', payload);
                 self.postMessage({ type: 'gpuLost', payload: payload });
             }, function () { /* never rejects */ });
@@ -11107,7 +11168,10 @@ function safeVersions(v) {
 }
 
 function runtimeCensus(when) {
-    const out = { when: when, standalone: null, bundled: null, sameOrtEnv: null, globalOrt: false };
+    const out = {
+        when: when, standalone: null, bundled: null, sameOrtEnv: null, globalOrt: false,
+        standaloneOrtSessions: standaloneOrtSessions, gpuDevices: gpuDeviceCount,
+    };
     try {
         if (typeof ort !== 'undefined' && ort && ort.env) {
             out.standalone = {
@@ -11119,20 +11183,56 @@ function runtimeCensus(when) {
         }
     } catch (e) { out.standalone = 'error: ' + (e && e.message); }
     try {
-        const bundled = env.backends && env.backends.onnx;
+        // ROG PHONE CAPTURE, 2026-08-12: this reported "not initialised yet" both
+        // at start AND after load, so sameOrtEnv came back null and the sharpest
+        // comparison in the census never ran. env.backends.onnx is evidently not
+        // where transformers.js v4 keeps its ORT handle. Rather than guess at the
+        // new path, report the shape of what IS there — the next capture then
+        // says where to look instead of repeating the same null.
+        const backends = env.backends || {};
+        out.backendKeys = Object.keys(backends);
+        const bundled = backends.onnx;
         if (bundled && bundled.env) {
             out.bundled = {
                 versions: safeVersions(bundled.env.versions),
                 numThreads: (bundled.env.wasm && bundled.env.wasm.numThreads) || null,
             };
             if (typeof ort !== 'undefined' && ort && ort.env) out.sameOrtEnv = (bundled.env === ort.env);
+        } else if (bundled) {
+            out.bundled = 'env.backends.onnx exists but has no .env — keys: ' +
+                          Object.keys(bundled).slice(0, 20).join(',');
         } else {
-            out.bundled = 'not initialised yet (transformers.js binds ORT lazily)';
+            out.bundled = 'env.backends.onnx is absent — transformers.js v4 keeps its ORT elsewhere';
         }
     } catch (e) { out.bundled = 'error: ' + (e && e.message); }
     try { out.globalOrt = typeof globalThis.ort !== 'undefined'; } catch (e) {}
     return diag('runtimeCensus', out);
 }
+
+// Does the standalone runtime ever actually run anything? The first capture
+// showed ONE GPUDevice in the worker, created from a wasm glue blob that names
+// neither bundle — so "which runtime owns that device" could not be read off the
+// stack. This settles it from the other end: VLModel is the only caller of the
+// standalone InferenceSession, so if this counter stays at 0 while a device
+// exists, the device belongs to transformers.js and the standalone import is
+// inert. A namespace object is frozen, but the class it exports is not.
+function installStandaloneOrtProbe() {
+    try {
+        if (typeof ort === 'undefined' || !ort || !ort.InferenceSession) return;
+        if (typeof ort.InferenceSession.create !== 'function' || ort.InferenceSession.__sophiaProbed) return;
+        const origCreate = ort.InferenceSession.create.bind(ort.InferenceSession);
+        ort.InferenceSession.create = function () {
+            standaloneOrtSessions++;
+            diag('standaloneOrtSession', { count: standaloneOrtSessions, stack: shortStack() });
+            return origCreate.apply(null, arguments);
+        };
+        ort.InferenceSession.__sophiaProbed = true;
+        diag('standaloneOrtProbeInstalled', {});
+    } catch (e) {
+        console.warn('[worker] standalone ORT probe could not be installed:', e && e.message);
+    }
+}
+installStandaloneOrtProbe();
 runtimeCensus('worker-start');
 
 // A3 — what is about to be allocated. The crash is on generate, not load, and
@@ -11150,6 +11250,7 @@ async function preDispatchSnapshot(mode, payload) {
         approxPromptTokens: Math.round(chars / 4),
         maxNewTokens: (payload && payload.max_new_tokens) || null,
         gpuDevices: gpuDeviceCount,
+        standaloneOrtSessions: standaloneOrtSessions,
         limits: gpuLimits,
         adapter: gpuAdapterInfo,
     };
@@ -11168,6 +11269,7 @@ async function preDispatchSnapshot(mode, payload) {
         } catch (e) { /* not exposed in all workers */ }
     }
     diag('preDispatch', rec);
+    dispatchStartedAt = Date.now();
 }
 
 // Re-census after load: transformers.js binds its bundled ORT lazily, so the
@@ -11177,8 +11279,17 @@ async function preDispatchSnapshot(mode, payload) {
 // baseline protocol is three runs, and "run 2 completed 180 tokens" is what
 // makes "run 3 died at 41" mean something.
 function postGenDone() {
-    diag('genDone', { generation: genCount, tokensThisGen: tokensThisGen, gpuDevices: gpuDeviceCount });
+    // ms is the control value for a time-to-failure comparison: a run that dies
+    // at 25 s means nothing without knowing that a successful one takes 17 s.
+    diag('genDone', {
+        generation: genCount,
+        tokensThisGen: tokensThisGen,
+        ms: dispatchStartedAt ? (Date.now() - dispatchStartedAt) : null,
+        gpuDevices: gpuDeviceCount,
+        standaloneOrtSessions: standaloneOrtSessions,
+    });
     self.postMessage({ type: 'genDone', payload: { generations: genCount, tokensThisGen: tokensThisGen } });
+    dispatchStartedAt = 0;
 }
 
 function postLoaded(startedAt) {
@@ -11243,31 +11354,70 @@ function disposeTensor(t, keep) {
     } catch (e) { /* already released, or a CPU tensor with no disposer */ }
 }
 
-// Does this failure mean we ran out of GPU memory / lost the device? Those need
-// a different response from an ordinary error: the session is dead and only a
-// reload brings it back, so the app is told explicitly rather than left to retry
-// into a corpse.
+// Does this failure mean the GPU session is gone? Those need a different
+// response from an ordinary error: the session is dead and only a reload brings
+// it back, so the app is told explicitly rather than left to retry into a corpse.
+// This stays deliberately broad — it decides "is the session dead", not why.
 function isGpuExhaustion(msg) {
     return /out of memory|oom|device is lost|device.*lost|failed to allocate|buffer size|exceeds the limit|createBuffer|mapAsync/i
         .test(String(msg || ''));
 }
 
+// WHY it died, which is a different question and needs a different answer.
+//
+// ROG PHONE CAPTURE, 2026-08-12 — the first real measurement (Phase A). The
+// device died with:
+//   "vkQueueSubmit failed with VK_ERROR_DEVICE_LOST ... at CheckVkSuccessImpl
+//    (third_party/dawn/src/dawn/native/vulkan/VulkanError.cpp:104)"
+// 25 s into the PREFILL of a ~1885-token prompt, before a single token was
+// emitted, with maxBufferSize = 2 GB and no allocation failure anywhere. The
+// same build had just completed a 1427-token prompt and streamed 147 tokens.
+//
+// The mapAsync error ORT raised afterwards is the CONSEQUENCE of an already-dead
+// device, not the cause — but mapAsync is what isGpuExhaustion() matches, so the
+// app told the user the GPU was out of memory. It wasn't. That misdiagnosis sends
+// people to Force WASM when the thing that actually helps is a shorter prompt.
+//
+// So: prefer the GPUDevice.lost record. It is the primary event; whatever the
+// runtime throws next is downstream of it.
+let lastDeviceLoss = null;   // {reason, message, t} from GPUDevice.lost
+
+function gpuFailureCause(msg) {
+    const s = (lastDeviceLoss ? lastDeviceLoss.message + ' ' : '') + String(msg || '');
+    // A genuine allocation failure names itself and is unambiguous.
+    if (/out of memory|failed to allocate|allocation failed|exceeds the limit|createBuffer/i.test(s)) return 'oom';
+    // A driver that gave up on a submission. On Adreno/Vulkan this is the
+    // classic long-running-dispatch watchdog kill.
+    if (/VK_ERROR_DEVICE_LOST|vkQueueSubmit|VulkanError|Dawn|DeviceLost|device (is|was) lost|external Instance|mapAsync/i.test(s)) return 'driver-abort';
+    return 'other';
+}
+
 function postGenError(err, where) {
     const msg = (err && err.message) ? err.message : String(err);
     const oom = isGpuExhaustion(msg);
-    console.error('[worker] ' + (where || 'generate') + ' failed' + (oom ? ' (GPU exhaustion)' : '') + ':', msg);
+    const cause = oom ? gpuFailureCause(msg) : 'other';
+    const msSinceDispatch = dispatchStartedAt ? (Date.now() - dispatchStartedAt) : null;
+    console.error('[worker] ' + (where || 'generate') + ' failed' + (oom ? ' (' + cause + ')' : '') + ':', msg);
     // How far it got before dying is the number the brief's baseline protocol
-    // asks for, and it separates "died on the first dispatch" (allocation) from
-    // "died 200 tokens in" (KV cache growth).
+    // asks for, and it separates "died in the prefill" from "died 200 tokens
+    // into the decode" — different failures with different fixes.
     diag('genFailed', {
         where: where || 'generate',
         message: msg.slice(0, 400),
         oom: oom,
+        cause: cause,
+        phase: tokensThisGen === 0 ? 'prefill' : 'decode',
+        msSinceDispatch: msSinceDispatch,
+        deviceLoss: lastDeviceLoss,
         generation: genCount + 1,
         tokensThisGen: tokensThisGen,
         gpuDevices: gpuDeviceCount,
     });
-    self.postMessage({ type: 'genError', payload: msg, oom, generations: genCount, tokensThisGen });
+    self.postMessage({
+        type: 'genError', payload: msg, oom, cause, generations: genCount,
+        tokensThisGen, msSinceDispatch, phase: tokensThisGen === 0 ? 'prefill' : 'decode',
+    });
+    dispatchStartedAt = 0;
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -12405,6 +12555,9 @@ self.onmessage = async (e) => {
                 runtimeDiag.note('genErrorSeen', {
                     message: String(payload || '').slice(0, 400),
                     oom: !!(meta && meta.oom),
+                    cause: (meta && meta.cause) || null,
+                    phase: (meta && meta.phase) || null,
+                    msSinceDispatch: (meta && meta.msSinceDispatch) || null,
                     generations: (meta && meta.generations) || 0,
                     tokensThisGen: (meta && meta.tokensThisGen) || 0,
                 });
@@ -12415,7 +12568,17 @@ self.onmessage = async (e) => {
                 if (meta && meta.oom) {
                     localInference.gpuExhausted = true;
                     const n = meta.generations || localInference.generations || 0;
-                    console.error('🧠 GPU exhausted after ' + n + ' generation(s) — releasing the session.');
+                    // The session is dead either way, so the recovery is the same.
+                    // What differs is what to TELL the user — and until the ROG
+                    // Phone capture of 2026-08-12 this always said "out of memory",
+                    // including for a Vulkan driver abort 25 s into a prefill on a
+                    // GPU with 2 GB of headroom. Sending someone to Force WASM over
+                    // a prompt-length problem wastes their time; see gpuFailureCause().
+                    const driverAbort = meta.cause === 'driver-abort';
+                    const secs = meta.msSinceDispatch ? Math.round(meta.msSinceDispatch / 1000) : null;
+                    console.error('🧠 GPU session lost (' + (meta.cause || 'unknown') + ') after ' + n +
+                                  ' generation(s)' + (secs ? ', ' + secs + 's into the ' + (meta.phase || 'run') : '') +
+                                  ' — releasing the session.');
                     try { localInference.worker.postMessage({ type: 'unload' }); } catch (_) {}
                     localInference.ready = false;
                     const loadBtn = document.getElementById('loadModelBtn');
@@ -12423,10 +12586,22 @@ self.onmessage = async (e) => {
                     if (loadBtn) loadBtn.style.display = '';
                     if (unloadBtn) unloadBtn.style.display = 'none';
                     const statusEl = document.getElementById('localModelStatus');
-                    if (statusEl) { statusEl.textContent = 'GPU out of memory — reload'; statusEl.style.color = '#ff9966'; }
+                    if (statusEl) {
+                        statusEl.textContent = driverAbort ? 'GPU driver gave up — reload' : 'GPU out of memory — reload';
+                        statusEl.style.color = '#ff9966';
+                    }
                     updateInferenceBadge('remote', 'Remote (API)');
-                    showStatus('The GPU ran out of memory after ' + n + ' generation' + (n === 1 ? '' : 's') +
-                               '. Model released — press Load Model to start clean, or tick Force WASM to trade speed for stability.', 'error');
+                    if (driverAbort) {
+                        showStatus('The phone’s GPU driver abandoned the work' +
+                            (secs ? ' after ' + secs + ' seconds' : '') +
+                            (meta.phase === 'prefill' ? ', while still reading the prompt' : '') +
+                            '. This is a timeout, not a memory problem — a shorter prompt or fewer tools ' +
+                            'is more likely to help than anything else. Model released; press Load Model to start clean, ' +
+                            'or tick Force WASM for the slow-but-certain path.', 'error');
+                    } else {
+                        showStatus('The GPU ran out of memory after ' + n + ' generation' + (n === 1 ? '' : 's') +
+                                   '. Model released — press Load Model to start clean, or tick Force WASM to trade speed for stability.', 'error');
+                    }
                 }
                 if (localInference._pending) localInference._pending.reject(new Error(payload));
                 localInference._pending = null;

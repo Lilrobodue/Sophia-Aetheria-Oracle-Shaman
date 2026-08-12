@@ -37,6 +37,18 @@ ok(raw.indexOf('`') === -1, 'no stray backtick inside the worker source');
 ok(!/\$\{/.test(raw), 'no ${} interpolation — page state must not leak into the worker');
 ok(raw.length > 40000, 'the extracted worker is the whole thing, got ' + raw.length + ' chars');
 
+// Sibling of the stray-backtick bug, and it bit for real on 2026-08-12: a single
+// backslash inside this template literal is EATEN when the page evaluates it, so
+// /wasm:\/\/wasm/ ships as /wasm://wasm/ — a syntax error that no amount of
+// reading the file would reveal, because the file looks correct. Any backslash
+// meant for the worker must be written doubled.
+const BS = String.fromCharCode(92);
+raw.split('\n').forEach((line, i) => {
+  const withoutPairs = line.split(BS + BS).join('');
+  ok(!withoutPairs.includes(BS),
+     'line ' + (i + 1) + ' of the worker has a lone backslash (double it): ' + line.trim().slice(0, 90));
+});
+
 // Everything below tests the string the BROWSER builds, not the text on disk.
 // They differ: an escape sequence in the file (\\n) is one thing to a raw slice
 // and another once the template literal is evaluated, and it is the evaluated
@@ -105,8 +117,18 @@ console.log('--- GPU exhaustion is reported, not swallowed ---');
 ok(/function isGpuExhaustion\(/.test(src), 'GPU exhaustion is classified');
 ['out of memory', 'device is lost', 'failed to allocate', 'mapAsync'].forEach(pat =>
   ok(src.includes(pat), 'classifier covers "' + pat + '"'));
-ok(/postMessage\(\{ type: 'genError', payload: msg, oom, generations: genCount, tokensThisGen \}\)/.test(src),
-   'genError carries the oom flag, the generation count and how far it got');
+ok(/type: 'genError', payload: msg, oom, cause, generations: genCount,/.test(src),
+   'genError carries the oom flag, WHY it died, and the generation count');
+ok(/tokensThisGen, msSinceDispatch, phase:/.test(src),
+   'plus how far it got, how long it took, and whether it died in prefill or decode');
+// The distinction the first ROG Phone capture forced: a Vulkan driver abort was
+// being reported to the user as an out-of-memory, which points at the wrong fix.
+ok(/function gpuFailureCause\(/.test(src), 'GPU failures are classified by cause, not just detected');
+ok(/VK_ERROR_DEVICE_LOST/.test(src), 'including the Vulkan device-lost signature seen on Adreno');
+ok(/lastDeviceLoss = \{ reason: payload\.reason/.test(src),
+   'and the GPUDevice.lost record is kept, because the error thrown after it is downstream of it');
+ok(/if \(\/out of memory\|failed to allocate\|allocation failed\|exceeds the limit\|createBuffer\/i\.test\(s\)\) return 'oom'/.test(src),
+   'a genuine allocation failure still classifies as oom');
 ok(/genCount\+\+/.test(src), 'generations are counted so a leak is visible');
 ok(/type: 'genDone', payload: \{ generations: genCount, tokensThisGen: tokensThisGen \}/.test(src),
    'and reported on success');

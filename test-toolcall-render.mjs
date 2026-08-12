@@ -64,15 +64,16 @@ const env = {
             : null),
     },
     console: { warn() {}, error() {}, log() {} },
-    // The follow-up generators, instrumented so the test can tell which ran.
-    streamFollowUp: async (prompt) => {
-        followUpCalls.push({ via: 'streaming', prompt });
+    // The follow-up generators, instrumented so the test can tell which ran and
+    // what context it was handed.
+    streamFollowUp: async (prompt, spokenSoFar) => {
+        followUpCalls.push({ via: 'streaming', prompt, spokenSoFar });
         const text = 'The Star speaks of renewal after a long stretch of effort.';
         ui.push({ kind: 'bubble', content: text });
         return text;
     },
-    generateResponse: async (prompt) => {
-        followUpCalls.push({ via: 'non-streaming', prompt });
+    generateResponse: async (prompt, files, spokenSoFar) => {
+        followUpCalls.push({ via: 'non-streaming', prompt, spokenSoFar });
         return 'The Star speaks of renewal after a long stretch of effort.';
     },
 };
@@ -80,11 +81,18 @@ const env = {
 const src = [
     between('function stripThinkBlocks(text) {', 'truncated by max_tokens\n        }'),
     between('function normalizeReasoningTags(text, preopened) {', '// (c), or no reasoning\n        }'),
+    // The real gates and the real continuation wording, not stubs — they are
+    // exactly what these tests exist to pin down.
+    between('function agentOnlyToolsEnabled() {', 'catch (e) { return false; }\n        }'),
+    between('function syncToolsEnabled() {', 'catch (e) { return false; }\n        }'),
+    between('function withSpokenTurn(messages, spoken) {', 'return out;\n        }'),
+    between('function followUpPromptFor(toolName, toolResult, spoken) {', "in your response.';\n        }"),
     between('async function processResponse(response, streamId = null) {', '\n        }\n\n        // One fixed element id'),
-    'return { processResponse };',
+    'return { processResponse, syncToolsEnabled, agentOnlyToolsEnabled, withSpokenTurn, followUpPromptFor };',
 ].join('\n');
 
-const { processResponse } = new Function(...Object.keys(env), src)(...Object.values(env));
+const { processResponse, syncToolsEnabled, agentOnlyToolsEnabled, withSpokenTurn, followUpPromptFor } =
+    new Function(...Object.keys(env), src)(...Object.values(env));
 
 // chatHistory is a closure variable in the app; expose it the same way.
 Object.defineProperty(globalThis, 'chatHistory', {
@@ -160,6 +168,88 @@ await processResponse('Drawing.\n' + NATIVE_CALL, 'streaming-message');
 t('reasoning panel re-attached after the bubble is repainted',
     ui.some(u => u.kind === 'bubble' && u.content.includes('reasoning-block')));
 t('reasoning never enters chatHistory', !/reasoning-block/.test(chatHistory.at(-1).content));
+
+/* 7. The follow-up must CONTINUE the half-spoken turn, not answer afresh.
+ *
+ * A model stops generating the moment it emits a tool call, so the opening ends
+ * mid-thought. The follow-up used to be handed the user's question and a tool
+ * result with no trace of what Sophia had already said — chatHistory is not
+ * written until the whole turn ends — so it started over and said the same
+ * things again. Reported from the desktop as: the first half looked truncated,
+ * and the second half mildly repeated it. */
+reset();
+bubble.content = 'Let me draw for you — I sense a threshold here.\n' + NATIVE_CALL;
+await processResponse('Let me draw for you — I sense a threshold here.\n' + NATIVE_CALL, 'streaming-message');
+t('the follow-up is handed what was already said',
+    followUpCalls[0].spokenSoFar === 'Let me draw for you — I sense a threshold here.');
+t('and is asked to carry on rather than restart', /carry straight on/.test(followUpCalls[0].prompt));
+t('and told plainly not to repeat itself', /not restate what you already said/i.test(followUpCalls[0].prompt));
+t('the tool result is still in the prompt', /tarot_draw tool returned/.test(followUpCalls[0].prompt));
+
+/* 8. Nothing said before the call — there is nothing to continue, so ask plainly */
+reset();
+bubble.content = NATIVE_CALL;
+await processResponse(NATIVE_CALL, 'streaming-message');
+t('no continuation instruction when nothing was spoken', !/carry straight on/.test(followUpCalls[0].prompt));
+t('it just interprets', /interpret this result naturally/.test(followUpCalls[0].prompt));
+
+/* 9. withSpokenTurn puts the half-turn in the right place */
+{
+    const msgs = [{ role: 'system', content: 's' }, { role: 'user', content: 'q' }, { role: 'user', content: 'tool result' }];
+    const out = withSpokenTurn(msgs, 'I sense a threshold.');
+    t('the spoken half goes in as an assistant turn', out[2].role === 'assistant');
+    t('immediately before the tool result', out[3].content === 'tool result');
+    t('the original array is not mutated', msgs.length === 3);
+    t('empty spoken text changes nothing', withSpokenTurn(msgs, '   ').length === 3);
+    t('missing spoken text changes nothing', withSpokenTurn(msgs).length === 3);
+}
+
+/* 10. The gates. This is the bug that made every reading a hallucination:
+ * nine tools enabled, none of them agent-only, so the loop never armed — and
+ * the fallback parser was skipped on local, so the TOOL_CALL: reply was read by
+ * nobody. Sophia answered from her own head and returned hexagram 2 every time. */
+{
+    // `tools` is bound into the extracted functions by reference, so the registry
+    // has to be mutated in place — reassigning env.tools would change nothing.
+    const saveTools = { ...env.tools };
+    const saveFull = env.config.fullPromptLocal;
+    const setTools = (obj) => {
+        for (const k of Object.keys(env.tools)) delete env.tools[k];
+        Object.assign(env.tools, obj);
+    };
+
+    setTools({ tarot_draw: { enabled: true }, neural_iching: { enabled: true } });
+    t('divination tools are sync tools', syncToolsEnabled() === true);
+    t('and do not arm the multi-hop loop', agentOnlyToolsEnabled() === false);
+
+    setTools({ web_search: { enabled: true, agentTool: true }, tarot_draw: { enabled: false } });
+    t('an agent-only tool does arm the loop', agentOnlyToolsEnabled() === true);
+    t('and is not mistaken for a sync tool', syncToolsEnabled() === false);
+
+    setTools({ tarot_draw: { enabled: false }, web_search: { enabled: false, agentTool: true } });
+    t('nothing enabled arms nothing', !syncToolsEnabled() && !agentOnlyToolsEnabled());
+
+    // The real-world default: local model, full-prompt OFF, divination tools ON.
+    // Before the fix this combination could not run a tool by any route.
+    setTools(saveTools);
+    env.config.fullPromptLocal = false;
+    reset();
+    bubble.content = 'Let me draw.\n' + NATIVE_CALL;
+    await processResponse('Let me draw.\n' + NATIVE_CALL, 'streaming-message');
+    t('a local model with tools on DOES run them, full-prompt off',
+        ui.some(u => /Tool Called:<\/strong> tarot_draw/.test(u.content)));
+
+    // And with every tool switched off, the old cheap skip still applies.
+    setTools({});
+    reset();
+    bubble.content = 'Let me draw.\n' + NATIVE_CALL;
+    await processResponse('Let me draw.\n' + NATIVE_CALL, 'streaming-message');
+    t('no tools enabled: nothing is parsed and nothing runs',
+        !ui.some(u => /Tool Called:/.test(u.content)));
+
+    setTools(saveTools);
+    env.config.fullPromptLocal = saveFull;
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);

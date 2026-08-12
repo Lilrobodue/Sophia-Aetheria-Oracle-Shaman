@@ -172,9 +172,12 @@ console.log('--- time, not tokens: the real ROG Phone numbers ---');
 
   L.recordPrefillOutcome(1949, 'fail', 25881);
   ok(L.prefillEvidence().killMs === 25881, 'the kill time is recorded, got ' + L.prefillEvidence().killMs);
-  // The clamp aims at the longest prefill actually completed (13 998 ms here),
-  // not at a fraction of the kill time — measurement over margin.
-  ok(L.safePrefillMs() === 13998, 'the clamp aims at the longest prefill that completed, got ' + L.safePrefillMs());
+  // The clamp aims between the longest prefill that completed (13 998 ms) and
+  // the one that was killed (25 881 ms) — the interval the truth lies in.
+  ok(L.safePrefillMs() === Math.round(13998 + (25881 - 13998) * 0.5),
+     'the clamp aims into the unexplored gap, got ' + L.safePrefillMs());
+  ok(L.safePrefillMs() > 13998 && L.safePrefillMs() < 25881,
+     'strictly between proven-good and proven-fatal');
 
   // Every real run, checked against the prediction.
   const predict = (t) => Math.round(L.predictedPrefillMs(t) / 100) / 10;
@@ -184,12 +187,78 @@ console.log('--- time, not tokens: the real ROG Phone numbers ---');
   ok(L.prefillRisk(934) === null && L.prefillRisk(1427) === null && L.prefillRisk(1519) === null,
      'every prompt that actually completed is judged safe');
   ok(L.prefillRisk(1885) && L.prefillRisk(1949), 'and both that actually died are judged risky');
-  ok(L.timeBasedPrefillCeiling() === 949,
-     'the ceiling is where the rate crosses the proven-safe duration, got ' + L.timeBasedPrefillCeiling());
+  ok(L.timeBasedPrefillCeiling() === Math.floor(L.safePrefillMs() / rate),
+     'the ceiling is where the rate crosses that budget, got ' + L.timeBasedPrefillCeiling());
+  ok(L.timeBasedPrefillCeiling() > 949,
+     'and it sits ABOVE the largest proven prompt, or the ledger could never learn more');
+  ok(L.timeBasedPrefillCeiling() < 1949,
+     'while staying below the size that actually died, got ' + L.timeBasedPrefillCeiling());
   // The asymmetry is the point: the clamp is cautious because trimming history is
   // cheap, the warning is not because interrupting someone is not.
-  ok(L.timeBasedPrefillCeiling() < 1885 && L.prefillRisk(1519) === null,
-     'so a prompt between the two thresholds is trimmed toward, but never warned about');
+  ok(L.prefillRisk(1519) === null,
+     'a prompt between the two thresholds is trimmed toward, but never warned about');
+}
+
+console.log('--- the ceiling must be able to GROW (the batch 7 ratchet) ---');
+{
+  // Batch 7's real ledger: agent-lite at 14.19 ms/token, longest completed
+  // prefill 15 051 ms, device killed at 25 273 ms. Aiming the clamp at the
+  // longest success gives 1060 tokens — on a device that had completed 1519 a
+  // batch earlier — and then seals itself shut: capped at 1060, no prompt ever
+  // exceeds 1060, so nothing longer can ever be proven and the cap is permanent.
+  const L = makeLedger();
+  L.setModel('agent-lite');
+  L.recordPrefillOutcome(1898, 'fail', 25273);
+  L.recordPrefillOutcome(1061, 'ok', 15051);
+  const ceiling = L.timeBasedPrefillCeiling();
+  ok(ceiling > 1061, 'the ceiling reaches past the largest proven prompt, got ' + ceiling);
+  ok(ceiling < 1898, 'but never as far as one known to kill, got ' + ceiling);
+
+  // And it converges: a success inside the gap raises the floor, so the next
+  // ceiling is higher again. Bisection, not a ratchet.
+  L.recordPrefillOutcome(ceiling, 'ok', Math.round(ceiling * 14.1857));
+  const next = L.timeBasedPrefillCeiling();
+  ok(next > ceiling, 'each success opens the next step, got ' + next + ' after ' + ceiling);
+  ok(next < 1898, 'still bounded by what is known to fail, got ' + next);
+
+  // A failure closes it from the other side.
+  const L2 = makeLedger();
+  L2.setModel('agent-lite');
+  L2.recordPrefillOutcome(1898, 'fail', 25273);
+  L2.recordPrefillOutcome(1061, 'ok', 15051);
+  L2.recordPrefillOutcome(1500, 'fail', 21000);
+  ok(L2.prefillEvidence().killMs === 21000, 'a nearer failure tightens the bracket');
+  ok(L2.timeBasedPrefillCeiling() < ceiling, 'and the ceiling comes down with it');
+}
+
+console.log('--- exploration stops once the bracket is narrow ---');
+{
+  // Every wrong probe costs a lost GPU and a reload, so the last few percent are
+  // not worth taking. Once the unexplored gap is under a tenth of the kill time,
+  // the budget settles on what is proven.
+  const L = makeLedger();
+  L.recordPrefillOutcome(1898, 'fail', 25000);
+  L.recordPrefillOutcome(1000, 'ok', 24000);       // gap is 4% of the kill time
+  ok(L.safePrefillMs() === 24000, 'it stops at the proven duration, got ' + L.safePrefillMs());
+  ok(L.safePrefillMs() < 25000, 'and never at or above the one that killed a device');
+
+  // Wider gap: still exploring.
+  const L2 = makeLedger();
+  L2.recordPrefillOutcome(1898, 'fail', 25000);
+  L2.recordPrefillOutcome(1000, 'ok', 15000);      // gap is 40%
+  ok(L2.safePrefillMs() === 20000, 'a wide gap is still bisected, got ' + L2.safePrefillMs());
+}
+
+console.log('--- the token rail bounds the exploration independently ---');
+{
+  // Two kinds of evidence — a duration and a token count — and the stricter wins,
+  // so a fast model cannot be talked into a size that has already killed it.
+  const L = makeLedger();
+  L.setModel('agent-lite');
+  L.recordPrefillOutcome(1200, 'fail', 25000);
+  L.recordPrefillOutcome(1100, 'ok', 8000);        // very fast: 7.3 ms/tok
+  ok(L.timeBasedPrefillCeiling() > 1200, 'the timing alone would allow more than the failing size');
+  ok(L.measuredPrefillCeiling() === 1199, 'but the token rail holds it below it, got ' + L.measuredPrefillCeiling());
 }
 
 console.log('--- the device limit transfers to a model that has never crashed ---');

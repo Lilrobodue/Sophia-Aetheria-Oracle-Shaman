@@ -1791,7 +1791,7 @@
                     Export
                 </button>
             </div>
-            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v86</div>
+            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v89</div>
             </div><!-- end sidebar-scroll -->
         </div>
 
@@ -10716,7 +10716,7 @@ return result;</textarea>
         // Keep in step with the footer version and sw.js CACHE_VERSION — it only
         // labels the diagnostics export, but a report that can't be tied to a
         // build is a report you can't act on.
-        const SOPHIA_BUILD = 'v86';
+        const SOPHIA_BUILD = 'v89';
 
         // ═══════════════════════════════════════════════════════════════════
         // Runtime diagnostics — SOPHIA_RUNTIME_BRIEF Phase A (page side)
@@ -11066,6 +11066,23 @@ import * as ort from 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.23.2/dist/o
 // much was left — so it is flagged rateIsLowerBound wherever it is used. On batch
 // 6's own numbers it yields a ceiling near 1518 tokens, inside the 1519 OK /
 // 1885 FAIL bracket this device actually demonstrated.
+//
+// ── SEVENTH BATCH, agent-lite on v86, three clean generations ──────────────
+//   1061 tok → first token 15 051 ms   = 14.19 ms/token
+//    835 tok → first token 11 684 ms   = 13.99 ms/token
+//    901 tok → first token 12 548 ms   = 13.93 ms/token
+//
+// The ledger works, and the rate cross-validates: 13.93–14.19 here against
+// reason-lite's 14.75, two different LFM2.5-1.2B-q4 models agreeing inside 6%.
+//
+// It also exposed a trap in the clamp, which is what PREFILL_EXPLORE now exists
+// for. Aiming the budget at the longest COMPLETED prefill gave 1060 tokens on a
+// device that had finished 1519 a batch earlier — and then sealed itself shut,
+// because a budget of 1060 means nothing longer is ever attempted, so nothing
+// longer is ever proven. A permanent 30% context cut from one cautious reading.
+// The fix is to aim into the interval between proven-good and proven-fatal so
+// the bracket can close, stopping once the remaining gap is not worth the cost
+// of a wrong guess.
 env.allowLocalModels = false;
 env.useBrowserCache = true;
 // v4 hides ONNX Runtime's WebGPU warnings by default (env.logLevel defaults to
@@ -13168,6 +13185,10 @@ self.onmessage = async (e) => {
             localInference.ready = false;
             localInference.loading = false;
             localInference.failed = false;
+            // Unloading mid-download terminates the worker, so no 'loaded' or
+            // 'loadError' will ever arrive to take the overlay down. Whoever
+            // stops a load owns closing what the load opened.
+            hideModelProgress();
             const statusEl = document.getElementById('localModelStatus');
             if (statusEl) { statusEl.textContent = 'Not loaded'; statusEl.style.color = '#ffaa00'; }
             document.getElementById('loadModelBtn').style.display = '';
@@ -13264,16 +13285,38 @@ self.onmessage = async (e) => {
                 const device = 'wasm';
                 const dtype = modelInfo.dtype; // already 'quantized' for WASM-safe models
 
-                // Intercept the loaded/loadError messages for this reload
+                // Intercept the loaded/loadError messages for this reload.
+                //
+                // Careful: `progress` IS forwarded below, and the normal handler
+                // shows the download overlay when it arrives. Since `loaded` is
+                // intercepted here, whatever this branch does not do, nothing else
+                // will — the overlay, the buttons and the exhaustion flag are all
+                // owned by the normal 'loaded' path this one replaces. Leaving any
+                // of them out strands the UI: the recovery finishes, the model
+                // works, and the progress overlay sits there covering the screen
+                // until the user unloads and loads something else.
                 const origOnMessage = localInference.worker.onmessage;
+                const finishRecoveryUI = () => {
+                    const loadBtn = document.getElementById('loadModelBtn');
+                    const unloadBtn = document.getElementById('unloadModelBtn');
+                    if (loadBtn) loadBtn.style.display = 'none';
+                    if (unloadBtn) unloadBtn.style.display = '';
+                };
                 localInference.worker.onmessage = (e) => {
                     const { type, payload } = e.data;
                     if (type === 'loaded') {
                         localInference.ready = true;
                         localInference.loading = false;
+                        localInference.gpuExhausted = false;   // a fresh load, as the flag's contract says
+                        localInference.generations = 0;
                         localInference.worker.onmessage = origOnMessage;
                         updateInferenceBadge('local', `Local (WASM — ${modelInfo.name})`);
                         if (statusEl) { statusEl.textContent = `Recovered (${modelInfo.name} WASM)`; statusEl.style.color = '#00ff88'; }
+                        // The overlay was raised by the forwarded progress events;
+                        // this is the only place that can lower it again.
+                        updateModelProgress(100, `${modelInfo.name} ready on WASM`);
+                        setTimeout(hideModelProgress, 2000);
+                        finishRecoveryUI();
                         console.log(`🔮 [Recovery] ${modelInfo.name} loaded on WASM — ready`);
                         resolve();
                         return;
@@ -13282,6 +13325,17 @@ self.onmessage = async (e) => {
                         localInference.loading = false;
                         localInference.failed = true;
                         localInference.worker.onmessage = origOnMessage;
+                        hideModelProgress();
+                        const loadBtn = document.getElementById('loadModelBtn');
+                        const unloadBtn = document.getElementById('unloadModelBtn');
+                        if (loadBtn) loadBtn.style.display = '';
+                        if (unloadBtn) unloadBtn.style.display = 'none';
+                        if (statusEl) {
+                            statusEl.textContent = 'Recovery failed — press Load Model';
+                            statusEl.style.color = '#ff4444';
+                        }
+                        updateInferenceBadge(config.inferenceMode === 'auto' ? 'remote' : 'unavailable',
+                                             config.inferenceMode === 'auto' ? 'Remote (API)' : 'Model Failed');
                         console.error('🔮 [Recovery] WASM reload failed:', payload);
                         reject(new Error(payload));
                         return;
@@ -13364,6 +13418,37 @@ self.onmessage = async (e) => {
         // bound is all there is. An observed kill time is an upper bound on the
         // real limit — the submission had already overrun when the driver noticed.
         const PREFILL_SAFETY = 0.8;
+
+        // ── The ratchet, and why this fraction exists ──────────────────────────
+        // Aiming the clamp squarely at the longest prefill that has COMPLETED has
+        // a trap in it, and batch 7 walked straight into it: agent-lite measured
+        // 14.19 ms/token with its longest success at 15 051 ms, so the budget
+        // clamped to 1060 tokens — on a device that had demonstrably completed
+        // 1519 tokens (22.4 s) a batch earlier. Worse, the clamp is self-sealing:
+        // capped at 1060, no prompt ever exceeds 1060, so maxOkMs never grows and
+        // the ceiling stays at 1060 permanently. A 30% context cut, forever, from
+        // one cautious reading.
+        //
+        // What is actually known is an interval: prefills up to maxOkMs have
+        // worked, killMs has not, and the truth lies between. So the budget is
+        // allowed to reach into that gap. Every success raises the floor, every
+        // failure lowers the ceiling, and the interval halves — plain bisection,
+        // converging on the real limit in a handful of generations.
+        //
+        // This is opportunistic, never active: nothing is ever padded to probe a
+        // limit. It only means a prompt the user actually wrote is let through
+        // when it lands in the unexplored band, instead of being trimmed on the
+        // assumption that anything unproven is fatal.
+        const PREFILL_EXPLORE = 0.5;
+
+        // And it stops. Every probe that guesses wrong costs a lost GPU, a
+        // reload, and a fall back to WASM — so once the bracket is narrow the
+        // remaining ground is not worth what it costs to take. Below this much
+        // of the kill time still unexplored, the budget settles on what is
+        // proven and stays there. Bisecting from a 40% gap reaches it in about
+        // two probes, which bounds the whole exercise at a couple of crashes
+        // ever, not a couple per session.
+        const PREFILL_EXPLORE_STOP = 0.1;
 
         function prefillBackend() { return isWasmMode() ? 'wasm' : 'webgpu'; }
 
@@ -13504,7 +13589,13 @@ self.onmessage = async (e) => {
         function safePrefillMs() {
             const e = prefillEvidence();
             if (!e.killMs) return null;
-            if (e.maxOkMs && e.maxOkMs < e.killMs) return e.maxOkMs;
+            // Known-good and known-fatal bracket the real limit; aim between them
+            // so the bracket can actually close. See PREFILL_EXPLORE.
+            if (e.maxOkMs && e.maxOkMs < e.killMs) {
+                const gap = e.killMs - e.maxOkMs;
+                if (gap / e.killMs < PREFILL_EXPLORE_STOP) return e.maxOkMs;
+                return Math.round(e.maxOkMs + gap * PREFILL_EXPLORE);
+            }
             return Math.round(e.killMs * PREFILL_SAFETY);
         }
 
@@ -13536,10 +13627,19 @@ self.onmessage = async (e) => {
         // restrict anyone.
         function measuredPrefillCeiling() {
             const e = prefillEvidence();
-            const sizeBased = (e.minFail && !e.contradicted && e.maxOk && e.maxOk < e.minFail) ? e.maxOk : null;
             const timeBased = timeBasedPrefillCeiling();
-            if (sizeBased && timeBased) return Math.min(sizeBased, timeBased);
-            return sizeBased || timeBased || null;
+            if (timeBased) {
+                // A second, independent rail: whatever the timing says, never let
+                // the budget reach a token count this model is already known to
+                // die at. Two different kinds of evidence, and the stricter wins.
+                const rail = (e.minFail && !e.contradicted) ? e.minFail - 1 : null;
+                return rail ? Math.min(timeBased, rail) : timeBased;
+            }
+            // No timing evidence at all — fall back to the size-only rule, which
+            // cannot explore and does not need to: without a clock there is no
+            // interval to bisect.
+            if (e.minFail && !e.contradicted && e.maxOk && e.maxOk < e.minFail) return e.maxOk;
+            return null;
         }
 
         function knownBadPrefill() {
@@ -13914,17 +14014,40 @@ Use this data to personalize your response. Comment on their current state when 
             return html;
         }
 
-        // ── Agentic tool-use path (web_search, …) ───────────────────────────
-        // Active only when the web_search tool is enabled AND a local model is
-        // ready. Runs the multi-step loop from agent-core.js over the EXISTING
-        // inference worker (no second model load). Normal chat (tool off) keeps
-        // the fast single-shot streaming path untouched.
+        // ── Agentic tool-use path (web_search, astrology_report, …) ─────────
+        // Runs the multi-step loop from agent-core.js over the EXISTING inference
+        // worker (no second model load). It exists for the tools that CANNOT work
+        // any other way — async code(), or needing the loop's own machinery — and
+        // those carry `agentTool: true` in the registry.
+        //
+        // This used to name web_search and astrology_report literally, and that
+        // list went stale the moment the synchronous divination tools were bridged
+        // into the loop: the loop was the only path that ever executed anything, so
+        // with the shipped defaults (nine tools on, neither agent tool among them)
+        // NO tool could ever run. Sophia answered out of her own head instead —
+        // which is why every I Ching reading came back hexagram 2 and no reading
+        // ever carried a provenance line. Ask the registry, not a hand-written list.
+        function agentOnlyToolsEnabled() {
+            try { return Object.values(tools).some(t => t && t.enabled && t.agentTool); }
+            catch (e) { return false; }
+        }
+
         function agentToolsActive() {
             return !!(window.SophiaAgent
                 && typeof tools !== 'undefined'
-                && ((tools.web_search && tools.web_search.enabled)
-                    || (tools.astrology_report && tools.astrology_report.enabled))
+                && agentOnlyToolsEnabled()
                 && shouldUseLocal() && localInference.worker);   // only when we'll actually run local
+        }
+
+        // Every other tool is plain and synchronous: advertise it in the prompt and
+        // run it from the model's TOOL_CALL: reply — one extra generation per call,
+        // and only when a call actually happens. On a phone that distinction is the
+        // whole ballgame: each generation is a prefill against a driver that kills
+        // submissions at ~25 s, so a multi-hop loop is not something to switch on
+        // for a tarot draw.
+        function syncToolsEnabled() {
+            try { return Object.values(tools).some(t => t && t.enabled && !t.agentTool); }
+            catch (e) { return false; }
         }
 
         // Split streaming text into <think> reasoning and the visible body, so the
@@ -14561,10 +14684,12 @@ Use this data to personalize your response. Comment on their current state when 
         }
 
         // ── Dual-mode non-streaming dispatcher ──
-        async function generateResponse(prompt, files = []) {
+        // `spoken` is the half-turn already said aloud, used only by the tool
+        // follow-up so it continues rather than restarts. See withSpokenTurn().
+        async function generateResponse(prompt, files = [], spoken) {
             // Reasoning from an earlier turn must never attach to this answer.
             pendingReasoningHTML = '';
-            const messages = buildMessages(prompt, files);
+            const messages = withSpokenTurn(buildMessages(prompt, files), spoken);
 
             const useLocal = shouldUseLocal();
             console.log(`🔮 [Dispatch] mode=${config.inferenceMode} | useLocal=${useLocal} | stream=false`);
@@ -14695,8 +14820,20 @@ Use this data to personalize your response. Comment on their current state when 
             // later would attach the follow-up's thinking to the opening message.
             const initialReasoningHTML = consumePendingReasoningHTML();
 
-            // Small local models don't use tools — skip expensive regex parsing
-            const skipToolProcessing = shouldUseLocal() && !config.fullPromptLocal;
+            // Parse tool calls whenever tools were actually ADVERTISED to the model.
+            //
+            // This was `shouldUseLocal() && !config.fullPromptLocal`, on the theory
+            // that small local models don't use tools and the regex work is wasted.
+            // But the prompt builder below advertises every enabled sync tool to the
+            // local model regardless — so Sophia was told about her tools, dutifully
+            // emitted TOOL_CALL:, and the reply was thrown away unread. Combined with
+            // the stale agent gate above, that closed the last door: no tool could
+            // run on a local model under any setting short of ticking web_search.
+            //
+            // The honest rule is symmetry with the advertisement: if we told her the
+            // tools exist, we read what she says about them. With everything switched
+            // off the old skip still applies and costs nothing.
+            const skipToolProcessing = shouldUseLocal() && !config.fullPromptLocal && !syncToolsEnabled();
 
             // Check for dynamic tool creation by Sophia
             const toolCreationRegex = skipToolProcessing ? null : /CREATE_TOOL:\s*(\{[\s\S]*?\})\s*END_TOOL/g;
@@ -15072,10 +15209,15 @@ Use this data to personalize your response. Comment on their current state when 
                     // chatHistory and shown nowhere, so a tool call ended in a bare
                     // result card and silence. It now runs in both modes and streams
                     // into its own bubble, which is also what makes it visible.
-                    const followUpPrompt = `The ${toolName} tool returned: ${JSON.stringify(toolResult)}. Please interpret this result naturally in your response.`;
+                    // Everything Sophia has said in this turn so far — her opening
+                    // words, plus any earlier tool's interpretation when a turn makes
+                    // several calls. Passing it makes the follow-up a continuation
+                    // rather than a second answer to the same question.
+                    const spokenSoFar = finalResponse;
+                    const followUpPrompt = followUpPromptFor(toolName, toolResult, spokenSoFar);
                     const followUp = config.streamingEnabled
-                        ? await streamFollowUp(followUpPrompt)
-                        : await generateResponse(followUpPrompt, []);
+                        ? await streamFollowUp(followUpPrompt, spokenSoFar)
+                        : await generateResponse(followUpPrompt, [], spokenSoFar);
                     if (followUp && followUp.trim()) {
                         finalResponse += (finalResponse ? '\n\n' : '') + followUp.trim();
                     }
@@ -15139,8 +15281,38 @@ Use this data to personalize your response. Comment on their current state when 
         // Streams one prompt into a fresh bubble and returns its text, WITHOUT running
         // processResponse on the result. Used for tool follow-ups: re-processing one
         // would let a tool result trigger another tool call, and round again.
-        async function streamFollowUp(prompt) {
-            const messages = buildMessages(prompt, []);
+        // The half-turn Sophia has already spoken, put back into the conversation
+        // before the tool result so the follow-up CONTINUES it.
+        //
+        // Without this the follow-up sees the user's question and a tool result but
+        // no trace of its own opening words — chatHistory is not written until the
+        // whole turn finishes — so it answers from the top and says the same things
+        // again. That is the "she mildly repeated herself" report, and it is also
+        // why the first half looked truncated: a model stops generating the moment
+        // it emits a tool call, so the opening ends mid-thought and nothing ever
+        // picked the thread up.
+        function withSpokenTurn(messages, spoken) {
+            if (!spoken || !String(spoken).trim() || !Array.isArray(messages) || !messages.length) return messages;
+            const out = messages.slice();
+            out.splice(out.length - 1, 0, { role: 'assistant', content: String(spoken).trim() });
+            return out;
+        }
+
+        // Written as a continuation, not a fresh request. "Interpret this" alone
+        // invites a whole new answer; naming the half-said sentence asks for the
+        // rest of it.
+        function followUpPromptFor(toolName, toolResult, spoken) {
+            const result = `The ${toolName} tool returned: ${JSON.stringify(toolResult)}.`;
+            return spoken && String(spoken).trim()
+                ? result + ' You have already started speaking to them, just above — carry straight on ' +
+                  'from where you broke off, in the same breath and voice. Do not greet them again, do not ' +
+                  'restate what you already said, and do not describe the tool: simply continue, weaving ' +
+                  'what it returned into what you were saying.'
+                : result + ' Please interpret this result naturally in your response.';
+        }
+
+        async function streamFollowUp(prompt, spoken) {
+            const messages = withSpokenTurn(buildMessages(prompt, []), spoken);
             const id = addStreamingMessage();
             try {
                 const text = shouldUseLocal()

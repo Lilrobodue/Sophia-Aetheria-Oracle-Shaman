@@ -142,6 +142,30 @@ ok(/genCount\+\+/.test(src), 'generations are counted so a leak is visible');
      'plus the first-token time the page needs to learn a prefill rate');
 }
 
+console.log('--- every path that opens the progress overlay also closes it ---');
+// The overlay is raised by forwarded `progress` messages and lowered only by
+// whoever handles the END of that load. The recovery path intercepts 'loaded',
+// so it owns the close — and when it did not, a GPU crash left the overlay
+// covering the screen after recovery had already succeeded, until the user
+// unloaded and loaded a different model.
+{
+  const reloadAt = html.indexOf('function reloadLocalModel()');
+  const reload = html.slice(reloadAt, html.indexOf('── Local prompt budget', reloadAt));
+  ok(reload.length > 500, 'reloadLocalModel found');
+  const loadedBranch = reload.slice(reload.indexOf("if (type === 'loaded')"),
+                                    reload.indexOf("if (type === 'loadError')"));
+  ok(/hideModelProgress/.test(loadedBranch), 'recovery success takes the overlay down');
+  ok(/loadBtn\.style\.display = 'none'/.test(reload),
+     'and restores the buttons — a recovered model is loaded, so Unload is the true state');
+  const errBranch = reload.slice(reload.indexOf("if (type === 'loadError')"));
+  ok(/hideModelProgress\(\)/.test(errBranch), 'recovery failure takes it down too');
+
+  const unload = html.slice(html.indexOf('function unloadLocalModel()'),
+                            html.indexOf('function loadLocalModelManual()'));
+  ok(/hideModelProgress\(\)/.test(unload),
+     'unloading mid-download closes the overlay it will never receive a "loaded" for');
+}
+
 // Page side: the flag has to survive the postMessage hop and be acted on.
 ok(/handleWorkerMessage\(type, payload, e\.data\)/.test(html),
    'the page forwards the raw message so the oom flag is not dropped');

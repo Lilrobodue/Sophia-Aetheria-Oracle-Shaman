@@ -428,9 +428,50 @@ tiny|wasm            maxOk 1949
 
 Nothing to protect with. The v83–v84 history is not recoverable, so the first few generations on v86 are the ledger's real first light.
 
+---
+
+## 13. 2026-08-12, batch 7 (v86) — the ledger works, and the clamp had a trap
+
+Three clean generations on `agent-lite`, and the rate measurement finally lands:
+
+| Prompt | First token | Rate |
+|---|---|---|
+| 1061 tok | 15 051 ms | 14.19 ms/tok |
+| 835 tok | 11 684 ms | 13.99 ms/tok |
+| 901 tok | 12 548 ms | 13.93 ms/tok |
+
+Against `reason-lite`'s **14.75 ms/tok** — two different LFM2.5-1.2B-q4 models agreeing inside 6%, measured a day apart on separate builds. The time model cross-validates.
+
+### The trap: a self-sealing clamp
+
+Aiming the budget at the longest prefill that had **completed** gave a ceiling of **1060 tokens** — on a device that had finished **1519** two batches earlier. And it could never recover, because a budget of 1060 means no prompt ever exceeds 1060, so nothing longer is ever proven, so the ceiling stays at 1060 permanently. A 30% context cut, forever, from one cautious reading.
+
+What is actually known is an **interval**: prefills up to 15.05 s have worked, 25.27 s has not. The budget now aims *into* that gap, so every success raises the floor and every failure lowers the roof — plain bisection on the real limit.
+
+It is **opportunistic, never active**: nothing is ever padded to probe a limit. It only means a prompt you actually wrote is let through when it lands in the unexplored band, instead of being trimmed on the assumption that anything unproven is fatal.
+
+And it **stops**. Every wrong guess costs a lost GPU, a reload and a fall back to WASM, so once the unexplored gap is under a tenth of the kill time the budget settles on what is proven. Simulated against batch 7's own ledger and the known truth:
+
+```
+step 1: budget 1421 tok (20.2 s) -> completes
+step 2: budget 1601 tok (22.7 s) -> completes
+step 3: budget 1691 tok (24.0 s) -> completes
+step 4: settled at 1690 tok — gap 5.1%, stop exploring
+
+crashes to converge: 0      final budget vs frozen 1060: +59%
+```
+
+A second, independent rail bounds it too: whatever the timing says, the budget never reaches a token count this model is already known to die at (`minFail - 1`). Two kinds of evidence; the stricter wins.
+
 ### Still open
 
-1. **Does the protection actually fire now?** The confirmation is a *non-event*: on v86, `agent-lite` at ~1900 tokens should be trimmed or warned rather than killing the device. It needs one completed generation on that model first to learn a rate — or, failing that, it now derives a bound from the crash it already had.
-2. **`qwen-mini`'s 464 s.** The only run in the investigation that time-per-token cannot explain, and the only one on the `qwen35-vision` path. One repeat with `?verboseWorker=1` would show what those minutes went on.
+1. **Watch it converge in the wild.** The interesting readout is `prefillLedger.__device|webgpu` — `maxOkMs` should climb toward `killMs` over the next few sessions and then stop. A crash during that climb is expected and bounded, not a regression.
+2. **`qwen-mini`'s 464 s.** The only run in the whole investigation that time-per-token cannot explain, and the only one on the `qwen35-vision` path. One repeat with `?verboseWorker=1` would show what those minutes went on.
 3. **Phase E** (re-test Gemma 3 1B on Z13, then ROG) — untouched, can run whenever. `lite` stays deleted until it earns the slot.
 4. Phase B (`?ortIsolation=1`) — **closed by measurement.** Retained as a cross-check only.
+
+### Where the investigation stands
+
+The original brief asked whether two ONNX runtimes were fighting over one GPU. They are not, and never were. The answer took seven batches of real captures to reach and is now three sentences: **the Adreno driver kills any GPU submission that runs longer than about 25 seconds; prefill is a single submission; so prefill time — prompt tokens times the model's measured rate — predicts every crash in the entire investigation, across three models, with no exceptions.** Decode, being hundreds of small submissions, has never failed once at any length.
+
+Sophia now measures both halves of that on the device it is running on, and trims before it crashes rather than after.

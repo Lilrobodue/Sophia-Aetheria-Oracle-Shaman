@@ -119,8 +119,10 @@ ok(/function isGpuExhaustion\(/.test(src), 'GPU exhaustion is classified');
   ok(src.includes(pat), 'classifier covers "' + pat + '"'));
 ok(/type: 'genError', payload: msg, oom, cause, generations: genCount,/.test(src),
    'genError carries the oom flag, WHY it died, and the generation count');
-ok(/tokensThisGen, msSinceDispatch, phase:/.test(src),
-   'plus how far it got, how long it took, and whether it died in prefill or decode');
+ok(/tokensThisGen, msSinceDispatch, promptTokens: lastPromptTokens,/.test(src),
+   'plus how far it got, how long it took, and how big the prompt was');
+ok(/phase: tokensThisGen === 0 \? 'prefill' : 'decode'/.test(src),
+   'and whether it died in the prefill or the decode — different limits');
 // The distinction the first ROG Phone capture forced: a Vulkan driver abort was
 // being reported to the user as an out-of-memory, which points at the wrong fix.
 ok(/function gpuFailureCause\(/.test(src), 'GPU failures are classified by cause, not just detected');
@@ -130,8 +132,8 @@ ok(/lastDeviceLoss = \{ reason: payload\.reason/.test(src),
 ok(/if \(\/out of memory\|failed to allocate\|allocation failed\|exceeds the limit\|createBuffer\/i\.test\(s\)\) return 'oom'/.test(src),
    'a genuine allocation failure still classifies as oom');
 ok(/genCount\+\+/.test(src), 'generations are counted so a leak is visible');
-ok(/type: 'genDone', payload: \{ generations: genCount, tokensThisGen: tokensThisGen \}/.test(src),
-   'and reported on success');
+ok(/payload: \{ generations: genCount, tokensThisGen: tokensThisGen, promptTokens: lastPromptTokens \}/.test(src),
+   'and reported on success, with the prompt size that survived');
 
 // Page side: the flag has to survive the postMessage hop and be acted on.
 ok(/handleWorkerMessage\(type, payload, e\.data\)/.test(html),
@@ -155,8 +157,18 @@ ok(/gpuDeviceCount/.test(src), 'GPUDevices are counted — a second one is the d
 ok(/function runtimeCensus\(/.test(src), 'the runtime census exists');
 ok(/runtimeCensus\('worker-start'\)/.test(src), 'it runs at worker start');
 ok(/runtimeCensus\('after-load'\)/.test(src), 'and again after load, when TJs has bound its ORT');
-ok(/out\.sameOrtEnv = \(bundled\.env === ort\.env\)/.test(src),
+// The first capture proved env.backends.onnx IS the bundled env object in v4
+// (keys: wasm, webgl, webgpu, versions, logLevel), not the ORT module.
+ok(/out\.sameOrtEnv = \(bundledEnv === ort\.env\)/.test(src),
    'it compares the bundled and standalone ORT env objects directly');
+ok(/standaloneNumThreadsLeaked/.test(src),
+   'and notices shared mutable state even when the objects differ');
+// Tool schemas are rendered into the prompt by the chat template, so they are
+// part of the prefill being measured.
+ok(/toolChars = tools\.length \? JSON\.stringify\(tools\)\.length : 0/.test(src),
+   'the prefill measurement counts tool schemas, not just message text');
+ok(/approxPromptTokens: Math\.round\(totalChars \/ 4\)/.test(src),
+   'and the headline prompt size is the total the GPU actually sees');
 
 // A3 — the crash is on generate, so the numbers must be taken at dispatch.
 ok(/async function preDispatchSnapshot\(/.test(src), 'the pre-dispatch snapshot exists');

@@ -53,14 +53,26 @@ export async function initWebGPU() {
     return adapter.requestDevice();
 }
 export const LogLevel = Object.freeze({ DEBUG: 10, INFO: 20, WARNING: 30, ERROR: 40, NONE: 50 });
+// env.backends.onnx mirrors the shape the ROG Phone capture revealed for
+// transformers.js v4: it IS the bundled runtime's env object (wasm, webgl,
+// webgpu, versions, logLevel, setLogLevel), not the ORT module.
 export const env = {
     allowLocalModels: true, useBrowserCache: false, logLevel: LogLevel.ERROR,
-    backends: { onnx: { env: { versions: { common: '1.24.0-bundled', web: '1.24.0-bundled' }, wasm: { numThreads: 4 } } } },
+    backends: {
+        onnx: {
+            wasm: { numThreads: 4 }, webgl: {}, webgpu: {},
+            versions: { common: '1.24.0-bundled', web: '1.24.0-bundled' },
+            logLevel: 'warning', setLogLevel() {},
+        },
+    },
 };
 export class TextStreamer {
     constructor(tokenizer, opts) { this.tokenizer = tokenizer; this._cb = (opts || {}).callback_function; }
 }
 export async function pipeline(task, modelId, opts) {
+    // Stands in for what ONNX Runtime emits at DEBUG — the shader-compilation
+    // chatter that is the leading explanation for a 464 s first token.
+    console.log('[WebGPU] Program compiled in 37ms: MatMulNBits');
     if (opts && opts.progress_callback) opts.progress_callback({ status: 'progress', progress: 50 });
     const fn = async (messages, o) => {
         globalThis.__PIPE_CALLS__.push({ messages, o });
@@ -160,10 +172,12 @@ const c0 = census[0] && census[0].payload;
 ok(c0 && c0.when === 'worker-start', 'it is labelled worker-start');
 ok(c0 && c0.standalone && c0.standalone.versions.common === '1.23.2',
    'it reads the standalone runtime version');
-ok(c0 && c0.bundled && c0.bundled.versions.common === '1.24.0-bundled',
-   'and the version bundled inside transformers.js');
+ok(c0 && c0.bundled && c0.bundled.versions && c0.bundled.versions.common === '1.24.0-bundled',
+   'and the version bundled inside transformers.js, read from the v4 env shape');
 ok(c0 && c0.sameOrtEnv === false,
    'and reports two independent ORT env objects — the dual-runtime question, answered');
+ok(c0 && c0.standaloneNumThreadsLeaked === false,
+   'and notices that the standalone numThreads=1 did NOT leak into the bundled env');
 ok(diagOf('gpuProbeInstalled').length === 1, 'the GPU probe installed itself');
 
 console.log('--- Phase C: log level ships at WARNING, not v4 default ERROR ---');
@@ -223,24 +237,50 @@ await settle();
 ok(diagOf('loadStart').length === 1, 'the load is recorded');
 ok(tjs.env.logLevel === tjs.LogLevel.DEBUG, 'verboseLogs raises ORT logging to DEBUG on request');
 ok(diagOf('loadDone').length === 1, 'and so is the finish');
+// The runtime's own DEBUG output is what would show shader compilation, and on
+// a phone it goes to a console nobody can read — so verbose mode captures it.
+ok(diagOf('runtimeLog').length > 0, 'verbose mode captures the runtime log into the diagnostics');
+ok(diagOf('runtimeLog').every((r) => !/\[diag\]/.test(r.payload.text)),
+   'without echoing our own diagnostic lines back into themselves');
 ok(typeof diagOf('loadDone')[0].payload.ms === 'number', 'with how long it took');
 ok(diagOf('runtimeCensus').length === 2, 're-censused after load, when transformers.js has bound its ORT');
 ok(posted.some((m) => m.type === 'loaded'), 'the page still gets its loaded message');
 
+// Tools are passed here on purpose: the chat template renders them into the
+// prompt, so they are prefill the GPU pays for. Counting only message text made
+// every capture under-report the prompt, which is fatal when the quantity being
+// measured is a prefill-size ceiling.
+const TOOLS = [{ name: 'web_search', description: 'Search the web', parameters: { type: 'object' } }];
+const TOOL_CHARS = JSON.stringify(TOOLS).length;
 await fakeSelf.onmessage({ data: { type: 'generate', payload: {
-  messages: [{ role: 'user', content: 'a'.repeat(400) }], max_new_tokens: 384, temperature: 0.7 } } });
+  messages: [{ role: 'user', content: 'a'.repeat(400) }], max_new_tokens: 384, temperature: 0.7, tools: TOOLS } } });
 await settle();
 const pre = diagOf('preDispatch');
 ok(pre.length === 1, 'the pre-dispatch snapshot fires');
-ok(pre[0].payload.approxPromptTokens === 100, 'sized from the actual prompt, got ' + pre[0].payload.approxPromptTokens);
+ok(pre[0].payload.toolCount === 1, 'tools are counted');
+ok(pre[0].payload.toolChars === TOOL_CHARS, 'and measured, got ' + pre[0].payload.toolChars);
+ok(pre[0].payload.approxMessageTokens === 100, 'message text is still reported on its own');
+ok(pre[0].payload.approxPromptTokens === Math.round((400 + TOOL_CHARS) / 4),
+   'but the headline size is what the GPU actually prefills, got ' + pre[0].payload.approxPromptTokens);
 ok(pre[0].payload.maxNewTokens === 384, 'and carries the token ceiling');
 ok(pre[0].payload.storageUsedMB === 3072, 'with the storage estimate on the first generation');
 ok(pre[0].payload.gpuDevices === 3, 'and how many GPU devices are live, got ' + pre[0].payload.gpuDevices);
 ok(pre[0].payload.adapter && pre[0].payload.adapter.architecture === 'adreno-830', 'and which GPU');
 
+// Six runs, three failures, every one of them with zero tokens emitted and
+// nothing ever dying after the first token: the boundary worth timing.
+const first = diagOf('firstToken');
+ok(first.length === 1, 'the first token is timed separately');
+ok(typeof first[0].payload.msToFirstToken === 'number', 'with a duration');
+ok(first[0].payload.promptTokens > 0, 'and the prompt it belonged to');
+
 const done = posted.filter((m) => m.type === 'genDone');
 ok(done.length === 1, 'the generation completes');
 ok(done[0].payload.tokensThisGen === 3, 'reporting how many tokens it produced, got ' + done[0].payload.tokensThisGen);
+// The page pairs this with the outcome to learn the device's own prefill ceiling,
+// so a success has to carry the size that succeeded.
+ok(done[0].payload.promptTokens === Math.round((400 + TOOL_CHARS) / 4),
+   'and the prompt size that survived, got ' + done[0].payload.promptTokens);
 
 // Second generation: the estimate must NOT be taken again (it walks the quota
 // accounting, and this runs on the path to every reply).
@@ -288,6 +328,7 @@ ok(errs[0].cause === 'driver-abort',
    'but the CAUSE is the Vulkan device loss, not memory, got: ' + errs[0].cause);
 ok(errs[0].phase === 'prefill', 'and it is known to have died in the prefill, got: ' + errs[0].phase);
 ok(typeof errs[0].msSinceDispatch === 'number', 'with a time-to-failure to compare against a good run');
+ok(errs[0].promptTokens > 0, 'and the prompt size that killed it — the ledger needs both sides');
 const failed = diagOf('genFailed');
 ok(failed[0].payload.deviceLoss && /VK_ERROR_DEVICE_LOST/.test(failed[0].payload.deviceLoss.message),
    'the device-lost record is attached to the failure that followed it');

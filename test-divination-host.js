@@ -101,9 +101,18 @@ console.log('--- Local prompt budget (mobile context overflow) ---');
   const bEnd = html.indexOf('// Prepare messages for local model', bStart);
   ok(bStart > 0 && bEnd > bStart, 'the budget helpers were found in index.html');
   const src = html.slice(bStart, bEnd);
-  const mk = (ctx, maxTokens, key) => new Function('config', 'LOCAL_MODELS', 'selectedLocalModel', 'console',
-    src + '\nreturn { estTokens, localPromptBudget, assembleWithinBudget };')(
-      { contextLength: ctx, maxTokens }, { [key || 'k']: {} }, key || 'k', { warn: () => {}, log: () => {} });
+  // The budget also consults the device's measured prefill ceiling now, so the
+  // harness has to supply the storage and mode it reads. An empty ledger means
+  // no evidence, which must leave the budget exactly as it was — the assertions
+  // below are what proves that.
+  const mk = (ctx, maxTokens, key, ledger) => new Function(
+    'config', 'LOCAL_MODELS', 'selectedLocalModel', 'console', 'localStorage', 'isWasmMode', 'runtimeDiag',
+    src + '\nreturn { estTokens, localPromptBudget, assembleWithinBudget, recordPrefillOutcome, measuredPrefillCeiling };')(
+      { contextLength: ctx, maxTokens }, { [key || 'k']: {} }, key || 'k',
+      { warn: () => {}, log: () => {} },
+      (() => { const s = new Map(); if (ledger) s.set('sophiaPrefillLedger', JSON.stringify(ledger));
+               return { getItem: (k) => (s.has(k) ? s.get(k) : null), setItem: (k, v) => s.set(k, String(v)) }; })(),
+      () => false, { note: () => {} });
 
   const api = mk(4096, 512, 'agent-lite');
   const b = api.localPromptBudget();
@@ -111,6 +120,15 @@ console.log('--- Local prompt budget (mobile context overflow) ---');
   ok(b.forPrompt === 4096 - 512 - 192, 'prompt ceiling = context - reply - margin, got ' + b.forPrompt);
   ok(mk(4096, 99999, 'k').localPromptBudget().forPrompt >= 512, 'a silly maxTokens cannot drive the ceiling to zero');
   ok(mk(0, 0, 'k').localPromptBudget().ctx >= 1024, 'a missing context length falls back, not to zero');
+  ok(b.measuredCeiling === null, 'with no crash on record the device imposes no ceiling of its own');
+
+  // A device that has actually lost its GPU to a large prefill overrides the
+  // context window, because the window says what the model can hold and the
+  // ledger says what this phone can survive. See test-prefill-ledger.mjs.
+  const crashed = mk(16384, 1024, 'agent-lite',
+    { 'agent-lite|webgpu': { maxOk: 1427, minFail: 1885 } });
+  ok(crashed.localPromptBudget().forPrompt === 1427,
+     'a measured prefill ceiling wins over the context window, got ' + crashed.localPromptBudget().forPrompt);
 
   // Required parts are never dropped; optional ones go from the far end, and the
   // caller is told which — a silently shortened prompt is how this bug hid.

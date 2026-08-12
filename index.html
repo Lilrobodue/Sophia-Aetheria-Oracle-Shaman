@@ -1791,7 +1791,7 @@
                     Export
                 </button>
             </div>
-            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v83</div>
+            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v84</div>
             </div><!-- end sidebar-scroll -->
         </div>
 
@@ -10716,7 +10716,7 @@ return result;</textarea>
         // Keep in step with the footer version and sw.js CACHE_VERSION — it only
         // labels the diagnostics export, but a report that can't be tied to a
         // build is a report you can't act on.
-        const SOPHIA_BUILD = 'v83';
+        const SOPHIA_BUILD = 'v84';
 
         // ═══════════════════════════════════════════════════════════════════
         // Runtime diagnostics — SOPHIA_RUNTIME_BRIEF Phase A (page side)
@@ -10753,6 +10753,10 @@ return result;</textarea>
                     pageAdapterLimits: localInference.gpuLimits,
                     generations: localInference.generations,
                     lastGpuLoss: localInference.lastGpuLoss,
+                    // What this device has taught itself about its own prefill
+                    // ceiling — travels with the export so the numbers can be
+                    // compared across phones.
+                    prefillLedger: readPrefillLedger(),
                     events: this.events,
                 };
             },
@@ -10944,6 +10948,71 @@ import * as ort from 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.23.2/dist/o
 // timeout rather than an allocation failure (2 GB maxBufferSize, no allocation
 // error anywhere in the capture). See gpuFailureCause() below, which exists
 // because this build used to call that an out-of-memory.
+//
+// ── SECOND BATCH, same phone, 2026-08-12 ───────────────────────────────────
+//   ~1885 tok, 8 tools  →  died in prefill at 24.73 s (was 25.2 s) — REPRODUCED
+//   ~934 tok,  5 tools  →  215 tokens, fine, and it ran for 39.3 s
+//
+// The second row is the one that settles the mechanism. That generation did
+// MORE total GPU work — 39 s against 25 s — and survived. So the limit is not
+// cumulative time and not heat: it is how long a SINGLE submission may run
+// before the driver reclaims the device. Prefill is one enormous dispatch;
+// decode is hundreds of small ones, which is exactly why decode never dies.
+// Two identical runs dying 0.5 s apart also rules out thermal flakiness — it is
+// deterministic, and therefore predictable, and therefore avoidable.
+//
+// The response is measured, not hard-coded: see the prefill ledger on the page
+// side. A token cap belongs to one phone, one driver, one model, one quant —
+// so each device learns its own from what it has actually survived.
+//
+// ── THIRD BATCH, agent-qwen-mini (q4f16), same phone, 2026-08-12 ───────────
+//   ~582 tok  →  DIED in prefill after 464 s (7m 44s), 0 tokens
+//   ~678 tok  →  592 tokens, fine, 269.6 s total
+//
+// Which breaks the tidy story above, and is the reason the ledger has a notion
+// of CONTRADICTED evidence. A LARGER prompt succeeded where a smaller one had
+// just killed the device, so prompt size is not what decides this — at least
+// not for this model. Anything that clamped or warned on 582 tokens would be
+// nagging about a size demonstrably capable of answering.
+//
+// Note what did not change: the failure was still in the prefill, still zero
+// tokens, still VK_ERROR_DEVICE_LOST. Across all six runs on this phone, the
+// ONLY invariant that holds is that every failure happened before the first
+// token, and nothing has ever died after it. Hence msToFirstToken.
+//
+// The likeliest remaining explanation is first-run shader compilation: 464 s is
+// far too long for a 582-token prefill on a 0.8B model, the run in question was
+// the first this device had ever done with that model, and the second run — with
+// Chrome's shader cache warm — completed a larger prompt in less time. Not
+// proven. ?verboseWorker=1 now captures ONNX Runtime's DEBUG output into the
+// diagnostics, which is where that proof would come from.
+//
+// ── FOURTH BATCH, agent-lite again, warm, 8 tools, 2026-08-12 ──────────────
+//   ~1519 tok  →  325 tokens, fine, 67.3 s
+//
+// Which narrows agent-lite to 1519 ✅ … 1885 ❌ and, read against the clock,
+// separates the two failure modes for good:
+//
+//   17:22  agent-lite  1427  OK      <- shader cache warm from here on
+//   17:31  agent-lite  1885  FAIL
+//   18:16  agent-lite  1885  FAIL
+//   18:22  agent-lite   934  OK
+//   18:52  qwen-mini    582  FAIL    <- first run of this model on this device
+//   19:02  qwen-mini    678  OK
+//   19:26  agent-lite  1519  OK
+//
+// agent-lite had already completed a generation BEFORE both of its failures, and
+// completed two more around them. Compilation cannot explain a failure that
+// repeats 45 minutes apart on a warm cache while smaller prompts sail through:
+// that is a genuine prefill-size wall. qwen-mini's is the opposite shape — a
+// first-ever run costing 464 s, then a LARGER prompt succeeding once warm.
+//
+// So there are two ways to exceed the driver's patience, and only one thing they
+// share: both spend too long before the first token. One is prompt size, one is
+// compilation, and the ledger distinguishes them per model — a real ceiling for
+// agent-lite, contradicted-and-ignored for qwen-mini. That is why the ceiling is
+// keyed by model rather than by device, and why contradiction had to be handled
+// rather than assumed away.
 env.allowLocalModels = false;
 env.useBrowserCache = true;
 // v4 hides ONNX Runtime's WebGPU warnings by default (env.logLevel defaults to
@@ -10989,6 +11058,13 @@ let dispatchStartedAt = 0; // when the current generation was handed to the GPU 
                            // time-to-failure is what separates a driver watchdog
                            // kill from an instant allocation refusal
 let standaloneOrtSessions = 0;  // sessions created on the STANDALONE runtime
+let lastPromptTokens = 0;  // size of the prompt currently being prefilled — the
+                           // page pairs this with the outcome to learn what this
+                           // particular device can actually swallow in one go
+let msToFirstToken = 0;    // THE number, as of the 2026-08-12 batch 3 runs: every
+                           // failure on record died with zero tokens emitted, and
+                           // nothing has ever died after the first one. The window
+                           // of risk is everything before token 1.
 
 // This worker's own blob URL, so a blob: frame in a stack can be told apart
 // from one belonging to a module the runtimes created for themselves.
@@ -11159,6 +11235,45 @@ function installGpuProbe() {
 }
 installGpuProbe();
 
+// Raising env.logLevel to DEBUG makes ONNX Runtime describe what it is doing —
+// including compiling WebGPU shader programs, which is the leading explanation
+// for why a 582-token prompt spent 464 s before the driver killed it while a
+// 678-token one on the same model answered. On a phone that output goes to a
+// console nobody can read, so when verbose mode is on it is captured into the
+// diagnostics instead. Only ORT's own lines, only under ?verboseWorker=1, and
+// hard-capped: this is a diagnostic, not a second memory leak.
+let ortLogLines = 0;
+const ORT_LOG_MAX = 300;
+function installOrtLogCapture() {
+    if (console.__sophiaCaptured) return;
+    console.__sophiaCaptured = true;
+    ['log', 'warn', 'error', 'info', 'debug'].forEach(function (level) {
+        const orig = console[level] ? console[level].bind(console) : function () {};
+        console[level] = function () {
+            try {
+                if (ortLogLines < ORT_LOG_MAX) {
+                    const text = Array.prototype.map.call(arguments, function (a) {
+                        return (typeof a === 'string') ? a : String((a && a.message) || a);
+                    }).join(' ');
+                    // Ours are already diag records; theirs are the interesting ones.
+                    if (text.indexOf('[diag]') === -1 && text.indexOf('[worker]') === -1) {
+                        ortLogLines++;
+                        self.postMessage({
+                            type: 'diag',
+                            payload: {
+                                event: 'runtimeLog', seq: -1, t: Date.now(),
+                                level: level, text: text.slice(0, 300),
+                                sinceDispatch: dispatchStartedAt ? (Date.now() - dispatchStartedAt) : null,
+                            },
+                        });
+                    }
+                }
+            } catch (e) { /* never let logging break inference */ }
+            orig.apply(null, arguments);
+        };
+    });
+}
+
 // A2 — which runtimes are actually live. transformers.js exposes its bundled
 // ORT as env.backends.onnx, so sameOrtEnv === false is direct evidence of two
 // independent ONNX runtimes sharing this worker scope; true would mean the
@@ -11183,26 +11298,35 @@ function runtimeCensus(when) {
         }
     } catch (e) { out.standalone = 'error: ' + (e && e.message); }
     try {
-        // ROG PHONE CAPTURE, 2026-08-12: this reported "not initialised yet" both
-        // at start AND after load, so sameOrtEnv came back null and the sharpest
-        // comparison in the census never ran. env.backends.onnx is evidently not
-        // where transformers.js v4 keeps its ORT handle. Rather than guess at the
-        // new path, report the shape of what IS there — the next capture then
-        // says where to look instead of repeating the same null.
+        // ROG PHONE CAPTURE, 2026-08-12: the first attempt looked for
+        // env.backends.onnx.env and found nothing, so sameOrtEnv came back null
+        // twice. The capture reported the keys instead — wasm, webgl, webgpu,
+        // versions, logLevel, setLogLevel — which is the shape of an ORT *env*
+        // object, not of the ORT module. In transformers.js v4, env.backends.onnx
+        // IS the bundled runtime's env. So compare it to ort.env directly.
         const backends = env.backends || {};
         out.backendKeys = Object.keys(backends);
-        const bundled = backends.onnx;
-        if (bundled && bundled.env) {
+        const bundledEnv = backends.onnx;
+        if (bundledEnv && (bundledEnv.versions || bundledEnv.wasm)) {
             out.bundled = {
-                versions: safeVersions(bundled.env.versions),
-                numThreads: (bundled.env.wasm && bundled.env.wasm.numThreads) || null,
+                versions: safeVersions(bundledEnv.versions),
+                numThreads: (bundledEnv.wasm && bundledEnv.wasm.numThreads) || null,
             };
-            if (typeof ort !== 'undefined' && ort && ort.env) out.sameOrtEnv = (bundled.env === ort.env);
-        } else if (bundled) {
-            out.bundled = 'env.backends.onnx exists but has no .env — keys: ' +
-                          Object.keys(bundled).slice(0, 20).join(',');
+            if (typeof ort !== 'undefined' && ort && ort.env) {
+                // The decisive comparison. If these are the same object, the two
+                // imports de-duplicated and there is only ever one runtime. If they
+                // differ, note whether numThreads=1 leaked across — that would mean
+                // they share mutable state without sharing identity, which is worse
+                // than either clean answer.
+                out.sameOrtEnv = (bundledEnv === ort.env);
+                out.standaloneNumThreadsLeaked =
+                    !out.sameOrtEnv && bundledEnv.wasm && bundledEnv.wasm.numThreads === 1;
+            }
+        } else if (bundledEnv) {
+            out.bundled = 'env.backends.onnx has an unexpected shape — keys: ' +
+                          Object.keys(bundledEnv).slice(0, 20).join(',');
         } else {
-            out.bundled = 'env.backends.onnx is absent — transformers.js v4 keeps its ORT elsewhere';
+            out.bundled = 'env.backends.onnx is absent';
         }
     } catch (e) { out.bundled = 'error: ' + (e && e.message); }
     try { out.globalOrt = typeof globalThis.ort !== 'undefined'; } catch (e) {}
@@ -11242,12 +11366,25 @@ async function preDispatchSnapshot(mode, payload) {
     const msgs = (payload && payload.messages) || [];
     let chars = 0;
     for (const m of msgs) chars += (m && typeof m.content === 'string') ? m.content.length : 0;
+    // Tool schemas are rendered into the prompt by the chat template, so they are
+    // part of the prefill the GPU has to chew through — but they arrive beside
+    // the messages, not inside them. Counting only message text made every
+    // capture systematically under-report the real prompt, which matters a lot
+    // when the thing being measured is a prefill-size ceiling.
+    let toolChars = 0;
+    const tools = (payload && payload.tools) || [];
+    try { toolChars = tools.length ? JSON.stringify(tools).length : 0; } catch (e) {}
+    const totalChars = chars + toolChars;
     const rec = {
         mode: mode,
         generation: genCount + 1,
         messages: msgs.length,
         promptChars: chars,
-        approxPromptTokens: Math.round(chars / 4),
+        toolCount: tools.length,
+        toolChars: toolChars,
+        totalPromptChars: totalChars,
+        approxPromptTokens: Math.round(totalChars / 4),
+        approxMessageTokens: Math.round(chars / 4),
         maxNewTokens: (payload && payload.max_new_tokens) || null,
         gpuDevices: gpuDeviceCount,
         standaloneOrtSessions: standaloneOrtSessions,
@@ -11269,7 +11406,25 @@ async function preDispatchSnapshot(mode, payload) {
         } catch (e) { /* not exposed in all workers */ }
     }
     diag('preDispatch', rec);
+    lastPromptTokens = rec.approxPromptTokens;
+    msToFirstToken = 0;
     dispatchStartedAt = Date.now();
+}
+
+// Crossing from zero tokens to one is the only boundary that has ever mattered:
+// six runs, three failures, all three with nothing emitted. Timing it separates
+// "the prompt was too big" from "this model had never run on this device before
+// and was still compiling shaders" — which the batch 3 runs suggest is the
+// stronger effect, since a 582-token prompt died after 464 s while a 678-token
+// one on the same model answered.
+function noteFirstToken() {
+    if (msToFirstToken || !dispatchStartedAt) return;
+    msToFirstToken = Date.now() - dispatchStartedAt;
+    diag('firstToken', {
+        generation: genCount + 1,
+        msToFirstToken: msToFirstToken,
+        promptTokens: lastPromptTokens,
+    });
 }
 
 // Re-census after load: transformers.js binds its bundled ORT lazily, so the
@@ -11285,10 +11440,17 @@ function postGenDone() {
         generation: genCount,
         tokensThisGen: tokensThisGen,
         ms: dispatchStartedAt ? (Date.now() - dispatchStartedAt) : null,
+        // Split the total: everything before the first token is the dangerous
+        // part, everything after is decode, and the two behave nothing alike.
+        msToFirstToken: msToFirstToken || null,
+        promptTokens: lastPromptTokens,
         gpuDevices: gpuDeviceCount,
         standaloneOrtSessions: standaloneOrtSessions,
     });
-    self.postMessage({ type: 'genDone', payload: { generations: genCount, tokensThisGen: tokensThisGen } });
+    self.postMessage({
+        type: 'genDone',
+        payload: { generations: genCount, tokensThisGen: tokensThisGen, promptTokens: lastPromptTokens },
+    });
     dispatchStartedAt = 0;
 }
 
@@ -11415,7 +11577,8 @@ function postGenError(err, where) {
     });
     self.postMessage({
         type: 'genError', payload: msg, oom, cause, generations: genCount,
-        tokensThisGen, msSinceDispatch, phase: tokensThisGen === 0 ? 'prefill' : 'decode',
+        tokensThisGen, msSinceDispatch, promptTokens: lastPromptTokens,
+        phase: tokensThisGen === 0 ? 'prefill' : 'decode',
     });
     dispatchStartedAt = 0;
 }
@@ -12088,6 +12251,7 @@ self.onmessage = async (e) => {
         // that ordinary sessions stay readable.
         if (payload.verboseLogs) {
             try { env.logLevel = LogLevel.DEBUG; } catch (e) {}
+            installOrtLogCapture();
         }
         const loadStart = Date.now();
         diag('loadStart', {
@@ -12182,6 +12346,7 @@ self.onmessage = async (e) => {
                     skip_special_tokens: true,
                     callback_function: (token) => {
                         tokensThisGen++;
+                        if (tokensThisGen === 1) noteFirstToken();
                         self.postMessage({ type: 'token', payload: token });
                     },
                 });
@@ -12251,6 +12416,7 @@ self.onmessage = async (e) => {
                     temperature: payload.temperature || 0,
                     onToken: (tokenText) => {
                         tokensThisGen++;
+                        if (tokensThisGen === 1) noteFirstToken();
                         self.postMessage({ type: 'token', payload: tokenText });
                     },
                 });
@@ -12329,6 +12495,7 @@ self.onmessage = async (e) => {
                 skip_special_tokens: true,
                 callback_function: (token) => {
                     tokensThisGen++;
+                        if (tokensThisGen === 1) noteFirstToken();
                     self.postMessage({ type: 'token', payload: token });
                 },
             });
@@ -12546,6 +12713,10 @@ self.onmessage = async (e) => {
 
             if (type === 'genDone') {
                 if (payload && payload.generations) localInference.generations = payload.generations;
+                // A completed generation is evidence of what this device can
+                // prefill — the only kind of evidence that can safely RAISE the
+                // ceiling.
+                if (payload && payload.promptTokens) recordPrefillOutcome(payload.promptTokens, 'ok');
                 if (localInference._pending) localInference._pending.resolve();
                 localInference._pending = null;
                 return;
@@ -12558,9 +12729,16 @@ self.onmessage = async (e) => {
                     cause: (meta && meta.cause) || null,
                     phase: (meta && meta.phase) || null,
                     msSinceDispatch: (meta && meta.msSinceDispatch) || null,
+                    promptTokens: (meta && meta.promptTokens) || 0,
                     generations: (meta && meta.generations) || 0,
                     tokensThisGen: (meta && meta.tokensThisGen) || 0,
                 });
+                // Only a driver abort during the prefill teaches us about the
+                // prefill ceiling. An OOM or a decode-time failure is a different
+                // limit and must not shrink this one.
+                if (meta && meta.cause === 'driver-abort' && meta.phase === 'prefill' && meta.promptTokens) {
+                    recordPrefillOutcome(meta.promptTokens, 'fail');
+                }
                 // GPU exhaustion is not an ordinary error: the device is gone and the
                 // session with it, so retrying generates into a corpse. Release what
                 // we can, say so plainly, and put the Load button back rather than
@@ -13053,12 +13231,113 @@ self.onmessage = async (e) => {
         // So everything is now costed against the real window.
         const estTokens = s => Math.ceil(String(s || '').length / 4);
 
+        // ── Measured prefill ceiling (personal baseline) ───────────────────────
+        // ROG Phone, 2026-08-12: a ~1885-token prompt killed the GPU device twice,
+        // at 24.7 s and 25.2 s — reproducible, and always during the PREFILL,
+        // before a single token. A 934-token prompt on the same build survived
+        // 39.3 s of work, which is longer than either crash. So the limit is not
+        // memory and not cumulative time: it is how long ONE submission may run
+        // before the Adreno driver takes the device away. Prefill is a single huge
+        // dispatch; decode is hundreds of small ones, which is why decode survives.
+        //
+        // The honest response to that is not a hard-coded token cap — the number
+        // belongs to a particular phone, driver, model and quantisation, and two
+        // devices will not share it. So the app measures its OWN ceiling and
+        // clamps to what this device has actually demonstrated. With no failures
+        // on record it does nothing at all.
+        const PREFILL_LEDGER_KEY = 'sophiaPrefillLedger';
+
+        function prefillLedgerKey() {
+            return (selectedLocalModel || '?') + '|' + (isWasmMode() ? 'wasm' : 'webgpu');
+        }
+
+        function readPrefillLedger() {
+            try { return JSON.parse(localStorage.getItem(PREFILL_LEDGER_KEY) || '{}') || {}; }
+            catch (e) { return {}; }
+        }
+
+        // maxOk  — largest prompt that has completed here
+        // minFail — smallest prompt that has killed the device here
+        function recordPrefillOutcome(promptTokens, outcome) {
+            const tok = Number(promptTokens) || 0;
+            if (!tok) return;
+            try {
+                const ledger = readPrefillLedger();
+                const key = prefillLedgerKey();
+                const e = ledger[key] || {};
+                if (outcome === 'ok') {
+                    e.maxOk = Math.max(e.maxOk || 0, tok);
+                    // Completed generations are also how we know whether this model
+                    // has ever run here before. The first-ever run on a device pays
+                    // for shader compilation that later runs get free, and every
+                    // failure so far has been a first-of-its-kind.
+                    e.runs = (e.runs || 0) + 1;
+                } else {
+                    e.minFail = e.minFail ? Math.min(e.minFail, tok) : tok;
+                    // A prompt that once completed and now kills the device is no
+                    // longer evidence of safety — drop stale optimism.
+                    if (e.maxOk && e.maxOk >= e.minFail) e.maxOk = 0;
+                }
+                e.updated = Date.now();
+                ledger[key] = e;
+                localStorage.setItem(PREFILL_LEDGER_KEY, JSON.stringify(ledger));
+                runtimeDiag.note('prefillLedger', {
+                    key: key, outcome: outcome, promptTokens: tok,
+                    // The discriminator between the two failure modes seen on the
+                    // ROG Phone: a model that had never completed a generation here
+                    // may simply have been compiling shaders (qwen-mini, 464 s),
+                    // whereas one that had already run and still died at a larger
+                    // prompt has hit a real prefill wall (agent-lite at 1885, twice,
+                    // with 1427 and 934 completing either side of it).
+                    firstEverRun: !e.runs || (outcome === 'fail' && e.runs === 0),
+                    entry: e,
+                });
+            } catch (err) { /* storage full or blocked — the ledger is optional */ }
+        }
+
+        // Evidence is CONTRADICTED when a prompt larger than the one that killed
+        // the device has since completed on it. That is not a rare edge case:
+        // agent-qwen-mini died at 582 tokens and then answered a 678-token prompt
+        // (2026-08-12, batch 3). Where that happens, prompt size is simply not
+        // what decides the outcome for this model, and both the clamp and the
+        // warning have to stand down rather than nag about a size that demonstrably
+        // works. Better to protect nobody than to be confidently wrong.
+        function prefillEvidence() {
+            const e = readPrefillLedger()[prefillLedgerKey()] || {};
+            const contradicted = !!(e.minFail && e.maxOk && e.maxOk >= e.minFail);
+            return { maxOk: e.maxOk || 0, minFail: e.minFail || 0, runs: e.runs || 0, contradicted };
+        }
+
+        // The largest prompt this device+model+backend has actually completed,
+        // but only once something larger has been seen to kill it. Null means
+        // "no usable evidence", and no evidence must not restrict anyone.
+        function measuredPrefillCeiling() {
+            const e = prefillEvidence();
+            if (!e.minFail || e.contradicted) return null;
+            return e.maxOk && e.maxOk < e.minFail ? e.maxOk : null;
+        }
+
+        function knownBadPrefill() {
+            const e = prefillEvidence();
+            return (!e.contradicted && e.minFail) || null;
+        }
+
         function localPromptBudget() {
             const info = LOCAL_MODELS[selectedLocalModel] || {};
             const ctx = Math.max(1024, config.contextLength || info.contextLength || 4096);
             const reply = Math.max(128, config.maxTokens || 512);
             const margin = 192;                       // chat-template tokens + estimator slop
-            return { ctx, reply, margin, forPrompt: Math.max(512, ctx - reply - margin) };
+            let forPrompt = Math.max(512, ctx - reply - margin);
+            // The context window says what the MODEL can hold; the ledger says what
+            // this DEVICE can prefill without the driver giving up. Take the lower.
+            const ceiling = measuredPrefillCeiling();
+            if (ceiling && ceiling < forPrompt) {
+                console.warn('🧠 [Prompt budget] clamped ' + forPrompt + ' → ' + ceiling +
+                             ' tok: this device lost its GPU at ' + knownBadPrefill() +
+                             ' tok on ' + prefillLedgerKey() + ', and ' + ceiling + ' is the largest it has completed.');
+                forPrompt = Math.max(512, ceiling);
+            }
+            return { ctx, reply, margin, forPrompt, measuredCeiling: ceiling || null };
         }
 
         // Assemble the system prompt within a token ceiling. Parts are dropped from
@@ -13231,8 +13510,31 @@ Use this data to personalize your response. Comment on their current state when 
                     maxTokens = 512;
                 }
                 // One line that identifies a generation-time crash next time: what the
-                // model was asked for, on what backend, from how big a prompt.
-                const _promptTok = chatMessages.reduce((a, m) => a + estTokens(m.content), 0);
+                // model was asked for, on what backend, from how big a prompt. Tool
+                // schemas count: the chat template renders them into the prompt, so
+                // the GPU prefills them like any other text.
+                let _toolTok = 0;
+                try { _toolTok = (toolSchemas && toolSchemas.length) ? estTokens(JSON.stringify(toolSchemas)) : 0; }
+                catch (e) {}
+                const _promptTok = chatMessages.reduce((a, m) => a + estTokens(m.content), 0) + _toolTok;
+
+                // The history trimmer can shrink messages, but it cannot drop tools —
+                // those are the user's choice and the template renders all of them. So
+                // when the prompt is at or above a size that has already killed this
+                // device, say so before spending 25 seconds finding out again, and name
+                // the lever that actually moves: the tool list.
+                const _knownBad = !isWasm ? knownBadPrefill() : null;
+                if (_knownBad && _promptTok >= _knownBad) {
+                    const toolNote = (toolSchemas && toolSchemas.length)
+                        ? ' ' + toolSchemas.length + ' tools are ≈' + _toolTok + ' of those tokens.'
+                        : '';
+                    console.warn('🧠 [Prefill risk] ' + _promptTok + ' tok ≥ ' + _knownBad +
+                                 ' tok, which lost the GPU on this device before.' + toolNote);
+                    runtimeDiag.note('prefillRiskWarned', { promptTokens: _promptTok, knownBad: _knownBad, toolTokens: _toolTok });
+                    showStatus('This prompt (≈' + _promptTok + ' tokens) is as long as one that crashed this ' +
+                               'phone’s GPU before.' + toolNote + ' Turning some off, or ticking Force WASM, ' +
+                               'is more likely to get an answer than trying again.', 'warning');
+                }
                 console.log('🧠 [Generate] ' + (selectedLocalModel || '?') +
                     ' · ' + (isWasm ? 'wasm' : 'webgpu') + (gen.smallGpu ? ' (small-GPU cap)' : '') +
                     ' · prompt ≈' + _promptTok + ' tok · max_new_tokens ' + maxTokens +

@@ -1791,7 +1791,7 @@
                     Export
                 </button>
             </div>
-            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v81</div>
+            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v82</div>
             </div><!-- end sidebar-scroll -->
         </div>
 
@@ -2140,6 +2140,11 @@
                         <button class="btn btn-small btn-primary" onclick="loadLocalModelManual()" id="loadModelBtn" style="flex: 1;">⬇️ Load Model</button>
                         <button class="btn btn-small btn-secondary" onclick="unloadLocalModel()" id="unloadModelBtn" style="flex: 1; display: none;">🗑️ Unload</button>
                     </div>
+                    <div style="margin-top: 6px;">
+                        <button class="btn btn-small btn-secondary" onclick="copyRuntimeDiagnostics()" id="copyDiagBtn" style="width: 100%; font-size: 0.72rem;"
+                                title="GPU device-lost reason, which ONNX runtimes are live, and what was being allocated when it failed">🩺 Copy runtime diagnostics</button>
+                    </div>
+                    <div id="ortIsolationNotice" style="display: none; margin-top: 6px; font-size: 0.72rem; color: #ffcc66; border: 1px solid rgba(255, 204, 102, 0.35); border-radius: 4px; padding: 5px 7px; line-height: 1.35;"></div>
                     <div style="margin-top: 6px; font-size: 0.75rem; color: #888;" id="webgpuStatus">Checking WebGPU...</div>
                     <label style="font-weight: normal; display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 0.75rem; color: #ffaa00;">
                         <input type="checkbox" id="forceWasm" onchange="onForceWasmChange()"> Force WASM (no GPU) — use if model crashes on load
@@ -10703,9 +10708,169 @@ return result;</textarea>
             gpuLimits: null,      // adapter limits, recorded by checkWebGPU()
             generations: 0,       // generations this session — reported by the worker
             gpuExhausted: false,  // set when the GPU died; cleared on a fresh load
+            lastGpuLoss: null,    // {reason, message, ...} from GPUDevice.lost — Phase A1
             error: null,
             _pending: null, // {resolve, reject, onToken} for current generation
         };
+
+        // Keep in step with the footer version and sw.js CACHE_VERSION — it only
+        // labels the diagnostics export, but a report that can't be tied to a
+        // build is a report you can't act on.
+        const SOPHIA_BUILD = 'v82';
+
+        // ═══════════════════════════════════════════════════════════════════
+        // Runtime diagnostics — SOPHIA_RUNTIME_BRIEF Phase A (page side)
+        // ═══════════════════════════════════════════════════════════════════
+        // The worker measures; this buffers and exports. It exists in this shape
+        // because the device that crashes is an Android phone with no devtools
+        // attached: a console.log there is a measurement nobody can read. One tap
+        // on "Copy diagnostics" produces the JSON the brief's baseline protocol
+        // asks for — three runs, one model, same prompt, recorded.
+        const runtimeDiag = {
+            events: [],
+            MAX: 500,   // a long session must not grow without bound
+            add(rec) {
+                this.events.push(rec);
+                if (this.events.length > this.MAX) this.events.splice(0, this.events.length - this.MAX);
+            },
+            note(event, data) {
+                this.add(Object.assign({ event: event, source: 'page', t: Date.now() }, data || {}));
+            },
+            report() {
+                const wasmBox = document.getElementById('forceWasm');
+                return {
+                    captured: new Date().toISOString(),
+                    build: SOPHIA_BUILD,
+                    userAgent: navigator.userAgent,
+                    deviceMemoryGB: navigator.deviceMemory || null,
+                    hardwareConcurrency: navigator.hardwareConcurrency || null,
+                    webgpuAvailable: localInference.webgpuAvailable,
+                    forceWasm: !!(wasmBox && wasmBox.checked),
+                    ortIsolation: isOrtIsolationEnabled(),
+                    verboseWorkerLogs: isVerboseWorkerLogging(),
+                    selectedModel: selectedLocalModel,
+                    modelId: (LOCAL_MODELS[selectedLocalModel] || {}).id || null,
+                    pageAdapterLimits: localInference.gpuLimits,
+                    generations: localInference.generations,
+                    lastGpuLoss: localInference.lastGpuLoss,
+                    events: this.events,
+                };
+            },
+        };
+
+        // Console access for desktop sessions; the button below covers the phone.
+        window.sophiaRuntimeDiag = () => runtimeDiag.report();
+
+        function copyRuntimeDiagnostics() {
+            const report = runtimeDiag.report();
+            const text = JSON.stringify(report, null, 2);
+            console.log('🧪 Runtime diagnostics:', report);
+            const done = () => showStatus(
+                'Runtime diagnostics copied — ' + runtimeDiag.events.length + ' event(s). Paste them into SOPHIA_RUNTIME_BRIEF.', 'success');
+            const fallback = () => {
+                // Clipboard API needs a secure context and permission; a phone in a
+                // weird PWA state may refuse. The textarea trick still works there.
+                try {
+                    const ta = document.createElement('textarea');
+                    ta.value = text;
+                    ta.style.position = 'fixed';
+                    ta.style.opacity = '0';
+                    document.body.appendChild(ta);
+                    ta.select();
+                    const okCopy = document.execCommand('copy');
+                    document.body.removeChild(ta);
+                    if (okCopy) done();
+                    else showStatus('Could not copy — the report is in the console instead.', 'warning');
+                } catch (e) {
+                    showStatus('Could not copy — the report is in the console instead.', 'warning');
+                }
+            };
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(text).then(done, fallback);
+            } else {
+                fallback();
+            }
+        }
+
+        // ═══════════════════════════════════════════════════════════════════
+        // Phase B — the isolation test
+        // ═══════════════════════════════════════════════════════════════════
+        // The hypothesis: two independent ONNX runtimes share this worker —
+        // transformers.js@4.2.0's bundled native WebGPU EP, and the standalone
+        // onnxruntime-web@1.23.2 (JSEP era) that only the LFM2.5-VL loader needs.
+        // The test is to remove the second one and re-run the baseline.
+        //
+        // The brief calls for doing this on a branch. It is done as a runtime
+        // switch instead, for one reason: the device under test is a phone, and
+        // WebGPU needs a secure context, so a branch means a deploy — which is a
+        // second variable in an experiment whose whole point is changing one
+        // thing. With this, the same build runs both arms:
+        //
+        //     ?ortIsolation=1   isolation ON  (no standalone ORT — vision model unavailable)
+        //     ?ortIsolation=0   isolation OFF (ships as normal)
+        //
+        // The choice sticks in localStorage so relaunching from the home screen
+        // (which drops the query string) doesn't silently flip the arm mid-test.
+        // Isolation OFF produces byte-identical worker source to before this
+        // change — the transform is the only thing that touches it.
+        const ORT_ISOLATION_KEY = 'sophiaOrtIsolation';
+
+        function isOrtIsolationEnabled() {
+            try {
+                const q = new URLSearchParams(location.search);
+                if (q.has('ortIsolation')) {
+                    const on = q.get('ortIsolation') !== '0' && q.get('ortIsolation') !== 'false';
+                    try { localStorage.setItem(ORT_ISOLATION_KEY, on ? 'true' : 'false'); } catch (e) {}
+                    return on;
+                }
+                return localStorage.getItem(ORT_ISOLATION_KEY) === 'true';
+            } catch (e) { return false; }
+        }
+
+        // Raise the worker's ONNX Runtime log level. v4 quietened WebGPU warnings
+        // by default, which would hide exactly the diagnostics Phase A adds.
+        function isVerboseWorkerLogging() {
+            try {
+                const q = new URLSearchParams(location.search);
+                if (q.has('verboseWorker')) {
+                    const on = q.get('verboseWorker') !== '0';
+                    try { localStorage.setItem('sophiaVerboseWorker', on ? 'true' : 'false'); } catch (e) {}
+                    return on;
+                }
+                return localStorage.getItem('sophiaVerboseWorker') === 'true';
+            } catch (e) { return false; }
+        }
+
+        // The edits that constitute the isolation arm. Kept as data, not inline
+        // regexes, so test-worker-source.js can apply the real ones to the real
+        // worker source and prove they still match — a transform that silently
+        // stopped matching would make the decisive experiment produce a false
+        // negative, which is worse than not running it.
+        const ORT_ISOLATION_EDITS = [
+            { find: /^import \* as ort from [^\n]*$/m, note: 'standalone onnxruntime-web import' },
+            { find: /^ort\.env\.wasm\.numThreads = 1;$/m, note: 'ort.env global mutation' },
+        ];
+
+        function applyOrtIsolation(src) {
+            let out = src;
+            const applied = [];
+            const missed = [];
+            for (const edit of ORT_ISOLATION_EDITS) {
+                if (edit.find.test(out)) {
+                    out = out.replace(edit.find, '// [ort-isolation] removed — ' + edit.note);
+                    applied.push(edit.note);
+                } else {
+                    missed.push(edit.note);
+                }
+            }
+            if (missed.length) {
+                console.error('🧪 ORT isolation: these edits did NOT match and the worker is NOT isolated:', missed);
+            }
+            console.warn('🧪 ORT ISOLATION ACTIVE — standalone onnxruntime-web removed from the worker. ' +
+                         'LFM2.5-VL (Agent + Vision) cannot load in this mode. Removed: ' + applied.join(', '));
+            runtimeDiag.note('ortIsolationApplied', { applied: applied, missed: missed });
+            return out;
+        }
 
         // ── Build inline Web Worker source ──
         // Supports three modes:
@@ -10724,6 +10889,7 @@ import {
     RawImage,
     read_audio,
     env,
+    LogLevel,
 } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.2.0';
 import * as ort from 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.23.2/dist/ort.all.bundle.min.mjs';
 // Both deps pinned to confirmed-working versions. Bump these deliberately
@@ -10738,11 +10904,294 @@ import * as ort from 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.23.2/dist/o
 //                                     and q2/q2f16 (Bonsai) from 4.1.0.
 //   onnxruntime-web@1.23.2          — matches LiquidAI HF Space, stable
 //                                     WebGPU + WASM bundled backends.
+//
+// RUNTIME BRIEF, PHASE C — recorded 2026-08-12. The brief was written against
+// 4.1.0 and asks for a bump to 4.2.0; that bump had already landed here (for
+// the tool-template reason above), so Phase C is DONE and cannot be credited
+// with fixing or not fixing the Android crash. Everything the brief attributes
+// to v4 — the native C++ WebGPU EP from PR #1382, which closes #1205 (the
+// "external Instance reference no longer exists" crash) and #1469 (Gemma 3 1B
+// on JSEP) — is therefore already in this build, and the crash persists anyway.
+// That is what makes the dual-runtime hypothesis below worth measuring: the
+// standalone onnxruntime-web@1.23.2 import IS still JSEP-era, so this worker
+// runs both the new EP and the old one in a single scope.
 env.allowLocalModels = false;
 env.useBrowserCache = true;
+// v4 hides ONNX Runtime's WebGPU warnings by default (env.logLevel defaults to
+// ERROR), which silently swallows the diagnostics below. WARNING is the shipping
+// level; the page can raise it to DEBUG per-load via payload.verboseLogs.
+env.logLevel = LogLevel.WARNING;
 // Keep ORT-Web single-threaded to avoid SharedArrayBuffer / COOP+COEP requirements
 // we can't guarantee in all deployment contexts.
 ort.env.wasm.numThreads = 1;
+
+// ═══════════════════════════════════════════════════════════════════════
+// Runtime diagnostics — SOPHIA_RUNTIME_BRIEF Phase A
+// ═══════════════════════════════════════════════════════════════════════
+// MEASUREMENT ONLY. Nothing in this block changes what loads, which backend
+// runs it, or how a failure is handled — it exists because the WebGPU crash on
+// Android is currently diagnosed by regex-matching error strings, and a regex
+// cannot tell a driver timeout from an out-of-memory from an explicit destroy.
+// Those are three different fixes.
+//
+// Everything found here is posted to the page as a 'diag' message rather than
+// only logged, because the device that crashes is a phone with no devtools
+// attached. The page buffers them for the "Copy diagnostics" button.
+
+// Declared here, above everything that reports them, because the GPU probe and
+// the census below run at module-evaluation time and a later let-declaration
+// would leave them in the temporal dead zone.
+let genCount = 0;        // generations since load — reported so leaks are visible
+let tokensThisGen = 0;   // tokens streamed in the current generation — "how far
+                         // did it get before the device died", per the brief's
+                         // baseline protocol
+let diagSeq = 0;
+function diag(event, data) {
+    const rec = Object.assign({ event: event, seq: ++diagSeq, t: Date.now() }, data || {});
+    console.log('[diag] ' + event, rec);
+    try { self.postMessage({ type: 'diag', payload: rec }); } catch (e) { /* uncloneable — drop */ }
+    return rec;
+}
+
+let gpuDeviceCount = 0;    // >1 in one worker is the dual-runtime smoking gun
+let gpuAdapterInfo = null; // vendor/architecture — the Adreno driver question
+let gpuLimits = null;      // real device limits, not the page's separate probe
+
+// Which bundle asked for the GPU? Both CDN URLs appear in the call stack, so
+// this one string answers "is the standalone ORT initialising WebGPU too?".
+function shortStack() {
+    try {
+        const s = (new Error('stack-probe')).stack || '';
+        return s.split('\\n').slice(1, 7).map(function (l) { return l.trim(); }).join(' | ').slice(0, 600);
+    } catch (e) { return ''; }
+}
+
+function requesterFromStack(stack) {
+    const s = String(stack || '');
+    const ort19 = /onnxruntime-web/.test(s);
+    const tjs = /transformers/.test(s);
+    if (ort19 && tjs) return 'both-in-stack';
+    if (ort19) return 'onnxruntime-web@1.23.2 (standalone, JSEP)';
+    if (tjs) return 'transformers.js@4.2.0 (bundled native EP)';
+    return 'unknown';
+}
+
+function limitsOf(obj) {
+    try {
+        const L = obj || {};
+        return {
+            maxBufferSize: Number(L.maxBufferSize) || 0,
+            maxStorageBufferBindingSize: Number(L.maxStorageBufferBindingSize) || 0,
+            maxComputeWorkgroupStorageSize: Number(L.maxComputeWorkgroupStorageSize) || 0,
+        };
+    } catch (e) { return null; }
+}
+
+// A1 — the real device-lost reason. Chrome 135+ ships a descriptive reason code
+// on GPUDevice.lost; neither transformers.js nor ORT-Web hands us the device,
+// so we intercept it at creation.
+// Every path here is wrapped: an instrument that can break the thing it
+// measures is worse than no instrument. Whatever goes wrong, the device the
+// runtime asked for is handed back untouched.
+function hookDevice(device, requester, stack) {
+    if (!device || device.__sophiaHooked) return device;
+    try {
+        device.__sophiaHooked = true;
+        const index = ++gpuDeviceCount;
+        gpuLimits = limitsOf(device.limits) || gpuLimits;
+        diag('gpuDeviceCreated', {
+            deviceIndex: index,
+            requester: requester,
+            limits: gpuLimits,
+            adapter: gpuAdapterInfo,
+            stack: stack,
+            note: index > 1 ? 'SECOND GPUDevice in this worker — dual-runtime confirmed' : '',
+        });
+        try {
+            device.lost.then(function (info) {
+                console.error('[worker] GPUDevice lost — ' + info.reason + ' | ' + info.message);
+                const payload = {
+                    reason: String(info.reason || 'unknown'),
+                    message: String(info.message || ''),
+                    deviceIndex: index,
+                    requester: requester,
+                    generations: genCount,
+                    tokensThisGen: tokensThisGen,
+                };
+                diag('gpuDeviceLost', payload);
+                self.postMessage({ type: 'gpuLost', payload: payload });
+            }, function () { /* never rejects */ });
+        } catch (e) { /* older UA without .lost */ }
+        // Validation and OOM errors that don't reject any promise surface here
+        // and nowhere else — on the native EP they are often the only warning
+        // before the device dies.
+        try {
+            device.addEventListener('uncapturederror', function (ev) {
+                const err = (ev && ev.error) || {};
+                diag('gpuUncapturedError', {
+                    kind: (err.constructor && err.constructor.name) || 'GPUError',
+                    message: String(err.message || ''),
+                    deviceIndex: index,
+                    generations: genCount,
+                    tokensThisGen: tokensThisGen,
+                });
+            });
+        } catch (e) { /* not supported */ }
+    } catch (e) {
+        console.warn('[worker] device hook failed (inference unaffected):', e && e.message);
+    }
+    return device;
+}
+
+function recordAdapterInfo(adapter) {
+    try {
+        const apply = function (i) {
+            if (!i) return;
+            gpuAdapterInfo = {
+                vendor: String(i.vendor || ''),
+                architecture: String(i.architecture || ''),
+                device: String(i.device || ''),
+                description: String(i.description || ''),
+            };
+            diag('gpuAdapterInfo', gpuAdapterInfo);
+        };
+        if (adapter.info) apply(adapter.info);
+        else if (typeof adapter.requestAdapterInfo === 'function') {
+            adapter.requestAdapterInfo().then(apply, function () {});
+        }
+        diag('gpuAdapterLimits', limitsOf(adapter.limits));
+    } catch (e) { /* advisory only */ }
+}
+
+function installGpuProbe() {
+    try {
+        const gpu = (typeof navigator !== 'undefined') ? navigator.gpu : null;
+        if (!gpu || gpu.__sophiaProbed) return;
+        gpu.__sophiaProbed = true;
+        const origRequestAdapter = gpu.requestAdapter.bind(gpu);
+        gpu.requestAdapter = async function (opts) {
+            const stack = shortStack();
+            // The real call is outside the try: if adapter acquisition fails,
+            // that failure belongs to the runtime, unaltered.
+            const adapter = await origRequestAdapter(opts);
+            try {
+                diag('gpuRequestAdapter', { requester: requesterFromStack(stack), granted: !!adapter, stack: stack });
+                if (adapter && !adapter.__sophiaProbed) {
+                    adapter.__sophiaProbed = true;
+                    recordAdapterInfo(adapter);
+                    const origRequestDevice = adapter.requestDevice.bind(adapter);
+                    adapter.requestDevice = async function (dopts) {
+                        const dstack = shortStack();
+                        const device = await origRequestDevice(dopts);
+                        return hookDevice(device, requesterFromStack(dstack), dstack);
+                    };
+                }
+            } catch (e) {
+                console.warn('[worker] adapter hook failed (inference unaffected):', e && e.message);
+            }
+            return adapter;
+        };
+        diag('gpuProbeInstalled', {});
+    } catch (e) {
+        console.warn('[worker] GPU probe could not be installed:', e && e.message);
+    }
+}
+installGpuProbe();
+
+// A2 — which runtimes are actually live. transformers.js exposes its bundled
+// ORT as env.backends.onnx, so sameOrtEnv === false is direct evidence of two
+// independent ONNX runtimes sharing this worker scope; true would mean the
+// import de-duplicated and the hypothesis is dead on arrival.
+function safeVersions(v) {
+    try { return v ? JSON.parse(JSON.stringify(v)) : null; } catch (e) { return null; }
+}
+
+function runtimeCensus(when) {
+    const out = { when: when, standalone: null, bundled: null, sameOrtEnv: null, globalOrt: false };
+    try {
+        if (typeof ort !== 'undefined' && ort && ort.env) {
+            out.standalone = {
+                versions: safeVersions(ort.env.versions),
+                numThreads: (ort.env.wasm && ort.env.wasm.numThreads) || null,
+            };
+        } else {
+            out.standalone = 'not imported (ORT isolation mode)';
+        }
+    } catch (e) { out.standalone = 'error: ' + (e && e.message); }
+    try {
+        const bundled = env.backends && env.backends.onnx;
+        if (bundled && bundled.env) {
+            out.bundled = {
+                versions: safeVersions(bundled.env.versions),
+                numThreads: (bundled.env.wasm && bundled.env.wasm.numThreads) || null,
+            };
+            if (typeof ort !== 'undefined' && ort && ort.env) out.sameOrtEnv = (bundled.env === ort.env);
+        } else {
+            out.bundled = 'not initialised yet (transformers.js binds ORT lazily)';
+        }
+    } catch (e) { out.bundled = 'error: ' + (e && e.message); }
+    try { out.globalOrt = typeof globalThis.ort !== 'undefined'; } catch (e) {}
+    return diag('runtimeCensus', out);
+}
+runtimeCensus('worker-start');
+
+// A3 — what is about to be allocated. The crash is on generate, not load, and
+// generate is when the KV cache starts growing, so the numbers that matter are
+// the ones at the moment of the first dispatch.
+async function preDispatchSnapshot(mode, payload) {
+    const msgs = (payload && payload.messages) || [];
+    let chars = 0;
+    for (const m of msgs) chars += (m && typeof m.content === 'string') ? m.content.length : 0;
+    const rec = {
+        mode: mode,
+        generation: genCount + 1,
+        messages: msgs.length,
+        promptChars: chars,
+        approxPromptTokens: Math.round(chars / 4),
+        maxNewTokens: (payload && payload.max_new_tokens) || null,
+        gpuDevices: gpuDeviceCount,
+        limits: gpuLimits,
+        adapter: gpuAdapterInfo,
+    };
+    // Only on the first generation of a load: estimate() has to walk the quota
+    // accounting, and with a 3 GB model in the cache that is not free. It is a
+    // property of the load, not of the generation, so once is enough — and this
+    // runs on the path to every reply, where added latency would be a behaviour
+    // change smuggled in under a diagnostic.
+    if (genCount === 0) {
+        try {
+            if (navigator.storage && navigator.storage.estimate) {
+                const est = await navigator.storage.estimate();
+                rec.storageUsedMB = Math.round((est.usage || 0) / 1048576);
+                rec.storageQuotaMB = Math.round((est.quota || 0) / 1048576);
+            }
+        } catch (e) { /* not exposed in all workers */ }
+    }
+    diag('preDispatch', rec);
+}
+
+// Re-census after load: transformers.js binds its bundled ORT lazily, so the
+// worker-start census usually reports it as uninitialised. This is the one that
+// answers whether two ONNX runtimes are really live at inference time.
+// A generation that finished is as much a data point as one that died: the
+// baseline protocol is three runs, and "run 2 completed 180 tokens" is what
+// makes "run 3 died at 41" mean something.
+function postGenDone() {
+    diag('genDone', { generation: genCount, tokensThisGen: tokensThisGen, gpuDevices: gpuDeviceCount });
+    self.postMessage({ type: 'genDone', payload: { generations: genCount, tokensThisGen: tokensThisGen } });
+}
+
+function postLoaded(startedAt) {
+    runtimeCensus('after-load');
+    diag('loadDone', {
+        modelType: modelType,
+        ms: Date.now() - startedAt,
+        gpuDevices: gpuDeviceCount,
+        limits: gpuLimits,
+        adapter: gpuAdapterInfo,
+    });
+    self.postMessage({ type: 'loaded' });
+}
 
 // WebGPU can fire GPUBuffer.mapAsync rejections *after* an inference operation
 // has already returned — ORT-Web's internal bookkeeping discovers the lost
@@ -10750,13 +11199,23 @@ ort.env.wasm.numThreads = 1;
 // as 'Uncaught (in promise)' errors in devtools and the UI keeps spinning
 // because neither genDone nor genError ever posts. Surface them as genError
 // so the user sees a real failure instead of an infinite hang.
+//
+// PHASE C WATCH-ITEM: this regex was written against JSEP's error text. The
+// native C++ EP may word its failures differently, and a miss here means a
+// silent infinite spinner — the exact failure the handler exists to prevent.
+// So every rejection that does NOT match is now reported as a diag event with
+// its full text: if the spinner ever hangs, the phrasing that got away is in
+// the diagnostics export rather than lost in a console nobody can read.
 self.addEventListener('unhandledrejection', (e) => {
     const msg = (e.reason && e.reason.message) ? e.reason.message : String(e.reason);
     console.error('[worker] unhandled rejection:', msg);
     // Only convert WebGPU-ish rejections — don't swallow unrelated ones.
     if (/mapAsync|GPUBuffer|external Instance|device is lost|webgpu/i.test(msg)) {
+        diag('unhandledRejectionMatched', { message: msg.slice(0, 400), generations: genCount, tokensThisGen: tokensThisGen });
         self.postMessage({ type: 'genError', payload: 'WebGPU error: ' + msg + ' (GPU may be out of memory — try Force WASM)' });
         e.preventDefault();
+    } else {
+        diag('unhandledRejectionUnmatched', { message: msg.slice(0, 400), generations: genCount, tokensThisGen: tokensThisGen });
     }
 });
 
@@ -10765,7 +11224,8 @@ let model = null;
 let pipe = null;       // text-generation pipeline mode
 let vlModel = null;    // lfm2-vision (custom 3-session ORT-Web loader)
 let modelType = null;  // 'gemma4-vision' | 'lfm2-vision' | 'text-generation'
-let genCount = 0;      // generations since load — reported so leaks are visible
+// genCount / tokensThisGen live in the diagnostics block above — the GPU probe
+// installed at module-evaluation time closes over them.
 
 // ── GPU memory hygiene ────────────────────────────────────────────────────
 // An ORT tensor on the WebGPU backend owns a GPUBuffer. Letting the JS wrapper
@@ -10796,7 +11256,18 @@ function postGenError(err, where) {
     const msg = (err && err.message) ? err.message : String(err);
     const oom = isGpuExhaustion(msg);
     console.error('[worker] ' + (where || 'generate') + ' failed' + (oom ? ' (GPU exhaustion)' : '') + ':', msg);
-    self.postMessage({ type: 'genError', payload: msg, oom, generations: genCount });
+    // How far it got before dying is the number the brief's baseline protocol
+    // asks for, and it separates "died on the first dispatch" (allocation) from
+    // "died 200 tokens in" (KV cache growth).
+    diag('genFailed', {
+        where: where || 'generate',
+        message: msg.slice(0, 400),
+        oom: oom,
+        generation: genCount + 1,
+        tokensThisGen: tokensThisGen,
+        gpuDevices: gpuDeviceCount,
+    });
+    self.postMessage({ type: 'genError', payload: msg, oom, generations: genCount, tokensThisGen });
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -11462,6 +11933,21 @@ self.onmessage = async (e) => {
 
     if (type === 'load') {
         modelType = payload.modelType || 'gemma4-vision';
+        // Raise ONNX Runtime's log level for this load only when the page asked
+        // for it — DEBUG is very noisy and the point of shipping at WARNING is
+        // that ordinary sessions stay readable.
+        if (payload.verboseLogs) {
+            try { env.logLevel = LogLevel.DEBUG; } catch (e) {}
+        }
+        const loadStart = Date.now();
+        diag('loadStart', {
+            modelId: payload.modelId,
+            modelType: modelType,
+            dtype: payload.dtype,
+            device: payload.device,
+            verboseLogs: !!payload.verboseLogs,
+            ortIsolation: typeof ort === 'undefined',
+        });
         try {
             if (modelType === 'text-generation') {
                 // ── Small text-only model via pipeline ──
@@ -11470,8 +11956,17 @@ self.onmessage = async (e) => {
                     device: payload.device,
                     progress_callback: (p) => self.postMessage({ type: 'progress', payload: p }),
                 });
-                self.postMessage({ type: 'loaded' });
+                postLoaded(loadStart);
             } else if (modelType === 'lfm2-vision') {
+                // This path IS the standalone runtime. Under the Phase B
+                // isolation transform the import is stripped, so fail loudly
+                // and immediately instead of dying somewhere inside VLModel
+                // with a bare "ort is not defined".
+                if (typeof ort === 'undefined') {
+                    throw new Error('ORT isolation mode is on (?ortIsolation=1), so the standalone ' +
+                        'onnxruntime-web runtime this model needs was not loaded. Turn isolation off ' +
+                        '(?ortIsolation=0) to use LFM2.5-VL.');
+                }
                 // ── LFM2.5-VL via custom 3-session ORT-Web loader ──
                 // dtype is Liquid-style: { embedImages: 'fp16', decoder: 'q4' }
                 const modelPath = 'https://huggingface.co/' + payload.modelId + '/resolve/main';
@@ -11491,7 +11986,7 @@ self.onmessage = async (e) => {
                         });
                     },
                 });
-                self.postMessage({ type: 'loaded' });
+                postLoaded(loadStart);
             } else {
                 // ── Vision-capable conditional-generation models ──
                 // Gemma 4 and Qwen 3.5 share one code path: AutoProcessor + a
@@ -11511,10 +12006,16 @@ self.onmessage = async (e) => {
                     device: payload.device,
                     progress_callback: (p) => self.postMessage({ type: 'progress', payload: p }),
                 });
-                self.postMessage({ type: 'loaded' });
+                postLoaded(loadStart);
             }
         } catch (err) {
             const msg = (err && err.message) ? err.message : String(err);
+            diag('loadFailed', {
+                modelType: modelType,
+                ms: Date.now() - loadStart,
+                message: msg.slice(0, 400),
+                gpuDevices: gpuDeviceCount,
+            });
             self.postMessage({ type: 'loadError', payload: msg });
         }
         return;
@@ -11525,10 +12026,12 @@ self.onmessage = async (e) => {
         if (modelType === 'text-generation') {
             if (!pipe) { self.postMessage({ type: 'genError', payload: 'Model not loaded' }); return; }
             try {
+                tokensThisGen = 0;
                 const streamer = new TextStreamer(pipe.tokenizer, {
                     skip_prompt: true,
                     skip_special_tokens: true,
                     callback_function: (token) => {
+                        tokensThisGen++;
                         self.postMessage({ type: 'token', payload: token });
                     },
                 });
@@ -11537,6 +12040,7 @@ self.onmessage = async (e) => {
                     role: m.role,
                     content: m.content,
                 }));
+                await preDispatchSnapshot('text-generation', payload);
                 const out = await pipe(textMessages, {
                     max_new_tokens: payload.max_new_tokens,
                     temperature: payload.temperature,
@@ -11551,7 +12055,7 @@ self.onmessage = async (e) => {
                 // text token by token. On WebGPU it may still be holding buffers.
                 disposeTensor(out);
                 genCount++;
-                self.postMessage({ type: 'genDone', payload: { generations: genCount } });
+                postGenDone();
             } catch (err) {
                 postGenError(err, 'text-generation');
             }
@@ -11567,6 +12071,8 @@ self.onmessage = async (e) => {
                 return;
             }
             try {
+                tokensThisGen = 0;
+                await preDispatchSnapshot('lfm2-vision', payload);
                 // Plain messages (no content-parts — VLModel handles <image> placement)
                 const plainMessages = payload.messages.map(m => ({ role: m.role, content: m.content }));
 
@@ -11594,11 +12100,12 @@ self.onmessage = async (e) => {
                     maxNewTokens: payload.max_new_tokens,
                     temperature: payload.temperature || 0,
                     onToken: (tokenText) => {
+                        tokensThisGen++;
                         self.postMessage({ type: 'token', payload: tokenText });
                     },
                 });
                 genCount++;
-                self.postMessage({ type: 'genDone', payload: { generations: genCount } });
+                postGenDone();
             } catch (err) {
                 postGenError(err, 'lfm2-vision');
             }
@@ -11611,6 +12118,7 @@ self.onmessage = async (e) => {
             return;
         }
         try {
+            tokensThisGen = 0;
             const messages = payload.messages.map(m => {
                 const hasImages = m.images && m.images.length > 0;
                 const hasAudio = m.audio && m.audio.length > 0;
@@ -11670,10 +12178,12 @@ self.onmessage = async (e) => {
                 skip_prompt: true,
                 skip_special_tokens: true,
                 callback_function: (token) => {
+                    tokensThisGen++;
                     self.postMessage({ type: 'token', payload: token });
                 },
             });
 
+            await preDispatchSnapshot(modelType, payload);
             const sequences = await model.generate({
                 ...inputs,
                 max_new_tokens: payload.max_new_tokens,
@@ -11687,7 +12197,7 @@ self.onmessage = async (e) => {
             disposeTensor(sequences);
             for (const k of Object.keys(inputs)) disposeTensor(inputs[k]);
             genCount++;
-            self.postMessage({ type: 'genDone', payload: { generations: genCount } });
+            postGenDone();
         } catch (err) {
             postGenError(err, modelType);
         }
@@ -11714,6 +12224,8 @@ self.onmessage = async (e) => {
         }
         modelType = null;
         genCount = 0;
+        tokensThisGen = 0;
+        diag('unloaded', { gpuDevices: gpuDeviceCount });
         self.postMessage({ type: 'unloaded' });
     }
 };
@@ -11721,7 +12233,8 @@ self.onmessage = async (e) => {
         }
 
         function spawnInferenceWorker() {
-            const src = createInferenceWorkerSource();
+            let src = createInferenceWorkerSource();
+            if (isOrtIsolationEnabled()) src = applyOrtIsolation(src);
             const blob = new Blob([src], { type: 'text/javascript' });
             const url = URL.createObjectURL(blob);
             const worker = new Worker(url, { type: 'module' });
@@ -11741,6 +12254,44 @@ self.onmessage = async (e) => {
         }
 
         function handleWorkerMessage(type, payload, meta) {
+            // ── Phase A telemetry ──────────────────────────────────────────
+            // Recorded, never acted on: the diagnostics must not change what the
+            // app does, or the baseline they exist to establish measures the
+            // instrument instead of the device.
+            if (type === 'diag') {
+                runtimeDiag.add(payload);
+                if (payload && payload.event === 'gpuDeviceCreated' && payload.deviceIndex > 1) {
+                    console.warn('🧪 A SECOND GPUDevice was created in the inference worker (' +
+                                 payload.requester + ') — the dual-runtime hypothesis has direct evidence.');
+                }
+                if (payload && payload.event === 'runtimeCensus' && payload.sameOrtEnv === false) {
+                    console.warn('🧪 Two independent ONNX runtime env objects are live in one worker.');
+                }
+                return;
+            }
+
+            if (type === 'gpuLost') {
+                const p = payload || {};
+                localInference.lastGpuLoss = p;
+                runtimeDiag.note('gpuLostSeen', p);
+                console.error('🧪 GPUDevice lost — reason=' + p.reason +
+                              ' after ' + (p.generations || 0) + ' generation(s), ' +
+                              (p.tokensThisGen || 0) + ' token(s) into the current one: ' + p.message);
+                // reason 'destroyed' is what an ordinary unload looks like from
+                // here — the session released the device on purpose. Only an
+                // unexpected loss is worth putting in front of the user, and
+                // telling those two apart is the entire point of reading the
+                // reason code instead of regex-matching an error string.
+                if (p.reason && p.reason !== 'destroyed') {
+                    const statusEl = document.getElementById('localModelStatus');
+                    if (statusEl) {
+                        statusEl.textContent = 'GPU device lost (' + p.reason + ') — copy diagnostics';
+                        statusEl.style.color = '#ff9966';
+                    }
+                }
+                return;
+            }
+
             if (type === 'progress') {
                 const p = payload;
                 if (p.status === 'initiate' || p.status === 'download' || p.status === 'progress') {
@@ -11774,6 +12325,7 @@ self.onmessage = async (e) => {
                 localInference.loading = false;
                 localInference.failed = true;
                 localInference.error = payload;
+                runtimeDiag.note('loadErrorSeen', { message: String(payload || '').slice(0, 400) });
                 hideModelProgress();
 
                 const wasmBox = document.getElementById('forceWasm');
@@ -11850,6 +12402,12 @@ self.onmessage = async (e) => {
             }
 
             if (type === 'genError') {
+                runtimeDiag.note('genErrorSeen', {
+                    message: String(payload || '').slice(0, 400),
+                    oom: !!(meta && meta.oom),
+                    generations: (meta && meta.generations) || 0,
+                    tokensThisGen: (meta && meta.tokensThisGen) || 0,
+                });
                 // GPU exhaustion is not an ordinary error: the device is gone and the
                 // session with it, so retrying generates into a corpse. Release what
                 // we can, say so plainly, and put the Load button back rather than
@@ -11946,6 +12504,19 @@ self.onmessage = async (e) => {
         async function loadLocalModel() {
             if (localInference.ready || localInference.loading) return;
 
+            // Under the Phase B isolation arm the runtime this model needs is not
+            // in the worker at all. Say so here rather than after a 1.8 GB
+            // download — the worker throws the same message as a backstop.
+            if (isOrtIsolationEnabled() && LOCAL_MODELS[selectedLocalModel] &&
+                LOCAL_MODELS[selectedLocalModel].type === 'lfm2-vision') {
+                const msg = 'ORT isolation is on for the runtime experiment, so LFM2.5-VL cannot load. ' +
+                            'Pick another model, or add ?ortIsolation=0 to the URL to leave the experiment.';
+                const el = document.getElementById('localModelStatus');
+                if (el) { el.textContent = msg; el.style.color = '#ffaa00'; }
+                showStatus(msg, 'warning');
+                return;
+            }
+
             // Refuse WebGPU-only models before spawning a worker, rather than
             // downloading several GB and dying on session creation with a raw
             // ONNX kernel error. See WASM_SAFE_MODELS.
@@ -11992,6 +12563,17 @@ self.onmessage = async (e) => {
                 }
 
                 console.log(`🧠 Loading ${modelInfo.name} on ${device} dtype=${dtype} (forceWasm=${!!forceWasm})`);
+                // The header for this run in the diagnostics export: which arm of
+                // the experiment, which model, which backend. Without it the event
+                // stream underneath can't be attributed to a configuration.
+                runtimeDiag.note('runStart', {
+                    model: selectedLocalModel,
+                    modelId: modelInfo.id,
+                    modelType: modelInfo.type,
+                    dtype: dtype,
+                    device: device,
+                    ortIsolation: isOrtIsolationEnabled(),
+                });
                 localInference.worker.postMessage({
                     type: 'load',
                     payload: {
@@ -11999,6 +12581,7 @@ self.onmessage = async (e) => {
                         modelType: modelInfo.type,
                         dtype: dtype,
                         device: device,
+                        verboseLogs: isVerboseWorkerLogging(),
                     }
                 });
                 // The 'loaded' or 'loadError' message handler takes it from here
@@ -12024,11 +12607,19 @@ self.onmessage = async (e) => {
             const picker = document.getElementById('localModelPicker');
             if (!picker) return;
             const wasm = isWasmMode();
+            const isolated = isOrtIsolationEnabled();
             for (const opt of picker.options) {
                 if (!opt.dataset.baseLabel) opt.dataset.baseLabel = opt.textContent;
-                const blocked = wasm && !isWasmSafeModel(opt.value);
+                const info = LOCAL_MODELS[opt.value];
+                // Isolation removes the standalone ORT runtime, and LFM2.5-VL is
+                // the only model that runs on it.
+                const needsStandaloneOrt = isolated && info && info.type === 'lfm2-vision';
+                const blocked = (wasm && !isWasmSafeModel(opt.value)) || needsStandaloneOrt;
                 opt.disabled = blocked;
-                opt.textContent = blocked ? opt.dataset.baseLabel + ' — needs GPU' : opt.dataset.baseLabel;
+                let suffix = '';
+                if (needsStandaloneOrt) suffix = ' — off during ORT isolation';
+                else if (blocked) suffix = ' — needs GPU';
+                opt.textContent = opt.dataset.baseLabel + suffix;
             }
         }
 
@@ -12157,7 +12748,17 @@ self.onmessage = async (e) => {
 
         function loadLocalModelManual() { loadLocalModel(); }
 
-        // Detect WebGPU device loss errors (GPU context invalidated)
+        // Detect WebGPU device loss errors (GPU context invalidated).
+        //
+        // This is inference from error text, and it is guesswork by construction:
+        // it cannot tell a driver timeout from an out-of-memory from a deliberate
+        // destroy, and it was written against JSEP's wording — the native C++ EP
+        // in transformers.js v4 may phrase things differently. The authoritative
+        // answer now comes from GPUDevice.lost via the worker's 'gpuLost' message
+        // (localInference.lastGpuLoss), which carries a real reason code. This
+        // stays because a reason code arrives asynchronously and the recovery
+        // paths below need an answer at the moment they catch the error; prefer
+        // lastGpuLoss when you have it.
         function isWebGPUDeviceLost(errMsg) {
             if (!errMsg) return false;
             const lower = errMsg.toLowerCase();
@@ -12816,10 +13417,31 @@ Use this data to personalize your response. Comment on their current state when 
             if (el) el.style.display = checked ? 'block' : 'none';
         }
 
+        // Visible marker that this session is an experiment arm, not a normal
+        // run. An A/B test the tester can't see the state of is an A/A test.
+        function refreshRuntimeExperimentNotice() {
+            const el = document.getElementById('ortIsolationNotice');
+            if (!el) return;
+            const isolated = isOrtIsolationEnabled();
+            const verbose = isVerboseWorkerLogging();
+            if (!isolated && !verbose) { el.style.display = 'none'; el.textContent = ''; return; }
+            const parts = [];
+            if (isolated) parts.push('🧪 <strong>ORT isolation ON</strong> — the standalone onnxruntime-web runtime is removed from the inference worker (Phase B). LFM2.5-VL cannot load. Leave with <code>?ortIsolation=0</code>.');
+            if (verbose) parts.push('🔊 <strong>Verbose worker logs ON</strong> — ONNX Runtime is at DEBUG. Leave with <code>?verboseWorker=0</code>.');
+            el.innerHTML = parts.join('<br><br>');
+            el.style.display = 'block';
+        }
+
         async function initLocalInference() {
             const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+            refreshRuntimeExperimentNotice();
             const gpuReal = await checkWebGPU();
             localInference.webgpuAvailable = gpuReal;
+            runtimeDiag.note('pageInit', {
+                mobile: isMobile,
+                webgpuAvailable: gpuReal,
+                adapterLimits: localInference.gpuLimits,
+            });
 
             // Only surface the mobile toggle when the device actually reports WebGPU.
             const mobileOptIn = document.getElementById('mobileWebGPU');

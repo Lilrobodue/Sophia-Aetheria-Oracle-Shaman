@@ -1791,7 +1791,7 @@
                     Export
                 </button>
             </div>
-            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v84</div>
+            <div style="text-align: center; padding: 12px 0 8px; font-size: 0.7rem; color: #555; letter-spacing: 1px;">v85</div>
             </div><!-- end sidebar-scroll -->
         </div>
 
@@ -10716,7 +10716,7 @@ return result;</textarea>
         // Keep in step with the footer version and sw.js CACHE_VERSION — it only
         // labels the diagnostics export, but a report that can't be tied to a
         // build is a report you can't act on.
-        const SOPHIA_BUILD = 'v84';
+        const SOPHIA_BUILD = 'v85';
 
         // ═══════════════════════════════════════════════════════════════════
         // Runtime diagnostics — SOPHIA_RUNTIME_BRIEF Phase A (page side)
@@ -11013,6 +11013,36 @@ import * as ort from 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.23.2/dist/o
 // agent-lite, contradicted-and-ignored for qwen-mini. That is why the ceiling is
 // keyed by model rather than by device, and why contradiction had to be handled
 // rather than assumed away.
+//
+// ── FIFTH BATCH, reason-lite, first run on this device, 2026-08-12 ─────────
+//   ~949 tok   →  first token at 13 998 ms, 656 tokens, fine
+//   ~1949 tok  →  DIED in prefill at 25 881 ms, 0 tokens
+//
+// The first row is the measurement everything else was missing: a prefill RATE,
+// 14.75 ms/token, taken from a run that worked. Apply it to every LFM2.5-1.2B-q4
+// run this phone has ever done:
+//
+//    934 tok → 13.8 s  OK       1519 tok → 22.4 s  OK
+//    949 tok → 14.0 s  OK       1885 tok → 27.8 s  FAIL
+//   1427 tok → 21.0 s  OK       1949 tok → 28.7 s  FAIL
+//
+// Every success predicts under 22.5 s. Every failure predicts over 27.5 s. And
+// the three deaths landed at 24.73, 25.25 and 25.88 s. THE DEVICE KILLS A GPU
+// SUBMISSION THAT RUNS LONGER THAN ABOUT 25 SECONDS. Token counts were only ever
+// a proxy for that, and a proxy that breaks across models — which is exactly what
+// qwen-mini's 582-token failure against agent-lite's 1519-token success was.
+//
+// It also kills the shader-compilation theory for the ordinary text path: this
+// was reason-lite's first run on this device and its first token arrived in 14 s,
+// not 464. qwen-mini's 464 s stands alone and remains unexplained; note it is the
+// only model here on the qwen35-vision path (AutoProcessor + a vision tower),
+// which is a different and much heavier first-run setup.
+//
+// The ledger is now built on time rather than tokens, and splits the two things
+// that generalise differently: the KILL THRESHOLD belongs to the device (24.7,
+// 25.2 and 25.9 s across two different models), so it protects a model that has
+// never crashed; the PREFILL RATE belongs to the model, measured from
+// msToFirstToken. See localPromptBudget() and prefillRisk().
 env.allowLocalModels = false;
 env.useBrowserCache = true;
 // v4 hides ONNX Runtime's WebGPU warnings by default (env.logLevel defaults to
@@ -11319,7 +11349,15 @@ function runtimeCensus(when) {
                 // they share mutable state without sharing identity, which is worse
                 // than either clean answer.
                 out.sameOrtEnv = (bundledEnv === ort.env);
-                out.standaloneNumThreadsLeaked =
+                // ROG Phone, 2026-08-12: the bundled runtime's numThreads was
+                // undefined at worker start and 1 after load — which LOOKS like our
+                // ort.env.wasm.numThreads = 1 leaking across. It is not necessarily:
+                // transformers.js sets its own to 1 in a worker without cross-origin
+                // isolation, and that would look identical. The only way to tell an
+                // inference from a fact is object identity, so measure that instead
+                // and keep the inferred flag beside it, clearly labelled.
+                out.sameWasmConfig = !!(bundledEnv.wasm && ort.env.wasm && bundledEnv.wasm === ort.env.wasm);
+                out.numThreadsMatchesOurs =
                     !out.sameOrtEnv && bundledEnv.wasm && bundledEnv.wasm.numThreads === 1;
             }
         } else if (bundledEnv) {
@@ -12716,7 +12754,11 @@ self.onmessage = async (e) => {
                 // A completed generation is evidence of what this device can
                 // prefill — the only kind of evidence that can safely RAISE the
                 // ceiling.
-                if (payload && payload.promptTokens) recordPrefillOutcome(payload.promptTokens, 'ok');
+                // msToFirstToken is the prefill and nothing else — the measurement
+                // the whole time-based model rests on.
+                if (payload && payload.promptTokens) {
+                    recordPrefillOutcome(payload.promptTokens, 'ok', payload.msToFirstToken);
+                }
                 if (localInference._pending) localInference._pending.resolve();
                 localInference._pending = null;
                 return;
@@ -12737,7 +12779,7 @@ self.onmessage = async (e) => {
                 // prefill ceiling. An OOM or a decode-time failure is a different
                 // limit and must not shrink this one.
                 if (meta && meta.cause === 'driver-abort' && meta.phase === 'prefill' && meta.promptTokens) {
-                    recordPrefillOutcome(meta.promptTokens, 'fail');
+                    recordPrefillOutcome(meta.promptTokens, 'fail', meta.msSinceDispatch);
                 }
                 // GPU exhaustion is not an ordinary error: the device is gone and the
                 // session with it, so retrying generates into a corpse. Release what
@@ -13232,51 +13274,128 @@ self.onmessage = async (e) => {
         const estTokens = s => Math.ceil(String(s || '').length / 4);
 
         // ── Measured prefill ceiling (personal baseline) ───────────────────────
-        // ROG Phone, 2026-08-12: a ~1885-token prompt killed the GPU device twice,
-        // at 24.7 s and 25.2 s — reproducible, and always during the PREFILL,
-        // before a single token. A 934-token prompt on the same build survived
-        // 39.3 s of work, which is longer than either crash. So the limit is not
-        // memory and not cumulative time: it is how long ONE submission may run
-        // before the Adreno driver takes the device away. Prefill is a single huge
-        // dispatch; decode is hundreds of small ones, which is why decode survives.
+        // ROG Phone (Adreno 8xx), 2026-08-12. Seven runs across three models put
+        // this beyond much doubt:
         //
-        // The honest response to that is not a hard-coded token cap — the number
-        // belongs to a particular phone, driver, model and quantisation, and two
-        // devices will not share it. So the app measures its OWN ceiling and
-        // clamps to what this device has actually demonstrated. With no failures
-        // on record it does nothing at all.
+        //   FAILURES, time from dispatch to the device dying:
+        //     agent-lite  1885 tok  →  25.25 s
+        //     agent-lite  1885 tok  →  24.73 s
+        //     reason-lite 1949 tok  →  25.88 s
+        //
+        //   reason-lite MEASURED its own prefill rate on a run that worked:
+        //     949 tok → first token at 13 998 ms  =  14.75 ms/token
+        //
+        //   Applying that rate to every LFM2.5-1.2B-q4 run ever done here:
+        //      934 tok → 13.8 s  OK        1519 tok → 22.4 s  OK
+        //      949 tok → 14.0 s  OK        1885 tok → 27.8 s  FAIL
+        //     1427 tok → 21.0 s  OK        1949 tok → 28.7 s  FAIL
+        //
+        // Every success predicts under 22.5 s; every failure predicts over 27.5 s;
+        // and all three deaths happened between 24.7 and 25.9 s. This device kills
+        // a GPU submission that runs longer than about 25 seconds. Prefill is one
+        // submission, which is why prefill dies and decode — hundreds of tiny ones
+        // — never has, not once, at any length.
+        //
+        // So the thing to predict is TIME, not tokens. Token counts are only a
+        // proxy, and a bad one across models: 582 tokens died on one model while
+        // 1519 succeeded on another. Time explains both.
+        //
+        // Which splits the measurement in two, and they generalise differently:
+        //   • the kill threshold belongs to the DEVICE — 24.7, 25.2 and 25.9 s
+        //     across two different models — so it transfers to a model that has
+        //     never crashed, and protects it on its first oversized prompt.
+        //   • the prefill rate belongs to the MODEL (size, quantisation, backend),
+        //     measured from msToFirstToken on runs that worked.
+        //
+        // Nothing here is a constant anyone chose, with one exception noted at
+        // PREFILL_SAFETY. With no measurements on record it does nothing at all.
         const PREFILL_LEDGER_KEY = 'sophiaPrefillLedger';
 
+        // Two thresholds, because they do different jobs and the data supports
+        // both without inventing either:
+        //
+        //   CLAMPING the prompt budget is cheap and invisible — it trims history —
+        //   so it aims at the longest prefill this device has actually COMPLETED
+        //   (22.4 s here). Conservative, and it raises itself as bigger prompts
+        //   succeed.
+        //
+        //   WARNING the user interrupts them, so it only fires at a duration that
+        //   has actually KILLED a submission here (24.7 s). A false alarm about a
+        //   prompt that would have worked costs more than a silent trim does.
+        //
+        // The true limit lies between those two numbers and neither is a guess.
+        // The 0.8 below is used in exactly one case: a device that has lost a GPU
+        // but has no successful prefill timing to compare against, where an upper
+        // bound is all there is. An observed kill time is an upper bound on the
+        // real limit — the submission had already overrun when the driver noticed.
+        const PREFILL_SAFETY = 0.8;
+
+        function prefillBackend() { return isWasmMode() ? 'wasm' : 'webgpu'; }
+
         function prefillLedgerKey() {
-            return (selectedLocalModel || '?') + '|' + (isWasmMode() ? 'wasm' : 'webgpu');
+            return (selectedLocalModel || '?') + '|' + prefillBackend();
         }
+
+        // The device's own patience, shared across models on the same backend.
+        function prefillDeviceKey() { return '__device|' + prefillBackend(); }
 
         function readPrefillLedger() {
             try { return JSON.parse(localStorage.getItem(PREFILL_LEDGER_KEY) || '{}') || {}; }
             catch (e) { return {}; }
         }
 
-        // maxOk  — largest prompt that has completed here
-        // minFail — smallest prompt that has killed the device here
-        function recordPrefillOutcome(promptTokens, outcome) {
+        // maxOk       — largest prompt that has completed here
+        // minFail     — smallest prompt that has killed the device here
+        // msPerToken  — measured prefill rate, from msToFirstToken on runs that worked
+        // (device)    — killMs, the shortest prefill this backend has been killed at
+        function recordPrefillOutcome(promptTokens, outcome, ms) {
             const tok = Number(promptTokens) || 0;
             if (!tok) return;
             try {
                 const ledger = readPrefillLedger();
                 const key = prefillLedgerKey();
                 const e = ledger[key] || {};
+                const runsBefore = e.runs || 0;
+                const dur = Number(ms) || 0;
                 if (outcome === 'ok') {
                     e.maxOk = Math.max(e.maxOk || 0, tok);
                     // Completed generations are also how we know whether this model
-                    // has ever run here before. The first-ever run on a device pays
-                    // for shader compilation that later runs get free, and every
-                    // failure so far has been a first-of-its-kind.
-                    e.runs = (e.runs || 0) + 1;
+                    // has ever run here before — a first-ever run pays setup costs
+                    // that later ones do not.
+                    e.runs = runsBefore + 1;
+                    // The rate comes from time-to-first-token, which is prefill and
+                    // nothing else. Keep the SLOWEST rate seen: predicting a prefill
+                    // as faster than it has ever been is the one error that gets a
+                    // device killed.
+                    if (dur > 0) {
+                        const rate = dur / tok;
+                        e.msPerToken = Math.max(e.msPerToken || 0, rate);
+                        e.rateSamples = (e.rateSamples || 0) + 1;
+                        // A prefill DURATION that completed is a fact about the
+                        // device's patience, whatever model produced it — so it is
+                        // recorded where every model can use it, exactly like the
+                        // kill time. This is the number the clamp aims at.
+                        const dev = ledger[prefillDeviceKey()] || {};
+                        dev.maxOkMs = Math.max(dev.maxOkMs || 0, dur);
+                        dev.updated = Date.now();
+                        ledger[prefillDeviceKey()] = dev;
+                    }
                 } else {
                     e.minFail = e.minFail ? Math.min(e.minFail, tok) : tok;
                     // A prompt that once completed and now kills the device is no
                     // longer evidence of safety — drop stale optimism.
                     if (e.maxOk && e.maxOk >= e.minFail) e.maxOk = 0;
+                    // How long the driver tolerated it. This belongs to the device,
+                    // not the model, so it is stored where every model can see it —
+                    // that is what lets a model that has never crashed still be
+                    // protected on its first oversized prompt.
+                    if (dur > 0) {
+                        const dev = ledger[prefillDeviceKey()] || {};
+                        dev.killMs = dev.killMs ? Math.min(dev.killMs, dur) : dur;
+                        dev.kills = (dev.kills || 0) + 1;
+                        dev.updated = Date.now();
+                        ledger[prefillDeviceKey()] = dev;
+                    }
                 }
                 e.updated = Date.now();
                 ledger[key] = e;
@@ -13289,8 +13408,10 @@ self.onmessage = async (e) => {
                     // whereas one that had already run and still died at a larger
                     // prompt has hit a real prefill wall (agent-lite at 1885, twice,
                     // with 1427 and 934 completing either side of it).
-                    firstEverRun: !e.runs || (outcome === 'fail' && e.runs === 0),
+                    firstEverRun: runsBefore === 0,
+                    ms: dur || null,
                     entry: e,
+                    device: ledger[prefillDeviceKey()] || null,
                 });
             } catch (err) { /* storage full or blocked — the ledger is optional */ }
         }
@@ -13303,23 +13424,92 @@ self.onmessage = async (e) => {
         // warning have to stand down rather than nag about a size that demonstrably
         // works. Better to protect nobody than to be confidently wrong.
         function prefillEvidence() {
-            const e = readPrefillLedger()[prefillLedgerKey()] || {};
+            const ledger = readPrefillLedger();
+            const e = ledger[prefillLedgerKey()] || {};
+            const dev = ledger[prefillDeviceKey()] || {};
             const contradicted = !!(e.minFail && e.maxOk && e.maxOk >= e.minFail);
-            return { maxOk: e.maxOk || 0, minFail: e.minFail || 0, runs: e.runs || 0, contradicted };
+            return {
+                maxOk: e.maxOk || 0, minFail: e.minFail || 0, runs: e.runs || 0, contradicted,
+                msPerToken: e.msPerToken || 0,
+                killMs: dev.killMs || 0, maxOkMs: dev.maxOkMs || 0,
+            };
         }
 
-        // The largest prompt this device+model+backend has actually completed,
-        // but only once something larger has been seen to kill it. Null means
-        // "no usable evidence", and no evidence must not restrict anyone.
+        // How long this model's prefill is expected to take, at the slowest rate
+        // it has ever actually run at here. Null when it has never run.
+        function predictedPrefillMs(promptTokens) {
+            const e = prefillEvidence();
+            const tok = Number(promptTokens) || 0;
+            if (!e.msPerToken || !tok) return null;
+            return Math.round(tok * e.msPerToken);
+        }
+
+        // What the CLAMP aims at: the longest prefill this backend has actually
+        // completed. Null until something has been killed — with no demonstrated
+        // limit there is nothing to stay under, and clamping on a whim would only
+        // be a guess dressed up as a measurement.
+        function safePrefillMs() {
+            const e = prefillEvidence();
+            if (!e.killMs) return null;
+            if (e.maxOkMs && e.maxOkMs < e.killMs) return e.maxOkMs;
+            return Math.round(e.killMs * PREFILL_SAFETY);
+        }
+
+        // What the WARNING fires at: a duration that has genuinely killed a
+        // submission here. Interrupting someone deserves a higher bar than
+        // quietly trimming their history does.
+        function riskPrefillMs() {
+            const e = prefillEvidence();
+            return e.killMs || null;
+        }
+
+        // The prompt size at which this model is predicted to exceed the device's
+        // demonstrated patience. This is the number that transfers across models:
+        // the rate is the model's, the limit is the device's.
+        function timeBasedPrefillCeiling() {
+            const e = prefillEvidence();
+            const safeMs = safePrefillMs();
+            if (!safeMs || !e.msPerToken) return null;
+            return Math.max(1, Math.floor(safeMs / e.msPerToken));
+        }
+
+        // Two independent ceilings, and the lower wins:
+        //   • the size-based one — the largest prompt this exact model has been seen
+        //     to complete, used only once something larger has killed it;
+        //   • the time-based one — where this model's measured rate crosses the
+        //     device's demonstrated patience, which applies even to a model that
+        //     has never crashed here.
+        // Null from both means no usable evidence, and no evidence must not
+        // restrict anyone.
         function measuredPrefillCeiling() {
             const e = prefillEvidence();
-            if (!e.minFail || e.contradicted) return null;
-            return e.maxOk && e.maxOk < e.minFail ? e.maxOk : null;
+            const sizeBased = (e.minFail && !e.contradicted && e.maxOk && e.maxOk < e.minFail) ? e.maxOk : null;
+            const timeBased = timeBasedPrefillCeiling();
+            if (sizeBased && timeBased) return Math.min(sizeBased, timeBased);
+            return sizeBased || timeBased || null;
         }
 
         function knownBadPrefill() {
             const e = prefillEvidence();
             return (!e.contradicted && e.minFail) || null;
+        }
+
+        // Will this specific prompt outlast the driver? Time-based, so it works on
+        // a model that has never failed here, and it explains itself in seconds
+        // rather than tokens — which is what the user can actually act on.
+        function prefillRisk(promptTokens) {
+            const predicted = predictedPrefillMs(promptTokens);
+            const riskMs = riskPrefillMs();
+            const e = prefillEvidence();
+            if (!predicted || !riskMs) return null;
+            if (predicted < riskMs) return null;
+            return {
+                predictedMs: predicted,
+                safeMs: safePrefillMs(),
+                killMs: e.killMs,
+                promptTokens: Number(promptTokens) || 0,
+                ceiling: timeBasedPrefillCeiling(),
+            };
         }
 
         function localPromptBudget() {
@@ -13332,9 +13522,13 @@ self.onmessage = async (e) => {
             // this DEVICE can prefill without the driver giving up. Take the lower.
             const ceiling = measuredPrefillCeiling();
             if (ceiling && ceiling < forPrompt) {
+                const ev = prefillEvidence();
+                const why = timeBasedPrefillCeiling() === ceiling
+                    ? 'at ' + ev.msPerToken.toFixed(1) + ' ms/token this model would cross the ' +
+                      Math.round(safePrefillMs() / 1000) + ' s the driver has been shown to allow'
+                    : 'the GPU died at ' + ev.minFail + ' tok and ' + ceiling + ' is the largest that has completed';
                 console.warn('🧠 [Prompt budget] clamped ' + forPrompt + ' → ' + ceiling +
-                             ' tok: this device lost its GPU at ' + knownBadPrefill() +
-                             ' tok on ' + prefillLedgerKey() + ', and ' + ceiling + ' is the largest it has completed.');
+                             ' tok on ' + prefillLedgerKey() + ': ' + why + '.');
                 forPrompt = Math.max(512, ceiling);
             }
             return { ctx, reply, margin, forPrompt, measuredCeiling: ceiling || null };
@@ -13520,20 +13714,30 @@ Use this data to personalize your response. Comment on their current state when 
 
                 // The history trimmer can shrink messages, but it cannot drop tools —
                 // those are the user's choice and the template renders all of them. So
-                // when the prompt is at or above a size that has already killed this
-                // device, say so before spending 25 seconds finding out again, and name
-                // the lever that actually moves: the tool list.
-                const _knownBad = !isWasm ? knownBadPrefill() : null;
-                if (_knownBad && _promptTok >= _knownBad) {
+                // when this prompt is predicted to outlast the driver, say so before
+                // spending 25 seconds finding out, and name the lever that moves.
+                //
+                // Predicted in SECONDS rather than tokens, because that is what the
+                // device actually limits and what the person can weigh: "this will
+                // take longer than your phone allows" beats "this is 1885 tokens".
+                const _risk = !isWasm ? prefillRisk(_promptTok) : null;
+                if (_risk) {
                     const toolNote = (toolSchemas && toolSchemas.length)
                         ? ' ' + toolSchemas.length + ' tools are ≈' + _toolTok + ' of those tokens.'
                         : '';
-                    console.warn('🧠 [Prefill risk] ' + _promptTok + ' tok ≥ ' + _knownBad +
-                                 ' tok, which lost the GPU on this device before.' + toolNote);
-                    runtimeDiag.note('prefillRiskWarned', { promptTokens: _promptTok, knownBad: _knownBad, toolTokens: _toolTok });
-                    showStatus('This prompt (≈' + _promptTok + ' tokens) is as long as one that crashed this ' +
-                               'phone’s GPU before.' + toolNote + ' Turning some off, or ticking Force WASM, ' +
-                               'is more likely to get an answer than trying again.', 'warning');
+                    console.warn('🧠 [Prefill risk] ≈' + _promptTok + ' tok → predicted ' +
+                                 (_risk.predictedMs / 1000).toFixed(1) + ' s of prefill; this device has ' +
+                                 'killed a submission at ' + (_risk.killMs / 1000).toFixed(1) + ' s.' + toolNote);
+                    runtimeDiag.note('prefillRiskWarned', {
+                        promptTokens: _promptTok, toolTokens: _toolTok,
+                        predictedMs: _risk.predictedMs, safeMs: _risk.safeMs,
+                        killMs: _risk.killMs, ceiling: _risk.ceiling,
+                    });
+                    showStatus('This prompt needs about ' + Math.round(_risk.predictedMs / 1000) +
+                               ' seconds of GPU work before Sophia can say a word, and this phone’s driver ' +
+                               'has given up at ' + Math.round(_risk.killMs / 1000) + ' seconds.' + toolNote +
+                               ' Shortening it — or ticking Force WASM — is more likely to get an answer than trying again.',
+                               'warning');
                 }
                 console.log('🧠 [Generate] ' + (selectedLocalModel || '?') +
                     ' · ' + (isWasm ? 'wasm' : 'webgpu') + (gen.smallGpu ? ' (small-GPU cap)' : '') +

@@ -176,8 +176,8 @@ ok(c0 && c0.bundled && c0.bundled.versions && c0.bundled.versions.common === '1.
    'and the version bundled inside transformers.js, read from the v4 env shape');
 ok(c0 && c0.sameOrtEnv === false,
    'and reports two independent ORT env objects — the dual-runtime question, answered');
-ok(c0 && c0.standaloneNumThreadsLeaked === false,
-   'and notices that the standalone numThreads=1 did NOT leak into the bundled env');
+ok(c0 && c0.sameWasmConfig === false,
+   'and proves by identity that the two runtimes do not share one wasm config object');
 ok(diagOf('gpuProbeInstalled').length === 1, 'the GPU probe installed itself');
 
 console.log('--- Phase C: log level ships at WARNING, not v4 default ERROR ---');

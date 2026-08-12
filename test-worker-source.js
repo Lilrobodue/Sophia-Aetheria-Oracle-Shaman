@@ -161,8 +161,8 @@ ok(/runtimeCensus\('after-load'\)/.test(src), 'and again after load, when TJs ha
 // (keys: wasm, webgl, webgpu, versions, logLevel), not the ORT module.
 ok(/out\.sameOrtEnv = \(bundledEnv === ort\.env\)/.test(src),
    'it compares the bundled and standalone ORT env objects directly');
-ok(/standaloneNumThreadsLeaked/.test(src),
-   'and notices shared mutable state even when the objects differ');
+ok(/out\.sameWasmConfig = !!\(bundledEnv\.wasm && ort\.env\.wasm && bundledEnv\.wasm === ort\.env\.wasm\)/.test(src),
+   'and tests shared mutable state by identity rather than inferring it from a matching value');
 // Tool schemas are rendered into the prompt by the chat template, so they are
 // part of the prefill being measured.
 ok(/toolChars = tools\.length \? JSON\.stringify\(tools\)\.length : 0/.test(src),

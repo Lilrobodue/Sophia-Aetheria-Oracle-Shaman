@@ -51,6 +51,7 @@ function makeLedger() {
     ${block}
     return { readPrefillLedger, recordPrefillOutcome, measuredPrefillCeiling,
              knownBadPrefill, localPromptBudget, prefillLedgerKey, prefillEvidence,
+             predictedPrefillMs, safePrefillMs, timeBasedPrefillCeiling, prefillRisk,
              setModel: (m) => { selectedLocalModel = m; } };
   `);
   return Object.assign(factory(ctx), { ctx });
@@ -155,6 +156,97 @@ console.log('--- completed runs are counted (first-ever runs pay for shader comp
   ok(L.prefillEvidence().runs === 2, 'completed generations are tallied, got ' + L.prefillEvidence().runs);
   L.recordPrefillOutcome(900, 'fail');
   ok(L.prefillEvidence().runs === 2, 'a failure is not a run — it completed nothing');
+}
+
+console.log('--- time, not tokens: the real ROG Phone numbers ---');
+{
+  // reason-lite measured its own rate on a run that worked: 949 tokens, first
+  // token at 13 998 ms. Then a 1949-token prompt killed the device at 25 881 ms.
+  const L = makeLedger();
+  L.setModel('reason-lite');
+  L.recordPrefillOutcome(949, 'ok', 13998);
+  const rate = L.prefillEvidence().msPerToken;
+  ok(Math.abs(rate - 14.75) < 0.05, 'the prefill rate is measured from time-to-first-token, got ' + rate.toFixed(2));
+  ok(L.safePrefillMs() === null, 'with nothing killed yet there is no limit to aim below');
+  ok(L.prefillRisk(1949) === null, 'and therefore nothing to warn about, however large the prompt');
+
+  L.recordPrefillOutcome(1949, 'fail', 25881);
+  ok(L.prefillEvidence().killMs === 25881, 'the kill time is recorded, got ' + L.prefillEvidence().killMs);
+  // The clamp aims at the longest prefill actually completed (13 998 ms here),
+  // not at a fraction of the kill time — measurement over margin.
+  ok(L.safePrefillMs() === 13998, 'the clamp aims at the longest prefill that completed, got ' + L.safePrefillMs());
+
+  // Every real run, checked against the prediction.
+  const predict = (t) => Math.round(L.predictedPrefillMs(t) / 100) / 10;
+  ok(predict(934) === 13.8, '934 tok predicts 13.8 s, got ' + predict(934));
+  ok(predict(1519) === 22.4, '1519 tok predicts 22.4 s, got ' + predict(1519));
+  ok(predict(1885) === 27.8, '1885 tok predicts 27.8 s, got ' + predict(1885));
+  ok(L.prefillRisk(934) === null && L.prefillRisk(1427) === null && L.prefillRisk(1519) === null,
+     'every prompt that actually completed is judged safe');
+  ok(L.prefillRisk(1885) && L.prefillRisk(1949), 'and both that actually died are judged risky');
+  ok(L.timeBasedPrefillCeiling() === 949,
+     'the ceiling is where the rate crosses the proven-safe duration, got ' + L.timeBasedPrefillCeiling());
+  // The asymmetry is the point: the clamp is cautious because trimming history is
+  // cheap, the warning is not because interrupting someone is not.
+  ok(L.timeBasedPrefillCeiling() < 1885 && L.prefillRisk(1519) === null,
+     'so a prompt between the two thresholds is trimmed toward, but never warned about');
+}
+
+console.log('--- the device limit transfers to a model that has never crashed ---');
+{
+  // The kill threshold clustered at 24.7 / 25.2 / 25.9 s across two different
+  // models, so it belongs to the device. A model that has only ever succeeded
+  // still gets protected the first time it is handed an oversized prompt —
+  // which is the whole point of separating the two measurements.
+  const L = makeLedger();
+  L.setModel('agent-lite');
+  L.recordPrefillOutcome(1519, 'ok', 22400);
+  L.recordPrefillOutcome(1885, 'fail', 25249);
+
+  L.setModel('reason-lite');                       // never failed here
+  L.recordPrefillOutcome(949, 'ok', 13998);
+  ok(L.prefillEvidence().minFail === 0, 'this model has no failure of its own');
+  ok(L.prefillEvidence().killMs === 25249, 'but it inherits the device kill time, got ' + L.prefillEvidence().killMs);
+  ok(L.prefillRisk(1949) !== null, 'so an oversized prompt is caught on the FIRST attempt, not after a crash');
+  ok(L.measuredPrefillCeiling() > 0, 'and the budget is clamped without ever having lost a device');
+}
+
+console.log('--- a slower model gets a smaller ceiling from the same device limit ---');
+{
+  const L = makeLedger();
+  L.setModel('agent-lite');
+  L.recordPrefillOutcome(1000, 'ok', 14000);       // 14 ms/tok
+  L.recordPrefillOutcome(1885, 'fail', 25249);
+  const fast = L.timeBasedPrefillCeiling();
+  L.setModel('reason-bonsai-8b');
+  L.recordPrefillOutcome(500, 'ok', 10000);        // 20 ms/tok — slower per token
+  const slow = L.timeBasedPrefillCeiling();
+  // Both aim at the same proven-safe duration (14 000 ms, the longest completed
+  // on this device), so the ceilings differ purely by how fast each prefills.
+  ok(slow < fast, 'the slower model may prefill fewer tokens in the same time: ' + slow + ' vs ' + fast);
+  ok(Math.abs(fast / slow - 20 / 14) < 0.05, 'and the ratio tracks the rate, got ' + (fast / slow).toFixed(2));
+}
+
+console.log('--- the slowest observed rate is the one that is trusted ---');
+{
+  const L = makeLedger();
+  L.recordPrefillOutcome(1000, 'ok', 14000);
+  L.recordPrefillOutcome(1000, 'ok', 21000);   // a slower run, perhaps thermally throttled
+  ok(L.prefillEvidence().msPerToken === 21, 'the pessimistic rate wins, got ' + L.prefillEvidence().msPerToken);
+  L.recordPrefillOutcome(1000, 'ok', 9000);
+  ok(L.prefillEvidence().msPerToken === 21,
+     'a later fast run does not erase it — predicting a prefill as faster than it has been is what kills a device');
+}
+
+console.log('--- no timing, no time-based claims ---');
+{
+  const L = makeLedger();
+  L.recordPrefillOutcome(1427, 'ok');          // legacy records carry no duration
+  L.recordPrefillOutcome(1885, 'fail');
+  ok(L.prefillEvidence().msPerToken === 0, 'no rate is invented');
+  ok(L.predictedPrefillMs(1885) === null, 'and nothing is predicted');
+  ok(L.prefillRisk(1885) === null, 'the time-based warning stays silent');
+  ok(L.measuredPrefillCeiling() === 1427, 'but the size-based ceiling still works, got ' + L.measuredPrefillCeiling());
 }
 
 console.log('--- the clamp can never starve the prompt entirely ---');

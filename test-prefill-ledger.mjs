@@ -36,7 +36,11 @@ function makeLedger() {
     selectedLocalModel: 'agent-lite',
     wasm: false,
     config: { contextLength: 16384, maxTokens: 1024 },
-    LOCAL_MODELS: { 'agent-lite': {} },
+    // Every real model now declares its own practical window, and
+    // localPromptBudget() takes the lower of that and config.contextLength.
+    // The stub declares one too, so these assertions stay about the LEDGER.
+    LOCAL_MODELS: Object.fromEntries(['agent-lite','agent-pro','agent-qwen-mini',
+      'reason-bonsai-8b','reason-lite'].map(k => [k, { contextLength: 16384 }])),
     warnings: [],
     notes: [],
   };
@@ -55,6 +59,29 @@ function makeLedger() {
              setModel: (m) => { selectedLocalModel = m; } };
   `);
   return Object.assign(factory(ctx), { ctx });
+}
+
+console.log("--- a model's own window caps the device setting ---");
+{
+  // Shipped bug, v93: localPromptBudget() read `config.contextLength ||
+  // info.contextLength`, so a PC that auto-detected 32768 handed agent-lite
+  // (4096) a 26k-token prompt. ONNX Runtime answered with a SafeInt integer
+  // overflow inside OrtRun. The device setting must NARROW, never widen.
+  const L = makeLedger();
+  L.ctx.config.contextLength = 32768;
+  L.ctx.LOCAL_MODELS['agent-lite'].contextLength = 4096;
+  const b = L.localPromptBudget();
+  ok(b.ctx === 4096, 'a 32768 device setting cannot raise a 4096 model: ' + b.ctx);
+  ok(b.forPrompt <= 4096, 'and the prompt budget fits the model: ' + b.forPrompt);
+
+  // Narrowing is still allowed — the user may deliberately want a shorter window.
+  L.ctx.config.contextLength = 2048;
+  ok(L.localPromptBudget().ctx === 2048, 'a smaller device setting still narrows');
+
+  // An unknown model must fall back to something safe, not to the device setting.
+  L.ctx.config.contextLength = 32768;
+  L.setModel('not-a-real-model');
+  ok(L.localPromptBudget().ctx <= 4096, 'an unknown model defaults small, not large');
 }
 
 console.log('--- no evidence must not restrict anyone ---');

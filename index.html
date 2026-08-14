@@ -2431,6 +2431,35 @@
                     </label>
                 </div>
 
+                <!-- Downloaded weights live in the browser's Cache API forever —
+                     nothing evicts them, and until now nothing could delete them
+                     either. A few model switches and that is tens of gigabytes. -->
+                <details class="zone-acc" id="accModelCache" style="border-bottom:none; margin-top:10px;">
+                    <summary style="padding-left:0; padding-right:0;">💾 Downloaded Models <span class="zone-badge" id="modelCacheTotal">—</span></summary>
+                    <div class="zone-acc-body" style="padding-left:0; padding-right:0;">
+                        <div id="storageBar" style="margin-bottom:8px;">
+                            <div style="display:flex; justify-content:space-between; font-size:0.72rem; color:#888; margin-bottom:3px;">
+                                <span id="storageUsedLabel">Checking storage…</span>
+                                <span id="storagePctLabel"></span>
+                            </div>
+                            <div style="background:rgba(255,255,255,0.08); height:6px; border-radius:3px; overflow:hidden;">
+                                <div id="storageFill" style="height:100%; width:0%; border-radius:3px; background:linear-gradient(90deg,#00ff88,#ffaa00,#ff0055); transition:width 0.4s;"></div>
+                            </div>
+                        </div>
+                        <div id="modelCacheList" style="font-size:0.75rem;">
+                            <p style="color:#888;">Open this panel to scan what's cached.</p>
+                        </div>
+                        <div style="display:flex; gap:6px; margin-top:8px;">
+                            <button class="btn btn-small btn-secondary" onclick="renderCachedModels()" style="flex:1;">🔄 Rescan</button>
+                            <button class="btn btn-small btn-secondary" onclick="clearAllModelCache()" style="flex:1;">🗑️ Delete all</button>
+                        </div>
+                        <div id="modelCacheNote" style="font-size:0.7rem; color:#666; margin-top:6px; line-height:1.5;">
+                            Deleting only removes the downloaded weights. The model stays in the list and
+                            re-downloads next time you load it.
+                        </div>
+                    </div>
+                </details>
+
                 <label style="font-weight: normal; display: flex; align-items: center; gap: 10px; margin-top: 4px;">
                     <input type="checkbox" id="fullPromptLocal" onchange="toggleFullPromptInfo()">
                     <strong>Send full prompt + frequency table to local/API</strong>
@@ -11619,6 +11648,9 @@ return result;</textarea>
         // rather than guessing: a wrong licence notice is worse than a missing one.
         const LOCAL_MODELS = {
             'tiny': {
+                // Practical WebGPU prompt ceiling — the KV cache, not the
+                // architecture, is what runs out in a browser.
+                contextLength: 4096,
                 id: 'onnx-community/Qwen2.5-0.5B-Instruct',
                 name: 'Qwen 0.5B — Spark',
                 params: '~0.5B',
@@ -11641,6 +11673,9 @@ return result;</textarea>
             // phone we have. It was the WASM recovery target and the mobile downgrade
             // target, which is why its removal touched five call sites.
             'e2b': {
+                // Practical WebGPU prompt ceiling — the KV cache, not the
+                // architecture, is what runs out in a browser.
+                contextLength: 8192,
                 id: 'onnx-community/gemma-4-E2B-it-ONNX',
                 name: 'Gemma 4 E2B — Warm + Vision + Tools',
                 params: '~2B effective',
@@ -11659,6 +11694,9 @@ return result;</textarea>
                 license: { name: 'Gemma Terms of Use', url: 'https://ai.google.dev/gemma/docs/gemma_4_license' },
             },
             'e4b': {
+                // Practical WebGPU prompt ceiling — the KV cache, not the
+                // architecture, is what runs out in a browser.
+                contextLength: 8192,
                 id: 'onnx-community/gemma-4-E4B-it-ONNX',
                 name: 'Gemma 4 E4B — Warm Deep',
                 params: '~4.5B effective',
@@ -11679,6 +11717,9 @@ return result;</textarea>
             // model was trained on, not from a better prompt.
             // Both are Qwen3_5ForConditionalGeneration (vision + text in one).
             'agent-qwen-mini': {
+                // Practical WebGPU prompt ceiling — the KV cache, not the
+                // architecture, is what runs out in a browser.
+                contextLength: 4096,
                 id: 'onnx-community/Qwen3.5-0.8B-ONNX',
                 name: 'Qwen3.5 0.8B — Agent Mini + Vision',
                 params: '~0.8B',
@@ -11694,6 +11735,9 @@ return result;</textarea>
                 license: { name: 'Apache 2.0', url: 'https://huggingface.co/Qwen/Qwen3.5-0.8B/blob/main/LICENSE' },
             },
             'agent-qwen': {
+                // Practical WebGPU prompt ceiling — the KV cache, not the
+                // architecture, is what runs out in a browser.
+                contextLength: 8192,
                 id: 'onnx-community/Qwen3.5-2B-ONNX',
                 name: 'Qwen3.5 2B — Agent + Vision',
                 params: '~2B',
@@ -11720,6 +11764,9 @@ return result;</textarea>
             // from WASM_SAFE_MODELS, so loadLocalModel() refuses it up front with a
             // readable message instead of a "could not locate file" error.
             'agent-pro': {
+                // Practical WebGPU prompt ceiling — the KV cache, not the
+                // architecture, is what runs out in a browser.
+                contextLength: 8192,
                 id: 'LiquidAI/LFM2.5-2.6B-ONNX',
                 name: 'LFM2.5-2.6B — Agent Pro',
                 params: '~2.7B',
@@ -11746,6 +11793,9 @@ return result;</textarea>
                 license: { name: 'LFM Open License v1.0', url: 'https://huggingface.co/LiquidAI/LFM2.5-2.6B-ONNX/blob/main/LICENSE' },
             },
             'agent-lite': {
+                // Practical WebGPU prompt ceiling — the KV cache, not the
+                // architecture, is what runs out in a browser.
+                contextLength: 4096,
                 id: 'LiquidAI/LFM2.5-1.2B-Instruct-ONNX',
                 name: 'LFM2.5-1.2B-Instruct — Agent Lite',
                 params: '~1.2B',
@@ -11760,6 +11810,9 @@ return result;</textarea>
                 license: { name: 'LFM Open License v1.0', url: 'https://huggingface.co/LiquidAI/LFM2.5-1.2B-Instruct-ONNX/blob/main/LICENSE' },
             },
             'agent-vision': {
+                // Practical WebGPU prompt ceiling — the KV cache, not the
+                // architecture, is what runs out in a browser.
+                contextLength: 4096,
                 id: 'LiquidAI/LFM2.5-VL-1.6B-ONNX',
                 name: 'LFM2.5-VL-1.6B — Agent + Vision',
                 params: '~1.6B',
@@ -11780,6 +11833,9 @@ return result;</textarea>
                 license: { name: 'LFM Open License v1.0', url: 'https://huggingface.co/LiquidAI/LFM2.5-VL-1.6B-ONNX/blob/main/LICENSE' },
             },
             'reason-lite': {
+                // Practical WebGPU prompt ceiling — the KV cache, not the
+                // architecture, is what runs out in a browser.
+                contextLength: 4096,
                 id: 'LiquidAI/LFM2.5-1.2B-Thinking-ONNX',
                 name: 'LFM2.5-1.2B-Thinking — Transparent Reasoning',
                 params: '~1.2B',
@@ -11800,6 +11856,9 @@ return result;</textarea>
             // render as "not verified" until someone confirms the terms — do not fill
             // these in by analogy with the other onnx-community repos.
             'reason-bonsai-4b': {
+                // Practical WebGPU prompt ceiling — the KV cache, not the
+                // architecture, is what runs out in a browser.
+                contextLength: 4096,
                 // Bonsai's ternary (1.58-bit) native compression was preserved down to
                 // Q2 in the ONNX export. The repo only ships q2 and q2f16 variants —
                 // no q4, fp16, or int8. Use q2f16 (Q2 weights, fp16 compute) for WebGPU.
@@ -11816,6 +11875,9 @@ return result;</textarea>
                 family: 'bonsai',
             },
             'reason-bonsai-8b': {
+                // Practical WebGPU prompt ceiling — the KV cache, not the
+                // architecture, is what runs out in a browser.
+                contextLength: 4096,
                 // 8B repo ships only q2f16 (no q2 variant). Total download ~2.2 GB.
                 id: 'onnx-community/Ternary-Bonsai-8B-ONNX',
                 name: 'Ternary-Bonsai-8B — Max Intelligence',
@@ -11965,7 +12027,7 @@ return result;</textarea>
         // Keep in step with the footer version and sw.js CACHE_VERSION — it only
         // labels the diagnostics export, but a report that can't be tied to a
         // build is a report you can't act on.
-        const SOPHIA_BUILD = 'v93';
+        const SOPHIA_BUILD = 'v97';
 
         // ═══════════════════════════════════════════════════════════════════
         // Runtime diagnostics — SOPHIA_RUNTIME_BRIEF Phase A (page side)
@@ -11995,6 +12057,16 @@ return result;</textarea>
                     hardwareConcurrency: navigator.hardwareConcurrency || null,
                     webgpuAvailable: localInference.webgpuAvailable,
                     forceWasm: !!(wasmBox && wasmBox.checked),
+                    // Both of these decide whether a prompt is bounded at all, and
+                    // neither was in the report when it would have named the cause.
+                    fullPromptLocal: !!config.fullPromptLocal,
+                    configContextLength: config.contextLength,
+                    configMaxTokens: config.maxTokens,
+                    effectiveWindow: (function () {
+                        try { const b = localPromptBudget();
+                              return { ctx: b.ctx, forPrompt: b.forPrompt, reply: b.reply }; }
+                        catch (e) { return null; }
+                    })(),
                     ortIsolation: isOrtIsolationEnabled(),
                     verboseWorkerLogs: isVerboseWorkerLogging(),
                     selectedModel: selectedLocalModel,
@@ -12010,6 +12082,187 @@ return result;</textarea>
                 };
             },
         };
+
+        /* ══════════════════════════════════════════════════════════════════
+         * DOWNLOADED MODEL CACHE
+         * transformers.js runs with env.useBrowserCache = true, so every weight
+         * file it fetches is kept in the Cache API indefinitely. Nothing evicts
+         * them and, until this panel, nothing could delete them: a few model
+         * switches put 22 GB of a 32 GB quota beyond reach, which starves the
+         * app's own service-worker cache and shows up as failed fetches.
+         *
+         * Caches are enumerated rather than assumed — transformers.js has changed
+         * its cache name between majors, and guessing it wrong would show an
+         * empty panel over a full disk.
+         * ══════════════════════════════════════════════════════════════════ */
+        const MODEL_HOST_RE = /(huggingface\.co|hf\.co|cdn-lfs[^/]*\.(?:huggingface\.co|hf\.co))/i;
+        const APP_CACHE_RE = /^sophia-/;          // our own shell cache — never touch it here
+
+        function formatBytes(n) {
+            if (!n) return '—';
+            const u = ['B', 'KB', 'MB', 'GB'];
+            let i = 0, v = n;
+            while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+            return v.toFixed(v >= 10 || i === 0 ? 0 : 1) + ' ' + u[i];
+        }
+
+        // "https://huggingface.co/LiquidAI/LFM2.5-1.2B-Instruct-ONNX/resolve/main/…"
+        // → "LiquidAI/LFM2.5-1.2B-Instruct-ONNX". CDN URLs carry no repo path, so
+        // they are grouped separately rather than mis-attributed to a model.
+        function modelKeyFromUrl(url) {
+            const m = /https?:\/\/(?:huggingface\.co|hf\.co)\/([^/]+\/[^/]+)\//.exec(url);
+            return m ? m[1] : null;
+        }
+
+        function friendlyModelName(repoId) {
+            for (const key of Object.keys(LOCAL_MODELS)) {
+                if (LOCAL_MODELS[key].id === repoId) return { name: LOCAL_MODELS[key].name, key: key };
+            }
+            return { name: repoId, key: null };
+        }
+
+        async function listCachedModels() {
+            if (!('caches' in window)) return { groups: [], unattributed: null, supported: false };
+            const names = await caches.keys();
+            const groups = new Map();
+            let cdnBytes = 0, cdnCount = 0, cdnRefs = [];
+
+            for (const cacheName of names) {
+                if (APP_CACHE_RE.test(cacheName)) continue;      // the app shell, not weights
+                const cache = await caches.open(cacheName);
+                const reqs = await cache.keys();
+                for (const req of reqs) {
+                    if (!MODEL_HOST_RE.test(req.url)) continue;
+                    // content-length rather than reading the blob: these files run to
+                    // gigabytes and blob() would pull every one of them into memory
+                    // just to draw a list.
+                    let bytes = 0;
+                    try {
+                        const res = await cache.match(req);
+                        bytes = res ? Number(res.headers.get('content-length') || 0) : 0;
+                    } catch (e) { bytes = 0; }
+
+                    const repo = modelKeyFromUrl(req.url);
+                    if (!repo) { cdnBytes += bytes; cdnCount++; cdnRefs.push({ cacheName, url: req.url }); continue; }
+                    if (!groups.has(repo)) groups.set(repo, { repo, bytes: 0, count: 0, refs: [] });
+                    const g = groups.get(repo);
+                    g.bytes += bytes; g.count++;
+                    g.refs.push({ cacheName, url: req.url });
+                }
+            }
+            const out = [...groups.values()].sort((a, b) => b.bytes - a.bytes);
+            out.forEach(g => Object.assign(g, friendlyModelName(g.repo)));
+            return { groups: out, supported: true,
+                     unattributed: cdnCount ? { bytes: cdnBytes, count: cdnCount, refs: cdnRefs } : null };
+        }
+
+        async function renderCachedModels() {
+            const listEl = document.getElementById('modelCacheList');
+            const totalEl = document.getElementById('modelCacheTotal');
+            if (!listEl) return;
+            listEl.innerHTML = '<p style="color:#888;">Scanning…</p>';
+
+            // Ground truth for the bar: content-length can be missing on some
+            // entries, so the per-model figures may under-report. The quota does not.
+            try {
+                if (navigator.storage && navigator.storage.estimate) {
+                    const est = await navigator.storage.estimate();
+                    const used = est.usage || 0, quota = est.quota || 0;
+                    const pct = quota ? Math.min(100, Math.round(used / quota * 100)) : 0;
+                    const u = document.getElementById('storageUsedLabel');
+                    const p = document.getElementById('storagePctLabel');
+                    const f = document.getElementById('storageFill');
+                    if (u) u.textContent = formatBytes(used) + ' of ' + formatBytes(quota) + ' used';
+                    if (p) { p.textContent = pct + '%'; p.style.color = pct > 80 ? '#ff6b9d' : pct > 60 ? '#ffaa00' : '#888'; }
+                    if (f) f.style.width = pct + '%';
+                }
+            } catch (e) { /* storage estimate is advisory */ }
+
+            let data;
+            try { data = await listCachedModels(); }
+            catch (e) { listEl.innerHTML = '<p style="color:#ff6b9d;">Could not read the cache: ' + escHTML(e.message) + '</p>'; return; }
+
+            if (!data.supported) { listEl.innerHTML = '<p style="color:#888;">This browser has no Cache API to inspect.</p>'; return; }
+            if (!data.groups.length && !data.unattributed) {
+                listEl.innerHTML = '<p style="color:#888;">No downloaded models cached.</p>';
+                if (totalEl) totalEl.textContent = '0';
+                return;
+            }
+
+            const total = data.groups.reduce((a, g) => a + g.bytes, 0) + (data.unattributed ? data.unattributed.bytes : 0);
+            if (totalEl) totalEl.textContent = formatBytes(total);
+
+            listEl.innerHTML = data.groups.map(g => {
+                const live = g.key && g.key === selectedLocalModel && localInference.ready;
+                return `<div style="display:flex; align-items:center; gap:8px; padding:6px 0; border-bottom:1px solid rgba(255,255,255,0.06);">` +
+                    `<div style="flex:1; min-width:0;">` +
+                        `<div style="color:#fff; overflow:hidden; text-overflow:ellipsis;">${escHTML(g.name)}` +
+                          (live ? ' <span style="color:#00ff88; font-size:0.65rem;">· loaded</span>' : '') + `</div>` +
+                        `<div style="color:#666; font-size:0.68rem;">${escHTML(g.repo)} · ${g.count} file${g.count === 1 ? '' : 's'}</div>` +
+                    `</div>` +
+                    `<span style="color:#ffcc66; white-space:nowrap;">${g.bytes ? formatBytes(g.bytes) : '?'}</span>` +
+                    `<button class="btn btn-small btn-secondary" style="padding:2px 8px;" title="Delete these downloaded weights" ` +
+                            `onclick="deleteCachedModel('${escHTML(g.repo)}')">🗑️</button>` +
+                `</div>`;
+            }).join('') + (data.unattributed
+                ? `<div style="color:#666; font-size:0.68rem; margin-top:6px; line-height:1.5;">` +
+                  `Plus ${data.unattributed.count} CDN file${data.unattributed.count === 1 ? '' : 's'} ` +
+                  `(${formatBytes(data.unattributed.bytes)}) that carry no repository in their URL — ` +
+                  `"Delete all" clears those too.</div>`
+                : '');
+        }
+
+        async function deleteCachedModel(repo) {
+            const data = await listCachedModels();
+            const g = data.groups.find(x => x.repo === repo);
+            if (!g) { showStatus('Nothing cached for that model.', 'error'); return; }
+
+            if (!confirm('Delete the downloaded weights for ' + g.name + ' (' + formatBytes(g.bytes) + ')?\n\n' +
+                         'It will re-download next time you load it.')) return;
+
+            // Deleting the files under a loaded session leaves the model running on
+            // memory it can no longer re-read. Release it first.
+            if (g.key && g.key === selectedLocalModel && localInference.ready) {
+                try { await unloadLocalModel(); } catch (e) { /* best effort */ }
+            }
+
+            let removed = 0;
+            for (const ref of g.refs) {
+                try {
+                    const cache = await caches.open(ref.cacheName);
+                    if (await cache.delete(ref.url)) removed++;
+                } catch (e) { /* keep going — a partial delete still frees space */ }
+            }
+            showStatus('Deleted ' + removed + ' file' + (removed === 1 ? '' : 's') +
+                       ' for ' + g.name + ' (' + formatBytes(g.bytes) + ' freed).', 'success');
+            runtimeDiag.note('modelCacheDeleted', { repo: repo, files: removed, bytes: g.bytes });
+            renderCachedModels();
+        }
+
+        async function clearAllModelCache() {
+            const data = await listCachedModels();
+            const total = data.groups.reduce((a, g) => a + g.bytes, 0) + (data.unattributed ? data.unattributed.bytes : 0);
+            const files = data.groups.reduce((a, g) => a + g.count, 0) + (data.unattributed ? data.unattributed.count : 0);
+            if (!files) { showStatus('Nothing cached to delete.', 'success'); return; }
+
+            if (!confirm('Delete ALL downloaded model weights?\n\n' + files + ' files, ' + formatBytes(total) +
+                         '.\nSophia keeps working — models re-download when you next load them.')) return;
+
+            if (localInference.ready) { try { await unloadLocalModel(); } catch (e) {} }
+
+            let removed = 0;
+            const all = data.groups.flatMap(g => g.refs).concat(data.unattributed ? data.unattributed.refs : []);
+            for (const ref of all) {
+                try {
+                    const cache = await caches.open(ref.cacheName);
+                    if (await cache.delete(ref.url)) removed++;
+                } catch (e) { /* keep going */ }
+            }
+            showStatus('Deleted ' + removed + ' file' + (removed === 1 ? '' : 's') + ' — ' +
+                       formatBytes(total) + ' freed.', 'success');
+            runtimeDiag.note('modelCacheClearedAll', { files: removed, bytes: total });
+            renderCachedModels();
+        }
 
         // Console access for desktop sessions; the button below covers the phone.
         window.sophiaRuntimeDiag = () => runtimeDiag.report();
@@ -14119,6 +14372,26 @@ self.onmessage = async (e) => {
                 // session with it, so retrying generates into a corpse. Release what
                 // we can, say so plainly, and put the Load button back rather than
                 // pretending the model is still there.
+                // A SafeInt overflow inside OrtRun is not a GPU failure at all — it is
+                // ONNX Runtime refusing to size a buffer for a sequence this long. It
+                // arrives as a raw C++ path and a line number, which tells the user
+                // nothing, so name the real cause and the lever that moves it.
+                if (typeof payload === 'string' && /SafeInt|Integer overflow/i.test(payload)) {
+                    const b = localPromptBudget();
+                    console.error('🧠 ORT integer overflow in OrtRun — the prompt was too large for ' +
+                                  selectedLocalModel + ' (window ' + b.ctx + ', prompt budget ' + b.forPrompt + ').');
+                    runtimeDiag.note('ortIntegerOverflow', { model: selectedLocalModel,
+                        ctx: b.ctx, forPrompt: b.forPrompt, measuredCeiling: b.measuredCeiling });
+                    showStatus('That prompt was too large for ' + selectedLocalModel +
+                               ' — ONNX Runtime overflowed sizing it, which is a length problem, not a GPU one. ' +
+                               'Weave fewer readings at once, turn off some tools, or pick a model with a bigger window.',
+                               'error');
+                    if (localInference._pending) localInference._pending.reject(
+                        new Error('Prompt too large for ' + selectedLocalModel + ' — ONNX Runtime overflowed while sizing it.'));
+                    localInference._pending = null;
+                    return;
+                }
+
                 if (meta && meta.oom) {
                     localInference.gpuExhausted = true;
                     const n = meta.generations || localInference.generations || 0;
@@ -14949,8 +15222,19 @@ self.onmessage = async (e) => {
 
         function localPromptBudget() {
             const info = LOCAL_MODELS[selectedLocalModel] || {};
-            const ctx = Math.max(1024, config.contextLength || info.contextLength || 4096);
-            const reply = Math.max(128, config.maxTokens || 512);
+            // The model's window is a CEILING the device setting cannot raise. This
+            // used to read `config.contextLength || info.contextLength`, so a PC that
+            // auto-detected 32768 handed a 1.2B model a 26k-token prompt — and ONNX
+            // Runtime answered with a SafeInt integer overflow inside OrtRun rather
+            // than anything as legible as "too big". Device setting narrows, never widens.
+            const modelCtx = info.contextLength || 4096;
+            const ctx = Math.max(1024, Math.min(config.contextLength || modelCtx, modelCtx));
+            // The reply reserve cannot eat the window it is reserved from. A PC with
+            // maxTokens 4096 against a 4096-token model left `ctx - reply - margin`
+            // negative, so forPrompt fell to its 512 floor and every prompt looked
+            // enormous. A third of the window is the most any answer may hold back.
+            const reply = Math.min(Math.max(128, config.maxTokens || 512),
+                                   Math.max(256, Math.floor(ctx / 3)));
             const margin = 192;                       // chat-template tokens + estimator slop
             let forPrompt = Math.max(512, ctx - reply - margin);
             // The context window says what the MODEL can hold; the ledger says what
@@ -14989,14 +15273,67 @@ self.onmessage = async (e) => {
         }
 
         // Prepare messages for local model (preserves image data for Gemma 4 vision)
+        /* Drop the oldest turns until the conversation fits, then trim the newest
+         * message if it still doesn't. Used by the full-prompt path, which asks for
+         * a RICHER PROMPT — not for the context window to stop existing.
+         * Captured 2026-08-14: with this toggle on, 29 messages / 13,662 tokens went
+         * to a model whose window is 4096. WebGPU died in prefill at 1.8 s; the WASM
+         * fallback then overflowed SafeInt on the same prompt. */
+        function fitMessagesToWindow(msgs, budget) {
+            const est = m => estTokens(m.content || '');
+            const systems = msgs.filter(m => m.role === 'system');
+            const rest = msgs.filter(m => m.role !== 'system');
+            if (!rest.length) return msgs;
+
+            const question = rest[rest.length - 1];
+            let older = rest.slice(0, -1);
+            const fixed = systems.reduce((a, m) => a + est(m), 0);
+
+            let used = fixed + est(question);
+            const kept = [];
+            for (let i = older.length - 1; i >= 0; i--) {
+                const t = est(older[i]);
+                if (used + t > budget.forPrompt) break;
+                used += t;
+                kept.unshift(older[i]);
+            }
+            const droppedTurns = older.length - kept.length;
+
+            // Still over with no history at all: the question itself is too big.
+            if (used > budget.forPrompt) {
+                const room = Math.max(256, budget.forPrompt - fixed - 48);
+                const before = est(question);
+                question.content = String(question.content).slice(0, room * 4) +
+                    '\n\n[…trimmed to fit ' + selectedLocalModel + '\'s context window.]';
+                console.warn('🔮 [Full prompt] the question alone was ' + before +
+                             ' tok against ' + budget.forPrompt + ' — trimmed.');
+                showStatus('That message was too long for ' + selectedLocalModel +
+                           ' even on its own (' + before + ' tokens, room for ' + room +
+                           ') and was trimmed. Weave fewer readings, or use a remote model.', 'warning');
+                used = fixed + est(question);
+            }
+
+            if (droppedTurns) {
+                console.warn('🔮 [Full prompt] ' + used + '/' + budget.forPrompt +
+                             ' tok · dropped ' + droppedTurns + ' older turn(s) to fit ' +
+                             selectedLocalModel + ' (window ' + budget.ctx + ').');
+                runtimeDiag.note('fullPromptTrimmed', { model: selectedLocalModel,
+                    ctx: budget.ctx, forPrompt: budget.forPrompt, used: used, droppedTurns: droppedTurns });
+            }
+            return systems.concat(kept, [question]);
+        }
+
         function prepareLocalMessages(messages) {
             if (config.fullPromptLocal) {
-                return messages.map(m => {
+                // "Send full prompt" means a fuller SYSTEM PROMPT, not an unbounded
+                // one. The window is physics; this toggle never got a vote on it.
+                const full = messages.map(m => {
                     const msg = { role: m.role, content: m.content };
                     if (m.images) msg.images = m.images;
                     if (m.audio) msg.audio = m.audio;
                     return msg;
                 });
+                return fitMessagesToWindow(full, localPromptBudget());
             }
             let LOCAL_SYSTEM_PROMPT = `[Roles in this conversation: Sophia is the assistant. The human is the user. Sophia speaks in the first person as "I". Sophia addresses the user as "you". Sophia never refers to the user as Sophia, and never takes on the user's identity. If the user asks for a reading, Sophia gives one — Sophia is not the one being read.]
 
@@ -15083,8 +15420,31 @@ Use this data to personalize your response. Comment on their current state when 
             const question = nonSystem.length ? carry(nonSystem[nonSystem.length - 1]) : null;
             if (question) used += estTokens(question.content);
             if (used > budget.forPrompt) {
-                console.warn('🔮 [Prompt budget] system + question alone is ' + used +
-                             ' tok against ' + budget.forPrompt + ' — sending with no history.');
+                // Dropping history does not help here — the question ITSELF is over
+                // budget, and sending it anyway is what reaches ONNX Runtime as an
+                // integer overflow instead of an error anyone can act on. Trim the
+                // question to fit and say exactly how much went, out loud.
+                const room = Math.max(256, budget.forPrompt - estTokens(sys.text) - 48);
+                const before = estTokens(question.content);
+                if (question && before > room) {
+                    const chars = room * 4;
+                    question.content = question.content.slice(0, chars) +
+                        '\n\n[…this message was trimmed to fit ' + selectedLocalModel +
+                        '\'s context window.]';
+                    const after = estTokens(question.content);
+                    console.warn('🔮 [Prompt budget] the question alone was ' + before +
+                                 ' tok against ' + budget.forPrompt + ' — trimmed to ' + after + '.');
+                    showStatus('That message was too long for ' + selectedLocalModel +
+                               ' (' + before + ' tokens, room for ' + room + ') and was trimmed. ' +
+                               'Weave fewer readings at once, turn off some tools, or use a remote model.',
+                               'warning');
+                    runtimeDiag.note('promptTrimmed', { model: selectedLocalModel,
+                        before: before, after: after, budget: budget.forPrompt });
+                    used = estTokens(sys.text) + after;
+                } else {
+                    console.warn('🔮 [Prompt budget] system + question alone is ' + used +
+                                 ' tok against ' + budget.forPrompt + ' — sending with no history.');
+                }
             }
 
             const older = nonSystem.slice(0, -1);
@@ -15135,6 +15495,10 @@ Use this data to personalize your response. Comment on their current state when 
                 const requested = maxTokensOverride || config.maxTokens || getLocalMaxNewTokens();
                 const gen = localGenerationCap(requested);
                 let maxTokens = gen.cap;
+                // The prompt was budgeted against `budget.reply` tokens of answer.
+                // Generating more than that walks straight back out of the window.
+                const _budget = localPromptBudget();
+                if (maxTokens > _budget.reply) maxTokens = _budget.reply;
                 // WASM is ~1-3 tok/s — cap at 512 to avoid 30min+ waits
                 const isWasm = !localInference.webgpuAvailable || document.getElementById('forceWasm')?.checked;
                 if (isWasm && maxTokens > 512) {
@@ -16748,21 +17112,62 @@ Use this data to personalize your response. Comment on their current state when 
             updateContextInfo();
         }
 
+        /* What is actually answering right now. The badge used to be decorative in
+         * the worst way: nothing ever wrote to it, AND updateContextInfo() rebuilt
+         * the span WITHOUT its id — so after the first three-second tick the element
+         * `getElementById('performanceBadge')` looked for no longer existed, the
+         * lookup returned null, and the code helpfully wrote its own fallback string
+         * back in. "Auto-detecting..." was the badge reporting its own placeholder,
+         * for the life of the session. exportChat() recorded it as the model, too. */
+        function describeActiveModel() {
+            if (typeof localInference === 'undefined') return { text: 'Starting…', title: '' };
+            const wasm = !localInference.webgpuAvailable ||
+                         !!(document.getElementById('forceWasm') || {}).checked;
+            const backend = wasm ? 'WASM' : 'WebGPU';
+            const info = LOCAL_MODELS[selectedLocalModel] || {};
+            const shortName = (info.name || selectedLocalModel || 'model').split('—')[0].trim();
+
+            if (localInference.loading) return { text: '⏳ Loading ' + shortName + '…', title: info.id || '' };
+            if (localInference.ready) {
+                return { text: shortName + ' · ' + backend,
+                         title: (info.id || '') + ' · ' + (info.download || '') + ' · ' + backend };
+            }
+            if (localInference.failed) {
+                return { text: '⚠️ ' + shortName + ' failed to load',
+                         title: localInference.error || 'unknown error' };
+            }
+            // Not loaded — say what WOULD answer instead of implying a local model.
+            if (config.inferenceMode === 'local') {
+                return { text: 'No model loaded', title: 'Inference mode is Local only — press Load Model.' };
+            }
+            const remote = (config.remoteModel || '').trim();
+            return { text: 'Remote' + (remote ? ' · ' + remote : ' API'),
+                     title: config.serverUrl || '' };
+        }
+
         function updateContextInfo() {
             const info = document.getElementById('contextInfo');
             const tokenPercent = ((estimatedTokens / config.contextLength) * 100).toFixed(1);
             const messagesCount = chatHistory.filter(m => m.role !== 'system').length;
-            
-            // Get current device info
-            const performanceBadge = document.getElementById('performanceBadge');
-            const currentBadgeText = performanceBadge ? performanceBadge.textContent : 'Auto-detecting...';
-            
+            const model = describeActiveModel();
+
+            // The window that actually applies, which is not config.contextLength —
+            // the model's own ceiling caps it. Showing the real one here is the
+            // difference between "I have 32k" and knowing why a weave got trimmed.
+            let windowLine = '';
+            try {
+                const b = localPromptBudget();
+                if (shouldUseLocal() || localInference.ready) {
+                    windowLine = `Window: ${b.ctx.toLocaleString()} · ${b.forPrompt.toLocaleString()} for prompt<br>`;
+                }
+            } catch (e) { /* budget needs a model; skip the line until there is one */ }
+
             info.innerHTML = `
-                <strong>Device Mode: ACTIVE</strong><br>
+                <strong>Device Mode: ${config.autoOptimization ? 'AUTO' : 'MANUAL'}</strong><br>
                 Tokens: ${estimatedTokens.toLocaleString()} / ${config.contextLength.toLocaleString()} (${tokenPercent}%)<br>
-                Messages: ${messagesCount} (${chatHistory.length} total)<br>
+                ${windowLine}Messages: ${messagesCount} (${chatHistory.length} total)<br>
                 Files: ${uploadedFiles.length}<br>
-                <span class="performance-badge">${currentBadgeText}</span>
+                <span class="performance-badge" id="performanceBadge" title="${escHTML(model.title)}">${escHTML(model.text)}</span>
             `;
 
             if (estimatedTokens > config.contextLength * 0.8) {
@@ -16971,6 +17376,11 @@ Use this data to personalize your response. Comment on their current state when 
                     try { state = JSON.parse(localStorage.getItem('sophia_zone_accordions') || '{}'); } catch (e) {}
                     state[acc.id] = acc.open;
                     try { localStorage.setItem('sophia_zone_accordions', JSON.stringify(state)); } catch (e) {}
+                    // Reading every cache entry is real work — do it when the panel
+                    // is actually opened, not on every zone switch.
+                    if (acc.id === 'accModelCache' && acc.open && typeof renderCachedModels === 'function') {
+                        renderCachedModels();
+                    }
                 });
             });
         }
@@ -17039,8 +17449,9 @@ Use this data to personalize your response. Comment on their current state when 
 
             // One-line summary on the collapsed Performance accordion
             const perf = document.getElementById('perfSummaryBadge');
-            const perfSrc = document.getElementById('performanceBadge');
-            if (perf && perfSrc) perf.textContent = perfSrc.textContent || '—';
+            if (perf && typeof describeActiveModel === 'function') {
+                perf.textContent = describeActiveModel().text;
+            }
         }
 
         // Settings are a sidebar zone now, not an overlay. openSettings() keeps
@@ -17219,9 +17630,10 @@ Use this data to personalize your response. Comment on their current state when 
         function exportChat() {
             // Get current device info for export
             const deviceBadge = document.getElementById('deviceBadge');
-            const performanceBadge = document.getElementById('performanceBadge');
             const deviceName = deviceBadge ? deviceBadge.textContent : 'Auto-detected Device';
-            const modelInfo = performanceBadge ? performanceBadge.textContent : 'Auto-selected Model';
+            // Read the state, not the badge — the badge used to be a placeholder that
+            // never updated, so every export said "Auto-selected Model".
+            const modelInfo = describeActiveModel().text;
             
             let text = '# Sophia - Aetheria Oracle - Chat Export\n';
             text += `Date: ${new Date().toLocaleString()}\n`;

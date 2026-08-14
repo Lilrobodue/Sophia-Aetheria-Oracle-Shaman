@@ -1883,8 +1883,37 @@
                                     </select>
                                     <label style="display:block; color:#ff6b9d; margin-bottom:2px;">Cube walk steps</label>
                                     <input type="number" id="manualCubeSteps" value="3" min="1" max="12" style="width:80px; padding:4px; margin-bottom:8px;">
-                                    <label style="display:block; color:#ff6b9d; margin-bottom:2px;">Birth date (biorhythm)</label>
-                                    <input type="date" id="manualBirthDate" class="text-input" style="padding:6px; font-size:0.8rem;" onchange="saveManualCastPrefs()">
+                                    <!-- Birth details. Shared by the natal chart and the
+                                         biorhythm — same person, same birth. Left blank, the
+                                         chart falls back to whatever Sophia already remembers. -->
+                                    <div style="border-top:1px solid rgba(255,255,255,0.08); margin-top:10px; padding-top:8px;">
+                                        <div style="color:#ff6b9d; font-weight:600; margin-bottom:6px;">🌟 Birth details <span style="color:#666;font-weight:400;">· natal chart &amp; biorhythm</span></div>
+
+                                        <label style="display:block; color:#ff6b9d; margin-bottom:2px;">Birth date</label>
+                                        <input type="date" id="manualBirthDate" class="text-input" style="padding:6px; font-size:0.8rem; margin-bottom:8px;" onchange="saveManualCastPrefs()">
+
+                                        <label style="display:block; color:#ff6b9d; margin-bottom:2px;">Birth time</label>
+                                        <input type="time" id="manualBirthTime" class="text-input" style="padding:6px; font-size:0.8rem;" onchange="saveManualCastPrefs()">
+                                        <label style="font-weight:normal; display:flex; align-items:center; gap:8px; margin:5px 0 8px; color:#ccc; font-size:0.75rem;">
+                                            <input type="checkbox" id="manualBirthTimeUnknown" onchange="saveManualCastPrefs()">
+                                            I don't know the time
+                                        </label>
+
+                                        <label style="display:block; color:#ff6b9d; margin-bottom:2px;">Birth place</label>
+                                        <input type="text" id="manualBirthPlace" class="text-input" placeholder="Boise, Idaho — or 43.61,-116.20"
+                                               style="padding:6px; font-size:0.8rem; margin-bottom:8px;" onchange="saveManualCastPrefs()">
+
+                                        <label style="display:block; color:#ff6b9d; margin-bottom:2px;">House system</label>
+                                        <select id="manualHouseSystem" style="margin-bottom:6px;" onchange="saveManualCastPrefs()">
+                                            <option value="placidus" selected>Placidus — the usual one</option>
+                                            <option value="whole">Whole sign — oldest, one sign per house</option>
+                                            <option value="equal">Equal — 30° from the Ascendant</option>
+                                            <option value="porphyry">Porphyry — quadrants trisected</option>
+                                        </select>
+
+                                        <div id="manualBirthHint" style="color:#666; line-height:1.5;"></div>
+                                    </div>
+
                                     <div style="color:#666; margin-top:8px; line-height:1.5;">
                                         Manual casts use the casting mode set above. They run here in the app, not in the model —
                                         so the hexagram you see is the hexagram that was drawn.
@@ -9635,7 +9664,20 @@ return result;</textarea>
                 case 'biorhythm': return { birthDate: val('manualBirthDate', ''), targetDate: null };
                 // The chart tool fills anything omitted from memory, so an empty
                 // birth field here means "use what you already know about me".
-                case 'astrology': return { birth_date: val('manualBirthDate', '') || undefined };
+                case 'astrology': {
+                    // Every field is optional. Omitted ones are recalled from memory
+                    // by the tool, so a blank box must send undefined — not '' —
+                    // or it would override a remembered value with nothing.
+                    const unknownTime = !!(document.getElementById('manualBirthTimeUnknown') || {}).checked;
+                    const p = {
+                        birth_date:   val('manualBirthDate', '') || undefined,
+                        birth_time:   unknownTime ? 'unknown' : (val('manualBirthTime', '') || undefined),
+                        birth_place:  val('manualBirthPlace', '').trim() || undefined,
+                        house_system: val('manualHouseSystem', 'placidus'),
+                    };
+                    Object.keys(p).forEach(k => p[k] === undefined && delete p[k]);
+                    return p;
+                }
                 default:        return { question };
             }
         }
@@ -10079,17 +10121,60 @@ return result;</textarea>
             }
         }
 
+        // Birth details are typed once and kept. They are not a reading, so they
+        // live in config rather than memory — the chart tool files its own chart.
+        const BIRTH_FIELDS = [
+            ['manualBirthDate',  'birthDate',  'value'],
+            ['manualBirthTime',  'birthTime',  'value'],
+            ['manualBirthPlace', 'birthPlace', 'value'],
+            ['manualHouseSystem','houseSystem','value'],
+            ['manualBirthTimeUnknown', 'birthTimeUnknown', 'checked'],
+        ];
+
         function saveManualCastPrefs() {
-            const b = document.getElementById('manualBirthDate');
-            if (b && b.value) {
-                config.birthDate = b.value;
-                try { localStorage.setItem('sophiaUnifiedConfig', JSON.stringify(config)); } catch (e) {}
+            for (const [id, key, prop] of BIRTH_FIELDS) {
+                const el = document.getElementById(id);
+                if (el) config[key] = el[prop];
             }
+            try { localStorage.setItem('sophiaUnifiedConfig', JSON.stringify(config)); } catch (e) {}
+            updateBirthHint();
         }
 
         function restoreManualCastPrefs() {
-            const b = document.getElementById('manualBirthDate');
-            if (b && config.birthDate) b.value = config.birthDate;
+            for (const [id, key, prop] of BIRTH_FIELDS) {
+                const el = document.getElementById(id);
+                if (el && config[key] !== undefined && config[key] !== null) el[prop] = config[key];
+            }
+            updateBirthHint();
+        }
+
+        // Say what pressing the button will actually do, before it is pressed —
+        // a chart cast from remembered details is a different thing from one cast
+        // from what is on screen, and the difference should not be a surprise.
+        function updateBirthHint() {
+            const hint = document.getElementById('manualBirthHint');
+            if (!hint) return;
+            const v = id => ((document.getElementById(id) || {}).value || '').trim();
+            const unknown = !!(document.getElementById('manualBirthTimeUnknown') || {}).checked;
+            const timeEl = document.getElementById('manualBirthTime');
+            if (timeEl) timeEl.disabled = unknown;
+
+            const have = [v('manualBirthDate') && 'date', (unknown || v('manualBirthTime')) && 'time',
+                          v('manualBirthPlace') && 'place'].filter(Boolean);
+            if (have.length === 3) {
+                hint.style.color = '#00ff88';
+                hint.textContent = unknown
+                    ? 'Ready — the chart will be cast without houses, since the time is unknown.'
+                    : 'Ready — a full chart with houses.';
+            } else if (have.length === 0) {
+                hint.style.color = '#888';
+                hint.textContent = 'Blank is fine: the chart falls back to whatever Sophia already remembers about your birth.';
+            } else {
+                hint.style.color = '#ffaa00';
+                const missing = ['date', 'time', 'place'].filter(x => !have.includes(x));
+                hint.textContent = 'Still needed: ' + missing.join(', ') +
+                                   ' — or leave all three blank to use what Sophia remembers.';
+            }
         }
 
         // ── What Sophia needs to know to describe a reading honestly ───────────
@@ -11880,7 +11965,7 @@ return result;</textarea>
         // Keep in step with the footer version and sw.js CACHE_VERSION — it only
         // labels the diagnostics export, but a report that can't be tied to a
         // build is a report you can't act on.
-        const SOPHIA_BUILD = 'v92';
+        const SOPHIA_BUILD = 'v93';
 
         // ═══════════════════════════════════════════════════════════════════
         // Runtime diagnostics — SOPHIA_RUNTIME_BRIEF Phase A (page side)

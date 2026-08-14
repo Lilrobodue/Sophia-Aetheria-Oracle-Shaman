@@ -118,10 +118,55 @@ function aetheriaForHexagram(hexNum, freqTable) {
  * Caller supplies these from the existing ring buffer (see BRIEF §4).
  * ======================================================================= */
 
-function cspBytes(n) {
+/* THE MOMENT OF THE CAST.
+ * Be clear about what this is and is not. XOR-ing a clock into a CSPRNG does not
+ * make the draw more random — a CSPRNG is already indistinguishable from random,
+ * and nothing mixed in can improve that. It is the same claim we make about the
+ * EEG bits: provenance, not better randomness. A lot cast at this second is bound
+ * to this second, and two casts in the same millisecond still differ because the
+ * counter advances. That is the whole of the claim.
+ *
+ * It does earn its keep on the fallback path: when crypto.getRandomValues is
+ * missing we drop to Math.random(), and in that case the clock and the counter
+ * are real added variation rather than ceremony.                              */
+let _castCounter = 0;
+
+function castMoment() {
+  const ms = Date.now();
+  const hi = (typeof global.performance !== 'undefined' && global.performance.now)
+    ? Math.floor(global.performance.now() * 1000) : 0;
+  return { ms, hi, seq: ++_castCounter, iso: new Date(ms).toISOString() };
+}
+
+/* 64-bit-ish avalanche so neighbouring milliseconds do not produce neighbouring
+ * salt bytes — a raw timestamp changes one low bit per cast and would leave most
+ * of the salt constant across a session. */
+function saltBytes(n, moment) {
+  const out = new Uint8Array(n);
+  let a = (moment.ms >>> 0) ^ 0x9e3779b9;
+  let b = (Math.floor(moment.ms / 4294967296) ^ moment.hi) >>> 0;
+  let c = (moment.seq * 0x85ebca6b) >>> 0;
+  for (let i = 0; i < n; i++) {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = (a ^ (a >>> 15)) >>> 0;
+    t = Math.imul(t, (1 | b)) >>> 0;
+    t = (t + Math.imul(t ^ (t >>> 7), (61 | c))) >>> 0;
+    t = (t ^ (t >>> 14)) >>> 0;
+    b = (b ^ t) >>> 0;
+    c = (c + 0x27d4eb2f) >>> 0;
+    out[i] = t & 0xff;
+  }
+  return out;
+}
+
+function cspBytes(n, moment) {
   const out = new Uint8Array(n);
   if (global.crypto && global.crypto.getRandomValues) global.crypto.getRandomValues(out);
   else for (let i = 0; i < n; i++) out[i] = Math.floor(Math.random() * 256);
+  // XOR is safe in both directions: uniform ^ anything independent stays uniform,
+  // so the salt can never make the CSPRNG path worse than it already was.
+  const salt = saltBytes(n, moment || castMoment());
+  for (let i = 0; i < n; i++) out[i] ^= salt[i];
   return out;
 }
 
@@ -215,7 +260,7 @@ function linesFromState(frames, opts) {
 
 /* ---- ENTROPY MODE: EEG bits XOR CSPRNG, mapped to yarrow or coin odds ---- */
 function linesFromEntropy(frames, opts) {
-  const o = Object.assign({ method: 'yarrow' }, opts || {});
+  const o = Object.assign({ method: 'yarrow', moment: null }, opts || {});
   // Harvest raw bits from low-order digits of band powers
   let raw = [];
   frames.forEach(f => {
@@ -228,7 +273,7 @@ function linesFromEntropy(frames, opts) {
   const eegBits = debias(raw);
 
   const need = 6 * 4;                      // 4 bits per line -> 0..15
-  const csp = cspBytes(need);
+  const csp = cspBytes(need, o.moment);
   const draws = [];
   for (let i = 0; i < 6; i++) {
     let v = csp[i * 4] & 0x0f;             // CSPRNG floor
@@ -270,12 +315,13 @@ function castIChing(opts) {
 
   const usable = (o.frames || []).filter(f => (f.quality == null ? 1 : f.quality) >= o.minQuality);
   const haveEEG = usable.length >= 12;
+  const moment = castMoment();
   let result, mode = o.mode, fallback = false;
 
   if (mode === 'state' && !haveEEG) { mode = 'entropy'; fallback = true; }
   result = (mode === 'state')
     ? linesFromState(usable, o)
-    : linesFromEntropy(haveEEG ? usable : [], o);
+    : linesFromEntropy(haveEEG ? usable : [], Object.assign({ moment }, o));
 
   const primaryBits  = result.lines.map(v => (v === 7 || v === 9) ? '1' : '0').join('');
   const changing     = result.lines.map((v, i) => (v === 6 || v === 9) ? i + 1 : 0).filter(Boolean);
@@ -308,7 +354,9 @@ function castIChing(opts) {
       pivots: result.pivots || null,
       note: mode === 'state'
         ? 'Deterministic readout of EEG state. This is NOT a random draw and its line distribution will not match yarrow or coin odds.'
-        : 'EEG-derived bits XOR CSPRNG. Statistically no worse than crypto.getRandomValues; the EEG contributes provenance, not quality.',
+        : 'EEG-derived bits XOR CSPRNG XOR the moment of the cast. Statistically no worse than crypto.getRandomValues; the EEG and the clock contribute provenance, not quality.',
+      castMoment: moment.iso,
+      castSeq: moment.seq,
       timestamp: new Date().toISOString()
     }
   };
@@ -367,7 +415,8 @@ function castGeomancy(opts) {
       bits.push(Math.floor(v * 1000) & 1);
     }
   }
-  const csp = cspBytes(16);
+  const moment = castMoment();
+  const csp = cspBytes(16, moment);
   for (let i = 0; i < 16; i++) bits[i] = ((csp[i] & 1) ^ (bits[i] || 0));
 
   const mothers = [0,1,2,3].map(m => bits.slice(m * 4, m * 4 + 4));
@@ -393,6 +442,7 @@ function castGeomancy(opts) {
       mode: haveEEG ? 'eeg-xor-csprng' : 'csprng',
       framesUsed: usable.length,
       note: 'Judge must carry an even number of points to be a valid chart.',
+      castMoment: moment.iso, castSeq: moment.seq,
       timestamp: new Date().toISOString()
     }
   };
@@ -438,7 +488,8 @@ function drawTarot(opts) {
   const haveEEG = usable.length >= 4;
 
   // Fisher-Yates with CSPRNG, EEG XOR'd into the index stream
-  const csp = cspBytes(deck.length * 2);
+  const moment = castMoment();
+  const csp = cspBytes(deck.length * 2, moment);
   const a = usable.map(arousal);
   for (let i = deck.length - 1; i > 0; i--) {
     let r = (csp[i * 2] << 8 | csp[i * 2 + 1]);
@@ -462,6 +513,7 @@ function drawTarot(opts) {
     provenance: {
       mode: haveEEG ? 'eeg-xor-csprng' : 'csprng',
       framesUsed: usable.length, deckSize: deck.length, drawnWithoutReplacement: true,
+      castMoment: moment.iso, castSeq: moment.seq,
       timestamp: new Date().toISOString()
     }
   };
@@ -507,7 +559,8 @@ function castRunes(opts) {
 
   const usable = (o.frames || []).filter(f => (f.quality == null ? 1 : f.quality) >= o.minQuality);
   const haveEEG = usable.length >= 4;
-  const csp = cspBytes(bag.length * 2);
+  const moment = castMoment();
+  const csp = cspBytes(bag.length * 2, moment);
   const a = usable.map(arousal);
   for (let i = bag.length - 1; i > 0; i--) {
     let r = (csp[i * 2] << 8 | csp[i * 2 + 1]);
@@ -523,7 +576,8 @@ function castRunes(opts) {
   });
   return { question:o.question, spread:o.spread, runes,
     provenance: { mode: haveEEG ? 'eeg-xor-csprng' : 'csprng', framesUsed: usable.length,
-                  bagSize: bag.length, timestamp: new Date().toISOString() } };
+                  bagSize: bag.length, castMoment: moment.iso, castSeq: moment.seq,
+                  timestamp: new Date().toISOString() } };
 }
 
 /* ============================================================ BIORHYTHM ==*/
@@ -562,7 +616,8 @@ function cubeWalk(opts) {
   const usable = (o.frames || []).filter(f => (f.quality == null ? 1 : f.quality) >= o.minQuality);
   const haveEEG = usable.length >= 3;
   const a = usable.map(arousal);
-  const csp = cspBytes(o.steps + 2);
+  const moment = castMoment();
+  const csp = cspBytes(o.steps + 2, moment);
 
   let pos = o.entry;
   if (!pos) {
@@ -599,6 +654,7 @@ function cubeWalk(opts) {
     provenance: { mode: haveEEG ? 'eeg-steered' : 'csprng', framesUsed: usable.length,
       note: 'Cube geometry is our own construction (Lo Shu layering of the 27). ' +
             'The walk is a contemplative device, not a measurement.',
+      castMoment: moment.iso, castSeq: moment.seq,
       timestamp: new Date().toISOString() }
   };
 }
@@ -610,7 +666,8 @@ function cubeWalk(opts) {
 function bibliomancy(opts) {
   const o = Object.assign({ chunks: [], frames: [], question: null }, opts || {});
   if (!o.chunks.length) return { error: 'No knowledge-base chunks supplied.' };
-  const csp = cspBytes(4);
+  const moment = castMoment();
+  const csp = cspBytes(4, moment);
   const a = (o.frames || []).map(arousal);
   let r = (csp[0] << 16 | csp[1] << 8 | csp[2]);
   if (a.length) r ^= Math.floor(stats(a).mean * 16777215);
@@ -622,6 +679,7 @@ function bibliomancy(opts) {
     passage: (chunk.text || chunk.content || '').slice(0, 900),
     provenance: { mode: a.length ? 'eeg-xor-csprng' : 'csprng',
       note: 'A passage drawn by lot from your own documents. Meaning is yours to make.',
+      castMoment: moment.iso, castSeq: moment.seq,
       timestamp: new Date().toISOString() }
   };
 }

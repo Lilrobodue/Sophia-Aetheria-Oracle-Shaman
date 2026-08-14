@@ -36,7 +36,25 @@ function bridgeSyncTool(t) {
   };
 }
 
+// Tools with a real async implementation live here, not in the classic realm —
+// their entry in the app's `tools` registry is only a stub for the remote path.
+// Manual casting needs to run one directly, without the model in the loop, so
+// the seam is published by name.
+const NATIVE_TOOLS = { astrology_report: astrologyTool, web_search: webSearchTool };
+
 window.SophiaAgent = {
+  /**
+   * runToolDirect — execute one native (ESM) tool outside the agentic loop.
+   * Used by the manual cast panel: the app performs the reading itself and
+   * hands Sophia the result, so there is nothing for her to confabulate.
+   * @returns the tool's own output (astrology_report returns a text report)
+   */
+  async runToolDirect(name, args = {}, ctx = {}) {
+    const tool = NATIVE_TOOLS[name];
+    if (!tool) throw new Error('No native tool named ' + name);
+    return await tool.execute(args, ctx);
+  },
+
   /**
    * runAgentTurn — build a fresh registry (web_search + bridged sync tools) and
    * run the tool-use loop for one user turn.
@@ -58,7 +76,7 @@ window.SophiaAgent = {
     const registry = new ToolRegistry();
     // Tools with a real async implementation here are skipped in the bridge —
     // their classic-side entry is only a stub for the remote tool path.
-    const NATIVE = new Set(['web_search', 'astrology_report']);
+    const NATIVE = new Set(Object.keys(NATIVE_TOOLS));
     for (const t of bridgedTools) {
       if (!t || NATIVE.has(t.name)) continue;
       try { registry.register(bridgeSyncTool(t)); } catch { /* skip malformed tool */ }

@@ -1,5 +1,5 @@
 // Sophia Oracle — Service Worker for true offline PWA
-const CACHE_VERSION = 'sophia-v90';
+const CACHE_VERSION = 'sophia-v91';
 
 // The bare shell — if any of THESE fail the install is pointless, so they're
 // the atomic core. Everything else is best-effort (see EXTRA_URLS).
@@ -28,6 +28,7 @@ const EXTRA_URLS = [
   './polar-wiring.js',
   // Divination toolset (I Ching, geomancy, tarot, runes, cube walk, bibliomancy)
   './divination-core.js',
+  './qimen-core.js',
   // Personal baseline store for state-mode pivots (device+montage keyed)
   './baseline-core.js',
   // Agentic core — ES modules. The bootstrap is loaded by the page; the others

@@ -1734,6 +1734,8 @@
          tarot, runes, biorhythm, cube walk, bibliomancy. Registers itself into
          the tool registry via window.DIVINATION_TOOLS. -->
     <script src="divination-core.js"></script>
+    <!-- Qi Men Dun Jia: a chart of the moment on the same Lo Shu the walks use -->
+    <script src="qimen-core.js"></script>
     <!-- Personal baseline for state-mode pivots: IndexedDB store keyed by
          device + montage + time bin, drift and time-of-day reports. Must load
          after divination-core (it hands pivots back to castIChing). -->
@@ -1851,8 +1853,9 @@
                                 <button class="btn btn-small btn-primary" onclick="manualCast('runes')" title="Cast Elder Futhark">ᚱ Runes</button>
                                 <button class="btn btn-small btn-primary" onclick="manualCast('geomancy')" title="Cast a shield chart">⁘ Geomancy</button>
                                 <button class="btn btn-small btn-secondary" onclick="manualCast('cube')" title="Walk the 27-cell Aetheria cube">🧊 Cube Walk</button>
-                                <button class="btn btn-small btn-secondary" onclick="manualCast('bibliomancy')" title="Draw a passage from your uploaded files">📖 Passage</button>
-                                <button class="btn btn-small btn-secondary" onclick="manualCast('biorhythm')" title="Six-cycle biorhythm" style="grid-column: 1 / -1;">📈 Biorhythm</button>
+                                <button class="btn btn-small btn-secondary" onclick="manualCast('qimen')" title="奇門遁甲 — the nine palaces of this exact moment. A chart, not a draw.">⛩ Qi Men</button>
+                                <button class="btn btn-small btn-primary" onclick="manualCast('astrology')" id="manualCastAstrologyBtn" title="Offline natal chart — uses the birth details Sophia already remembers">🌟 Natal Chart</button>
+                                <button class="btn btn-small btn-secondary" onclick="manualCast('biorhythm')" title="Six-cycle biorhythm">📈 Biorhythm</button>
                             </div>
 
                             <details class="license-panel" style="margin-top: 10px;">
@@ -9482,6 +9485,23 @@ return result;</textarea>
                          tags: ['cube', 'reading', 'aetheria'] };
             }
 
+            // Qi Men Dun Jia — the ju, the two officers, and the three palaces
+            // that carry the auspicious gates. Enough for her to speak from
+            // without pasting a whole nine-palace grid into the prompt.
+            if (result.chart && result.chart.palaces) {
+                const c = result.chart;
+                const good = c.palaces.filter(p => p.gateOmen === 'auspicious')
+                    .map(p => `${p.gate}/${p.trigram}${p.palace}`).join(' ');
+                const wonders = c.palaces.filter(p => p.wonder)
+                    .map(p => `${p.heavenStem}${p.palace}`).join(' ');
+                return { content: `Qi Men (${c.juLabel}, ${c.solarTerm.name} ${c.yuan.name}): ` +
+                                  `值符 ${c.chief.star} palace ${c.chief.palace}, 值使 ${c.envoy.gate} palace ${c.envoy.palace}` +
+                                  (good ? ` · open gates ${good}` : '') +
+                                  (wonders ? ` · wonders ${wonders}` : '') +
+                                  ` · ${c.pillars.day} day ${c.pillars.hour} hour`,
+                         tags: ['qimen', 'reading', 'loshu', 'chart'] };
+            }
+
             // Bibliomancy — the passage itself, trimmed; the source is the citation
             if (result.draw && result.draw.passage) {
                 const d = result.draw;
@@ -9498,6 +9518,10 @@ return result;</textarea>
         // suite). Pressing Save is a different act from the app filing it for
         // you, so an explicit press does record it — as an observation.
         function manualCastMemoryLine(kind, result) {
+            if (kind === 'astrology' && result && result.report) {
+                return { content: natalHeadline(result.report),
+                         tags: ['astrology', 'natal-chart'], type: 'personal' };
+            }
             const line = divinationMemoryLine(result);
             if (line) return line;
             if (kind === 'biorhythm' && result && result.biorhythm && result.biorhythm.cycles) {
@@ -9567,7 +9591,12 @@ return result;</textarea>
             geomancy:    { tool: 'geomancy_cast',    label: 'Geomancy' },
             cube:        { tool: 'cube_walk',        label: 'Cube walk' },
             bibliomancy: { tool: 'bibliomancy_draw', label: 'Passage' },
-            biorhythm:   { tool: 'biorhythm_calc',   label: 'Biorhythm' }
+            qimen:       { tool: 'qimen_chart',      label: 'Qi Men' },
+            biorhythm:   { tool: 'biorhythm_calc',   label: 'Biorhythm' },
+            // Not a lot at all — a computed chart. It lives in the ESM agentic
+            // realm (tools/astrology.js), so it runs through a different seam and
+            // returns a text report rather than a structured reading.
+            astrology:   { tool: 'astrology_report', label: 'Natal Chart', native: true }
         };
 
         function escHTML(s) {
@@ -9593,20 +9622,29 @@ return result;</textarea>
                 case 'runes':   return { question, spread: val('manualRuneSpread', 'norn') };
                 case 'cube':    return { steps: Math.max(1, Math.min(12, parseInt(val('manualCubeSteps', '3'), 10) || 3)) };
                 case 'biorhythm': return { birthDate: val('manualBirthDate', ''), targetDate: null };
+                // The chart tool fills anything omitted from memory, so an empty
+                // birth field here means "use what you already know about me".
+                case 'astrology': return { birth_date: val('manualBirthDate', '') || undefined };
                 default:        return { question };
             }
         }
 
-        function manualCast(kind) {
+        async function manualCast(kind) {
             const spec = MANUAL_CASTS[kind];
-            const tool = spec && window.DIVINATION_TOOLS && window.DIVINATION_TOOLS[spec.tool];
-            if (!tool) { showStatus('Divination module not loaded', 'error'); return; }
-
+            if (!spec) return;
             const params = manualCastParams(kind);
+
             if (kind === 'biorhythm' && !params.birthDate) {
                 showStatus('Set a birth date under Spreads & options first', 'error');
                 return;
             }
+
+            // The natal chart is not a lot and not a sync tool: it lives in the ESM
+            // agentic realm and is awaited through the bootstrap seam.
+            if (spec.native) { await manualCastNative(kind, spec, params); return; }
+
+            const tool = window.DIVINATION_TOOLS && window.DIVINATION_TOOLS[spec.tool];
+            if (!tool) { showStatus('Divination module not loaded', 'error'); return; }
 
             // Tools are invoked directly, not through the model's tool loop — a
             // manual cast must work whether or not the tool is enabled in prompt.
@@ -9648,6 +9686,71 @@ return result;</textarea>
             }
         }
 
+        /* The natal chart runs in the ESM realm and is genuinely slow (it resolves
+         * a place, a timezone and an ephemeris), so it gets a button state and an
+         * await. It also answers in prose when it needs birth details rather than
+         * failing — that answer is worth showing as-is. */
+        async function manualCastNative(kind, spec, params) {
+            if (!window.SophiaAgent || !window.SophiaAgent.runToolDirect) {
+                showStatus('The chart module has not finished loading yet — try again in a moment.', 'error');
+                return;
+            }
+            const btn = document.getElementById('manualCastAstrologyBtn');
+            const restore = btn ? btn.textContent : null;
+            if (btn) { btn.disabled = true; btn.textContent = '⏳ Casting…'; }
+            try {
+                const report = await window.SophiaAgent.runToolDirect(spec.tool, params, {
+                    memory: { all: () => getAllMemories(), search: (q) => searchMemories(q), save: (m) => saveMemory(m) },
+                });
+                const text = String(report || '').trim();
+                if (!text) { showStatus('The chart came back empty.', 'error'); return; }
+
+                // Missing birth details come back as a question, not a chart. Put it
+                // in the chat where it can be answered, and don't file it as a cast.
+                if (!/^NATAL CHART/m.test(text)) {
+                    addMessageToUI('assistant', escHTML(text).replace(/\n/g, '<br>'));
+                    showStatus('Sophia needs your birth details first — see the chat.', 'warning');
+                    return;
+                }
+
+                const entry = { id: 'cast' + (++_castSeq), kind, label: spec.label,
+                                result: { report: text }, question: params.question || null,
+                                params, t: Date.now() };
+                castingSession.push(entry);
+                lastManualCast = entry;
+                renderSessionChatLine();
+                renderCastingSession();
+                // The tool files its own chart as a `personal` memory (uncapped, so
+                // it reaches every prompt) — nothing to record here.
+                const state = document.getElementById('manualCastSaveState');
+                if (state) { state.style.color = '#00ff88'; state.textContent = '✓ Chart cast and saved to memory.'; }
+            } catch (e) {
+                showStatus('Chart failed: ' + e.message, 'error');
+            } finally {
+                if (btn) { btn.disabled = false; btn.textContent = restore; }
+            }
+        }
+
+        // Sun / Moon / Ascendant out of the report the chart tool prints. Parsed
+        // rather than recomputed: the formatter lives in this repo, and one short
+        // line is all the weave needs — she has the full chart from memory.
+        function natalHeadline(report) {
+            const txt = String(report || '');
+            const sign = (name) => {
+                const m = txt.match(new RegExp('^\\s*' + name + '\\s+\\S+\\s+(\\w+)', 'm'));
+                return m ? m[1] : null;
+            };
+            const asc = txt.match(/^Ascendant\s+\S+\s+(\w+)/m);
+            const bits = [
+                sign('Sun') && 'Sun ' + sign('Sun'),
+                sign('Moon') && 'Moon ' + sign('Moon'),
+                asc && 'Ascendant ' + asc[1],
+            ].filter(Boolean);
+            const where = txt.match(/^NATAL CHART — (.+)$/m);
+            return 'Natal chart' + (bits.length ? ' — ' + bits.join(', ') : '') +
+                   (where ? ` (${where[1]})` : '');
+        }
+
         /* ── The casting session ──────────────────────────────────────────
          * Readings accumulate here rather than each one broadcasting itself.
          * Sophia is handed the whole set at once, which is the only way she can
@@ -9655,7 +9758,7 @@ return result;</textarea>
          * memory path can't do it (readings are capped at 4 of 10 slots there,
          * by design, so an evening of casting can't evict who you are).       */
         const CAST_ICON = { iching: '☯', tarot: '🃏', runes: 'ᚱ', geomancy: '⁘',
-                            cube: '🧊', bibliomancy: '📖', biorhythm: '📈' };
+                            cube: '🧊', bibliomancy: '📖', biorhythm: '📈', astrology: '🌟', qimen: '⛩' };
         const SESSION_CHAT_ID = 'castingSessionLine';
 
         function sessionHeadline(entry) {
@@ -9750,8 +9853,18 @@ return result;</textarea>
         function manualCastCardHTML(kind, result, params) {
             const r = result.reading || result.chart || result.walk || result.draw || result.biorhythm || result;
             const title = { iching: '☯ I Ching', tarot: '🃏 Tarot', runes: 'ᚱ Runes', geomancy: '⁘ Geomancy',
-                            cube: '🧊 Cube Walk', bibliomancy: '📖 Passage', biorhythm: '📈 Biorhythm' }[kind];
+                            cube: '🧊 Cube Walk', bibliomancy: '📖 Passage', biorhythm: '📈 Biorhythm',
+                            astrology: '🌟 Natal Chart', qimen: '⛩ 奇門遁甲 Qi Men Dun Jia' }[kind];
             let body = '';
+
+            // The chart arrives as a formatted text report, not a structured
+            // reading — monospace preserves its columns.
+            if (kind === 'astrology' && result && result.report) {
+                return `<div style="border-left:3px solid #ff0055;padding-left:10px;">` +
+                       `<strong style="color:#ff6b9d;">${title}</strong> <span style="color:#666;font-size:0.72rem;">· cast in the app, offline</span>` +
+                       `<pre style="font-family:'JetBrains Mono',monospace;font-size:0.68rem;color:#ddd;white-space:pre-wrap;` +
+                       `overflow-x:auto;margin-top:6px;line-height:1.45;">${escHTML(result.report)}</pre></div>`;
+            }
 
             if (kind === 'iching' && r.primary) {
                 const rows = r.lines.slice().reverse().map((v, idx) => {
@@ -9809,6 +9922,41 @@ return result;</textarea>
                     (r.destination.freq ? ` · <span style="color:#00ff88;">${r.destination.freq}Hz ${escHTML(r.destination.regime || '')}</span>` : '') + `</div>` +
                     (r.destination.keyword ? `<div style="color:#ff6b9d;font-size:0.78rem;">${escHTML(r.destination.keyword)}</div>` : '') +
                     (r.passedCentre ? `<div style="color:#ffcc66;font-size:0.75rem;">crossed the centre — 2178Hz</div>` : '') + `</div>`;
+            } else if (kind === 'qimen' && r.palaces) {
+                // The Lo Shu, drawn the way it is drawn: 9 south at the top,
+                // 1 north at the bottom — the same square as the Aetheria walks.
+                const LAYOUT = [4, 9, 2, 3, 5, 7, 8, 1, 6];
+                const cell = (n) => {
+                    const p = r.palaces.find(x => x.palace === n);
+                    if (!p) return '<div></div>';
+                    const lit = p.isChief || p.isEnvoy;
+                    const omen = p.gateOmen === 'auspicious' ? '#00ff88'
+                               : p.gateOmen === 'inauspicious' ? '#ff6b9d' : '#ccc';
+                    return `<div style="background:rgba(0,0,0,0.35);border:1px solid ${lit ? 'rgba(255,204,102,0.55)' : 'rgba(255,255,255,0.08)'};` +
+                        `border-radius:6px;padding:6px;font-size:0.68rem;line-height:1.45;min-width:0;">` +
+                        `<div style="color:#666;font-size:0.6rem;">${p.palace} ${p.trigram} ${p.direction}</div>` +
+                        `<div style="color:#fff;font-weight:700;">${p.heavenStem || '·'}<span style="color:#555;">/</span><span style="color:#aaa;">${p.earthStem || '·'}</span></div>` +
+                        (p.star ? `<div style="color:#a050d4;">${p.star}</div>` : '') +
+                        (p.gate ? `<div style="color:${omen};">${p.gate}</div>` : '') +
+                        (p.spirit ? `<div style="color:#888;font-size:0.62rem;">${p.spirit}</div>` : '') +
+                        (p.wonder ? `<div style="color:#ffcc66;font-size:0.58rem;">✦</div>` : '') +
+                        `</div>`;
+                };
+                body =
+                  `<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:4px;margin-top:8px;">` +
+                  LAYOUT.map(cell).join('') + `</div>` +
+                  `<div style="font-size:0.72rem;color:#ccc;margin-top:8px;line-height:1.6;">` +
+                    `<div><span style="color:#888;">Moment:</span> ${escHTML(r.localTime)}</div>` +
+                    `<div><span style="color:#888;">Solar term:</span> ${r.solarTerm.name} ${escHTML(r.solarTerm.english)} · ` +
+                      `${r.yuan.name} (${escHTML(r.yuan.english)}) · <strong style="color:#fff;">${r.juLabel}</strong></div>` +
+                    `<div><span style="color:#888;">Pillars:</span> ${r.pillars.day} day · ${r.pillars.hour} hour · ${r.pillars.xun}</div>` +
+                    `<div><span style="color:#ffcc66;">值符 Chief:</span> ${r.chief.star} in palace ${r.chief.palace} · ` +
+                      `<span style="color:#ffcc66;">值使 Envoy:</span> ${r.envoy.gate} in palace ${r.envoy.palace}</div>` +
+                  `</div>` +
+                  `<div style="font-size:0.62rem;color:#666;margin-top:6px;line-height:1.5;">` +
+                    `Gates: <span style="color:#00ff88;">green auspicious</span> · ` +
+                    `<span style="color:#ff6b9d;">pink inauspicious</span> · grey neutral. ✦ marks a Wonder (乙丙丁).<br>` +
+                    `${escHTML(r.provenance.school)}</div>`;
             } else if (kind === 'bibliomancy' && r.passage) {
                 body = `<div style="margin-top:6px;font-size:0.85rem;line-height:1.6;">` +
                     `<div style="color:#888;font-size:0.72rem;">${escHTML(r.source)} · passage ${r.index + 1} of ${r.total}</div>` +
@@ -9936,7 +10084,8 @@ return result;</textarea>
         // prompt-file edit, and the state/draw distinction is not a stylistic
         // preference — it is the difference between a measurement and a lot.
         function divinationSystemNote(compact) {
-            const divKeys = Object.keys(window.DIVINATION_TOOLS || {});
+            const divKeys = Object.keys(window.DIVINATION_TOOLS || {})
+                .concat(Object.keys(window.QIMEN_TOOLS || {}));
             const anyEnabled = typeof tools !== 'undefined' &&
                 divKeys.some(k => tools[k] && tools[k].enabled);
             if (!anyEnabled) return '';
@@ -10641,6 +10790,9 @@ return result;</textarea>
             // default:true, so the localStorage round-trip below keeps their enabled
             // flag but always reloads their code from the module — no stale codeStr.
             Object.assign(defaultTools, window.DIVINATION_TOOLS || {});
+            // Qi Men Dun Jia rides in the same registry — it is a divination, even
+            // though it is a chart rather than a lot.
+            Object.assign(defaultTools, window.QIMEN_TOOLS || {});
 
             // Load saved tools state
             const savedToolsState = localStorage.getItem('sophiaUnifiedTools');
@@ -10662,6 +10814,7 @@ return result;</textarea>
                     if (localStorage.getItem('sophiaToolDefaults') !== TOOL_DEFAULTS_VERSION) {
                         ['calculator', 'textAnalysis', 'dataProcessor', 'imageInfo', 'audioAnalysis']
                             .concat(Object.keys(window.DIVINATION_TOOLS || {}))
+                            .concat(Object.keys(window.QIMEN_TOOLS || {}))
                             .forEach(k => { delete toolsState[k]; });
                         localStorage.setItem('sophiaToolDefaults', TOOL_DEFAULTS_VERSION);
                         localStorage.removeItem('sophiaDivinationToolDefaults');   // superseded
@@ -11713,7 +11866,7 @@ return result;</textarea>
         // Keep in step with the footer version and sw.js CACHE_VERSION — it only
         // labels the diagnostics export, but a report that can't be tied to a
         // build is a report you can't act on.
-        const SOPHIA_BUILD = 'v90';
+        const SOPHIA_BUILD = 'v91';
 
         // ═══════════════════════════════════════════════════════════════════
         // Runtime diagnostics — SOPHIA_RUNTIME_BRIEF Phase A (page side)

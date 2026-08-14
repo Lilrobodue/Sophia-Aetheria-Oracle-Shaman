@@ -696,6 +696,10 @@ function provenanceLine(p) {
   else if (p.mode === 'entropy')          parts.push((p.method || 'yarrow') + ' draw');
   else if (p.mode === 'eeg-xor-csprng')   parts.push('EEG-seeded draw');
   else if (p.mode === 'eeg-steered')      parts.push('EEG-steered walk');
+  // Qi Men is not a draw at all. Falling through to 'CSPRNG draw' would have
+  // called a fully determined chart a random one — the exact mislabel rule 1
+  // of the design contract exists to prevent.
+  else if (p.mode === 'time-chart')       parts.push('chart of the moment · nothing drawn');
   else                                    parts.push('CSPRNG draw');
 
   const n = (p.framesUsedAfterQualityGate != null) ? p.framesUsedAfterQualityGate : p.framesUsed;

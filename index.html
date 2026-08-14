@@ -9605,6 +9605,17 @@ return result;</textarea>
                 .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
         }
 
+        // Every registry a manual cast may draw a tool from, newest last.
+        const MANUAL_TOOL_REGISTRIES = ['DIVINATION_TOOLS', 'QIMEN_TOOLS'];
+
+        function manualToolFor(name) {
+            for (const reg of MANUAL_TOOL_REGISTRIES) {
+                const r = window[reg];
+                if (r && r[name]) return r[name];
+            }
+            return null;
+        }
+
         function manualCastParams(kind) {
             const q = (document.getElementById('manualCastQuestion') || {}).value || '';
             const question = q.trim() || null;
@@ -9643,8 +9654,11 @@ return result;</textarea>
             // agentic realm and is awaited through the bootstrap seam.
             if (spec.native) { await manualCastNative(kind, spec, params); return; }
 
-            const tool = window.DIVINATION_TOOLS && window.DIVINATION_TOOLS[spec.tool];
-            if (!tool) { showStatus('Divination module not loaded', 'error'); return; }
+            // Sidecars register into separate globals — divination-core.js exports
+            // DIVINATION_TOOLS, qimen-core.js exports QIMEN_TOOLS. Look in every
+            // registry, so adding another sidecar never silently breaks a button.
+            const tool = manualToolFor(spec.tool);
+            if (!tool) { showStatus(spec.label + ' module not loaded — try a refresh.', 'error'); return; }
 
             // Tools are invoked directly, not through the model's tool loop — a
             // manual cast must work whether or not the tool is enabled in prompt.
@@ -11866,7 +11880,7 @@ return result;</textarea>
         // Keep in step with the footer version and sw.js CACHE_VERSION — it only
         // labels the diagnostics export, but a report that can't be tied to a
         // build is a report you can't act on.
-        const SOPHIA_BUILD = 'v91';
+        const SOPHIA_BUILD = 'v92';
 
         // ═══════════════════════════════════════════════════════════════════
         // Runtime diagnostics — SOPHIA_RUNTIME_BRIEF Phase A (page side)
